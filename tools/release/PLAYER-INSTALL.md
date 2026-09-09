@@ -11,7 +11,8 @@ The release contains the APK and Windows import tools, **not game assets**.
   If Windows reports missing `VCRUNTIME140` or `MSVCP140`, install Microsoft's
   redistributable, not individual DLLs from download sites.
 - Quest 3 in developer mode, with USB debugging authorized for this PC.
-- Android platform-tools (`adb.exe`), on PATH or supplied with `-AdbPath`.
+- Android Platform Tools (`adb.exe`) are downloaded from Google if missing.
+  On the first download, review the Android SDK terms and type `YES` to accept.
 - FFmpeg is downloaded automatically if it is not already installed. The first
   download needs internet access (about 106 MB); later installs reuse its cache.
 - Space on both PC and headset for the imported packages and decoded audio.
@@ -22,9 +23,10 @@ integrity, not the identity of an untrusted download.
 
 ## Install
 
-If ADB is on PATH, double-click `INSTALL-HPVR.cmd` and enter the game
+Double-click `INSTALL-HPVR.cmd` and enter the game
 folder containing `Maps`, `Textures`, `Sounds`, `Music` and `system`.
-Otherwise, run this in the extracted release folder:
+Missing FFmpeg and ADB are downloaded and cached automatically. The banner
+must say `HPVR installer revision 3`. To use existing tools explicitly:
 
 ```powershell
 .\INSTALL-HPVR.ps1 -GamePath 'C:\Program Files\HP' -AdbPath 'C:\Android\platform-tools\adb.exe' -FfmpegPath 'C:\ffmpeg\bin\ffmpeg.exe'
@@ -39,7 +41,7 @@ INSTALL-HPVR.cmd -GamePath "C:\Program Files\HP" -AdbPath "C:\Android\platform-t
 The wrapper's execution-policy override affects only its child process. For
 multiple connected devices, add `-DeviceSerial` with the serial from `adb devices`.
 
-`-FfmpegPath` is optional: an explicit path takes priority, then PATH/common
+`-FfmpegPath` and `-AdbPath` are optional: an explicit path takes priority, then PATH/common
 locations, then the verified cache, then automatic download. Missing or mistyped
 explicit paths are reported instead of silently downloading another copy.
 Use `-NoToolDownload` to disable downloads; a verified cached copy still works.
@@ -51,6 +53,15 @@ hashes are verified before use. It is cached under
 `%LOCALAPPDATA%\HPVR\Tools\ffmpeg-9.0.1`, together with its GPLv3 license and
 README. No administrator access, global installation or PATH changes are made.
 If the download fails, rerun the installer or supply `-FfmpegPath` manually.
+
+ADB uses the versioned Windows Android Platform Tools 36.0.2 archive from
+[Google](https://developer.android.com/tools/releases/platform-tools) (about 7 MB).
+The archive, ADB executable, both required DLLs, license notices and version file
+are SHA-256 verified and cached under `%LOCALAPPDATA%\HPVR\Tools\platform-tools-36.0.2`.
+The installer does not install USB drivers or change PATH. Existing ADB and
+offline preparation do not require a download or the license prompt.
+If no authorized headset is found, enable developer mode, connect a USB data
+cable, put on the headset and accept its USB debugging prompt, then rerun.
 
 Preparation takes several minutes. The installer checks hashes, prepares the
 required game packages and audio in a private working directory, installs the

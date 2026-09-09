@@ -169,6 +169,103 @@ function Get-HpvrFfmpeg([string]$Explicit, [string[]]$Candidates, [string]$Cache
     }
 }
 
+function Get-HpvrAdbSpec {
+    # Official versioned Google archive; pin ADB and all adjacent dependencies.
+    return [pscustomobject]@{
+        Version = '36.0.2'
+        Url = 'https://dl.google.com/android/repository/platform-tools_r36.0.2-win.zip'
+        ArchiveSha256 = 'B024D4F319D6AD3004DE1BA7B96A5C7C5F3512E8B14126308D598B4AB93DCEAD'
+        Files = [ordered]@{
+            'adb.exe' = '56656270DA132F44E9CB4FB86A12BA965635C80423D43DCDD944D9FEC4AB4622'
+            'AdbWinApi.dll' = 'A00CF631DD12C82561FFCCEFDB1A99A27C527253B04F06CA8FC1BB86BA2148C4'
+            'AdbWinUsbApi.dll' = 'E4D72D5BA3BF4B027F1B7A3781AAE0B04712C1A52244BEA277FB57DD75A85702'
+            'NOTICE.txt' = 'BFEDFB7B22C5D204BAECBCCFBB9A6DE6E848EF19F9318088F15769BFBF4B8F79'
+            'source.properties' = '6F16C7815EE0A1B820CA24C8FDAD8E26F07DA492B22C2B370C6DB136425A2136'
+        }
+    }
+}
+
+function Save-HpvrAdbDownload([string]$Url, [string]$Destination) {
+    Save-HpvrFfmpegDownload $Url $Destination
+}
+
+function Get-HpvrAdb([string]$Explicit, [string[]]$Candidates, [string]$CacheRoot, [switch]$NoDownload) {
+    $found = Get-HpvrTool $Explicit 'adb.exe' $Candidates -Optional
+    if ($found) { return $found }
+    $spec = Get-HpvrAdbSpec
+    if ([string]::IsNullOrWhiteSpace($CacheRoot)) {
+        if (-not $env:LOCALAPPDATA) { throw 'LOCALAPPDATA is unavailable. Supply -AdbPath to an installed adb.exe.' }
+        $CacheRoot = Join-Path $env:LOCALAPPDATA ('HPVR\Tools\platform-tools-' + $spec.Version)
+    }
+    $cache = Get-HpvrFullPath $CacheRoot
+    Assert-HpvrNoLinks $cache
+    $valid = $true
+    foreach ($name in $spec.Files.Keys) {
+        $path = Join-Path $cache $name
+        Assert-HpvrNoLinks $path
+        if (-not (Test-Path -LiteralPath $path -PathType Leaf) -or
+            (Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash -ne $spec.Files[$name]) { $valid = $false }
+    }
+    $exe = Join-Path $cache 'adb.exe'
+    if ($valid) {
+        Write-Host "Using verified cached Android Platform Tools $($spec.Version): $exe"
+        return $exe
+    }
+    if ($NoDownload) { throw 'ADB is missing or its cache is invalid; automatic downloads are disabled. Supply -AdbPath.' }
+    Write-Host 'ADB was not found. Android Platform Tools can be downloaded from Google (about 7 MB).'
+    Write-Host 'Android SDK terms: https://developer.android.com/studio/terms'
+    if ((Read-Host 'Read the terms above. Type YES to accept and download, or cancel and supply -AdbPath') -cne 'YES') {
+        throw 'Android Platform Tools download cancelled. Install it yourself and supply -AdbPath.'
+    }
+    New-Item -ItemType Directory -Path $cache -Force | Out-Null
+    $nonce = [Guid]::NewGuid().ToString('N')
+    $zipPath = Join-Path $cache ('download-' + $nonce + '.zip')
+    $temporary = @($zipPath)
+    try {
+        Save-HpvrAdbDownload $spec.Url $zipPath
+        if ((Get-Item -LiteralPath $zipPath).Length -gt 50MB -or
+            (Get-FileHash -LiteralPath $zipPath -Algorithm SHA256).Hash -ne $spec.ArchiveSha256) {
+            throw 'Downloaded Android Platform Tools archive failed its pinned SHA-256 check.'
+        }
+        Add-Type -AssemblyName System.IO.Compression, System.IO.Compression.FileSystem
+        $archive = [IO.Compression.ZipFile]::OpenRead($zipPath)
+        $pending = [ordered]@{}
+        try {
+            foreach ($name in $spec.Files.Keys) {
+                $entries = @($archive.Entries | Where-Object { $_.FullName -ceq ('platform-tools/' + $name) })
+                if ($entries.Count -ne 1 -or $entries[0].Length -le 0 -or $entries[0].Length -gt 20MB) {
+                    throw "Missing, duplicate or oversized Android Platform Tools entry: $name"
+                }
+                $path = Join-Path $cache ($nonce + '-' + $name + '.pending')
+                $temporary += $path
+                Assert-HpvrNoLinks $path
+                [IO.Compression.ZipFileExtensions]::ExtractToFile($entries[0], $path, $false)
+                if ((Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash -ne $spec.Files[$name]) {
+                    throw "Extracted Android Platform Tools file failed its pinned SHA-256 check: $name"
+                }
+                $pending[$name] = $path
+            }
+        } finally { $archive.Dispose() }
+        # Admit files only after every dependency passes verification.
+        foreach ($name in $pending.Keys) {
+            $destination = Join-Path $cache $name
+            Assert-HpvrNoLinks $destination
+            Move-Item -LiteralPath $pending[$name] -Destination $destination -Force
+        }
+        Write-Host "ADB is ready: $exe (no administrator access or PATH changes)."
+        return $exe
+    } catch {
+        throw "Automatic ADB setup failed: $($_.Exception.Message) Re-run to retry, or supply -AdbPath manually."
+    } finally {
+        foreach ($path in $temporary) {
+            if ((Test-HpvrWithin $path $cache) -and $path -ne $cache -and (Test-Path -LiteralPath $path -PathType Leaf)) {
+                Assert-HpvrNoLinks $path
+                Remove-Item -LiteralPath $path -Force
+            }
+        }
+    }
+}
+
 function Read-HpvrReleaseManifest([string]$Root) {
     $manifestPath = Join-Path $Root 'release-manifest.json'
     Assert-HpvrNoLinks $manifestPath
@@ -231,6 +328,8 @@ function Assert-HpvrPcm([string]$Path, [int]$Channels) {
 
 if ($LibraryOnly) { return }
 
+Write-Host 'HPVR installer revision 3: automatic FFmpeg + Android Platform Tools.'
+
 if ($PromptForGamePath -and [string]::IsNullOrWhiteSpace($GamePath)) {
     $GamePath = Read-Host 'Folder of your installed US PC game'
 }
@@ -261,7 +360,7 @@ if (-not $PrepareOnly) {
     if ($env:ANDROID_SDK_ROOT) { $adbCandidates += Join-Path $env:ANDROID_SDK_ROOT 'platform-tools\adb.exe' }
     if ($env:ANDROID_HOME) { $adbCandidates += Join-Path $env:ANDROID_HOME 'platform-tools\adb.exe' }
     if ($env:LOCALAPPDATA) { $adbCandidates += Join-Path $env:LOCALAPPDATA 'Android\Sdk\platform-tools\adb.exe' }
-    $adb = Get-HpvrTool $AdbPath 'adb.exe' $adbCandidates
+    $adb = Get-HpvrAdb $AdbPath $adbCandidates -NoDownload:$NoToolDownload
     $deviceOutput = @(& $adb devices)
     if ($LASTEXITCODE -ne 0) { throw 'ADB device enumeration failed.' }
     $devices = @($deviceOutput | Where-Object { $_ -match '^([^\s]+)\s+device\s*$' } | ForEach-Object { ($_ -split '\s+')[0] })
