@@ -182,6 +182,7 @@ struct XrVulkanSmoke::State {
     bool back_held = false;
     bool jump_held=false;
     bool cinematic_reference_valid=false;
+    bool cinematic_first_person=false;
     ViewPose cinematic_reference{},last_world_head{};
     bool have_world_head=false,rebase_head=false;
     LocomotionState locomotion{};
@@ -1615,8 +1616,10 @@ bool XrVulkanSmoke::RenderFrame() {
                 wand_model[14] + gesture_sample.aim_direction[2] * 0.34F};
         }
         state.gesture.Advance(delta_seconds);
-        if(tracking_active&&state.cinematic_reference_valid)
-            state.scene.UpdateExitTracking(head_pose,state.cinematic_reference);
+        ViewPose before_camera;bool before_first_person=false;
+        (void)state.scene.GetCinematicCameraPose(&before_camera,&before_first_person);
+        if(before_first_person!=state.cinematic_first_person)state.cinematic_reference_valid=false;
+        state.scene.UpdateExitTracking(head_pose,state.cinematic_reference,tracking_active&&state.cinematic_reference_valid);
         state.scene.Advance(delta_seconds);
         // Apply the actor's final position on this same frame, avoiding a flash
         // back to the old seated VR body when the exit camera is released.
@@ -1628,11 +1631,24 @@ bool XrVulkanSmoke::RenderFrame() {
             }
         }
         ViewPose cinematic_camera{};
+        bool cinematic_first_person=false;
         const bool cinematic_camera_active =
-            state.scene.GetCinematicCameraPose(&cinematic_camera);
-        if(cinematic_camera_active&&!state.cinematic_reference_valid){
+            state.scene.GetCinematicCameraPose(&cinematic_camera,&cinematic_first_person);
+        const bool reanchor=cinematic_camera_active&&(!state.cinematic_reference_valid||
+            cinematic_first_person!=state.cinematic_first_person);
+        if(reanchor){
             state.cinematic_reference=head_pose;state.cinematic_reference_valid=true;
         }else if(!cinematic_camera_active)state.cinematic_reference_valid=false;
+        if(cinematic_first_person!=state.cinematic_first_person)
+            HPVR_LOGI("[hpvr.quest.camera] first_person=%u menu=LIVE rig=SCRIPTED_6DOF",cinematic_first_person?1U:0U);
+        state.cinematic_first_person=cinematic_first_person;
+        ViewPose presentation_head;
+        const bool presentation_ok=cinematic_camera_active?
+            MapCinematicEye(head_pose,head_pose,cinematic_camera,state.cinematic_reference,&presentation_head):
+            state.locomotion.MapPose(head_pose,&presentation_head);
+        if(tracking_active&&presentation_ok)
+            state.scene.UpdateFrontPresentation(presentation_head,cinematic_camera_active?&cinematic_camera:nullptr,
+                cinematic_first_person,reanchor);
         const std::uint32_t accepted_before = state.gesture.accepted_count();
         const std::uint32_t rejected_before = state.gesture.rejected_count();
         if (submit_projection && !state.gesture.Observe(gesture_sample)) {

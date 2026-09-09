@@ -36,7 +36,7 @@ public:
     VrSettings GetVrSettings() const;
     unsigned LessonRound() const;
     bool ConsumeCommunityRequest();
-    void UpdateExitTracking(const ViewPose& local_head,const ViewPose& reference);
+    void UpdateExitTracking(const ViewPose& local_head,const ViewPose& reference,bool valid);
     void ToggleVrMenu();
     void SetPerformance(const PerformanceSnapshot& performance);
     void RecordFrontDraw(VkCommandBuffer command_buffer,const Matrix4& view_projection) const;
@@ -69,6 +69,7 @@ public:
     void UpdateHudPose(const ViewPose& head);
     void RecordHudDraw(VkCommandBuffer command_buffer,const Matrix4& view_projection) const;
     void UpdateFrontEnd(const LocomotionInput& input,bool confirm,bool back,const ViewPose& head,float yaw);
+    void UpdateFrontPresentation(const ViewPose& rendered_head,const ViewPose* cinematic_rig,bool first_person,bool recapture);
     bool ConsumePlayerPlacement(std::array<float,3>* position,float* yaw);
     bool IsFrontEndVisible() const;
     bool IsWorldPaused() const;
@@ -84,7 +85,7 @@ public:
     [[nodiscard]] bool IsCutscenePlaying() const;
     [[nodiscard]] bool GetCinematicCameraPosition(
         std::array<float, 3>* output) const;
-    bool GetCinematicCameraPose(ViewPose* output) const;
+    bool GetCinematicCameraPose(ViewPose* output,bool* first_person=nullptr) const;
 
     [[nodiscard]] bool IsLoaded() const;
     [[nodiscard]] bool IsGpuReady() const;

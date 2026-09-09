@@ -19,11 +19,12 @@ int main(int argc,char** argv){try{
     Check(!chord.Update(true,true,0,0)&&chord.consumed,"release grips cannot leak game menu");
     Check(!chord.Update(false,true,1,1)&&!chord.consumed,"focus loss clears chord");
     QuestFrontEnd front;front.saves=dir/"SaveGames";front.screen=FrontScreen::Game;front.progress.quest_stage=10;
+    const int initial_ssr=front.vr.ssr;
     front.ToggleVrMenu();Check(front.Visible()&&front.screen==FrontScreen::Vr,"VR menu pauses gameplay");
     front.Input(0,false,false,0);front.Input(0,false,false,1);Check(front.vr.render_scale==105,"scale increases once");
     front.Input(0,false,false,1);Check(front.vr.render_scale==105,"held stick never repeats");
     front.Input(0,false,false,0);front.Input(-1,false,false,0);front.Input(0,false,false,0);
-    front.Input(0,false,false,-1);Check(front.vr.ssr==30,"SSR adjustable separately");
+    front.Input(0,false,false,-1);Check(front.vr.ssr==initial_ssr-5&&front.vr.render_scale==105,"SSR decreases one step independently of render scale");
     front.Input(0,false,true);Check(front.screen==FrontScreen::Game&&front.progress.quest_stage==10,"close restores game without save mutation");
     Check(!std::filesystem::exists(front.saves),"graphics settings do not create save slot");
     Check(VrRenderExtent(2000,50,2500)==1000&&VrRenderExtent(2000,125,2400)==2400,"bounded live extent");

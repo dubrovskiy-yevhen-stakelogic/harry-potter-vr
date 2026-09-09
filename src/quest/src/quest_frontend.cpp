@@ -408,8 +408,8 @@ FrontAction QuestFrontEnd::Input(float move_y,bool confirm,bool back,float move_
         horizontal_down_=horizontal;return FrontAction::None;
     }
     if(screen==FrontScreen::Vr){
-        if(step)selection=(selection+5+step)%5;
-        if(cancel||(press&&selection==4)){ToggleVrMenu();return FrontAction::Resume;}
+        if(step)selection=(selection+6+step)%6;
+        if(cancel||(press&&selection==5)){ToggleVrMenu();return FrontAction::Resume;}
         if(press&&selection==2){debug_pinned=false;screen=FrontScreen::Debug;selection=0;return FrontAction::None;}
         if(selection<2&&horizontal&&!horizontal_down_){
             auto& value=selection==0?vr.render_scale:vr.ssr;
@@ -418,6 +418,10 @@ FrontAction QuestFrontEnd::Input(float move_y,bool confirm,bool back,float move_
         }
         if(selection==3&&(press||(horizontal&&!horizontal_down_))){
             vr.relaxed_lesson=!vr.relaxed_lesson;
+            vr_save_failed=!WriteVrSettings(saves.parent_path(),vr);
+        }
+        if(selection==4&&(press||(horizontal&&!horizontal_down_))){
+            vr.first_person_cutscenes=!vr.first_person_cutscenes;
             vr_save_failed=!WriteVrSettings(saves.parent_path(),vr);
         }
         horizontal_down_=horizontal;return FrontAction::None;
@@ -502,7 +506,7 @@ std::string QuestFrontEnd::DrawKey()const{
     if(screen==FrontScreen::Slot)s+="_"+std::to_string(slot)+(occupied[slot]?"1":"0");
     if(screen==FrontScreen::Pause)s+=(paused==FrontScreen::Story?std::string("S"):std::string("G"))+std::to_string(progress.quest_stage);
     if(screen==FrontScreen::Stub)s+=message.starts_with("SAVE FAILED")?"F":message.starts_with("USE")?"E":"N";
-    if(screen==FrontScreen::Vr){s+=vr_save_failed?"F":"S";s+=vr.relaxed_lesson?"R":"O";}
+    if(screen==FrontScreen::Vr){s+=vr_save_failed?"F":"S";s+=vr.relaxed_lesson?"R":"O";s+=vr.first_person_cutscenes?"H":"T";}
     if(screen==FrontScreen::Debug&&debug_pinned)s+="_pinned";
     return s;
 }
@@ -544,16 +548,18 @@ std::vector<FrontQuad> QuestFrontEnd::Quads()const{
             text("LIVE FRAME TIMINGS / DEVICE COUNTERS",110,108,2,0xd2beaa);
             text(debug_pinned?"BOTH GRIPS + MENU: HIDE / SETTINGS":"TRIGGER: PIN + PLAY    B: BACK TO SETTINGS",65,438,1.8F,0xd2beaa);
         }else{
-            const std::array<std::string,5> rows{"RENDER SCALE","SSR - WOOD FLOORS","PERFORMANCE DEBUGGER","LESSON DIFFICULTY","RETURN"};
-            for(unsigned i=0;i<5;++i){
-                const float y=142+float(i)*52;
+            const std::array<std::string,6> rows{"RENDER SCALE","SSR - WOOD FLOORS","PERFORMANCE DEBUGGER","LESSON DIFFICULTY","CUTSCENE CAMERA","RETURN"};
+            for(unsigned i=0;i<6;++i){
+                const float y=132+float(i)*44;
                 if(selection==i)tile(42,y-7,556,34,assets.white,0x875f19);
                 text(rows[i],62,y,2.1F,selection==i?0xfff5ff:0xffe164);
             }
-            text(vr.relaxed_lesson?"RELAXED":"ORIGINAL",443,298,2.1F,0xffffff);
+            text(vr.relaxed_lesson?"RELAXED":"ORIGINAL",443,264,2.1F,0xffffff);
+            text(vr.first_person_cutscenes?"HARRY 1ST PERSON":"THEATRICAL",410,310,1.65F,0xffffff);
             text("STICK: SELECT / ADJUST    TRIGGER: OPEN",72,393,1.8F,0xd2beaa);
             text("BOTH GRIPS + MENU: CLOSE    B: BACK",82,418,1.8F,0xd2beaa);
             const char* hint=selection==3?(vr.relaxed_lesson?"RELAXED: WIDE TOLERANCE, NO TIMER":"ORIGINAL: 12S, 50 / 65 / 80 / 95%"):
+                selection==4?"SWITCHES LIVE - HEAD MOVEMENT STAYS FREE":
                 "LIVE SETTINGS - 175% USES 3.06X BASE PIXELS";
             text(vr_save_failed?"SAVE FAILED - SETTINGS ARE TEMPORARY":hint,65,446,1.65F,0xd2beaa);
         }
@@ -684,7 +690,7 @@ std::vector<FrontQuad> QuestFrontEnd::VrValueQuads(int value,bool scale)const{
     std::vector<FrontQuad> out;float x=443;
     const std::string label=value==0&&!scale?"OFF":std::to_string(value)+"%";
     for(unsigned char ch:label){
-        if(ch!=' ')out.push_back({x,scale?142.0F:194.0F,10.5F,14.7F,float(ch%16*16+2)/256,float(ch/16*16+2)/256,5.0F/256,7.0F/256,assets.font,0xffffff});
+        if(ch!=' ')out.push_back({x,scale?132.0F:176.0F,10.5F,14.7F,float(ch%16*16+2)/256,float(ch/16*16+2)/256,5.0F/256,7.0F/256,assets.font,0xffffff});
         x+=12.6F;
     }return out;
 }

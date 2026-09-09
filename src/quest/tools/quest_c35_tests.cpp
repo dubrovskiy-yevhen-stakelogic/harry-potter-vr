@@ -10,18 +10,19 @@ int main(int argc,char** argv){try{
     std::filesystem::create_directories(dir/"SaveGames");
     {std::ofstream old(dir/"vr-settings.1");old<<"HPVR_VR1 175 40 7 "<<VrSettingsChecksum(175,40,7)<<'\n';}
     auto settings=ReadVrSettings(dir);
-    Check(settings.render_scale==175&&settings.ssr==40&&!settings.relaxed_lesson&&!settings.welcome_seen,"legacy render settings kept, difficulty defaults original");
+    Check(settings.render_scale==175&&settings.ssr==40&&settings.relaxed_lesson&&!settings.welcome_seen,"legacy render settings kept, missing difficulty uses current default");
     settings.relaxed_lesson=true;settings.welcome_seen=true;
-    Check(WriteVrSettings(dir,settings),"VR2 durable bank");
-    auto loaded=ReadVrSettings(dir);Check(loaded.relaxed_lesson&&loaded.welcome_seen&&loaded.render_scale==175,"VR2 fields round trip");
+    Check(WriteVrSettings(dir,settings),"current-format durable bank");
+    auto loaded=ReadVrSettings(dir);Check(loaded.relaxed_lesson&&loaded.welcome_seen&&loaded.render_scale==175,"difficulty and welcome fields round trip");
     {std::ofstream broken(dir/"vr-settings.0");broken<<"HPVR_VR2 175 40 8 0 1 0\n";}
-    loaded=ReadVrSettings(dir);Check(loaded.generation==7&&!loaded.relaxed_lesson,"corrupt new bank falls back to old format");
+    loaded=ReadVrSettings(dir);Check(loaded.generation==7&&loaded.relaxed_lesson,"corrupt new bank falls back to old format and current missing-field defaults");
+    loaded.relaxed_lesson=false; // Test the explicit original-to-relaxed toggle, independent of defaults.
     QuestFrontEnd f;f.saves=dir/"SaveGames";f.vr=loaded;f.BeginGame();
     f.ToggleVrMenu();f.Input(0,false,false);f.selection=3;f.Input(0,true,false);
     Check(f.vr.relaxed_lesson&&!f.PausesWorld(),"difficulty selection keeps world live");
     const auto relaxed_key=f.DrawKey();f.Input(0,false,false);f.Input(0,true,false);
     Check(!f.vr.relaxed_lesson&&f.DrawKey()!=relaxed_key,"original selection has its own geometry key");
-    f.selection=4;f.Input(0,false,false);Check(f.Input(0,true,false)==FrontAction::Resume&&!f.Visible(),"fifth row closes settings");
+    f.selection=5;f.Input(0,false,false);Check(f.Input(0,true,false)==FrontAction::Resume&&!f.Visible(),"sixth row closes settings");
     f.ShowDemoNotice(false);Check(f.FloatingPanel()&&f.WorldVisible()&&f.PausesWorld(),"welcome stays in world and holds quest until read");
     Check(f.Input(0,true,false)==FrontAction::None&&f.DemoNotice(),"held trigger cannot skip notice");
     f.Input(0,false,false);f.selection=1;
@@ -56,7 +57,7 @@ int main(int argc,char** argv){try{
         for(unsigned i=0;i<16;++i)Check(std::abs(a[i]-b[i])<.001F,"end cannot snap to old seated heading or discard lean");
     }
     std::filesystem::remove_all(dir);
-    std::cout<<"C35_POLICY=PASS settings=VR2_READS_VR1 demo=FIRST_STEP_AND_END difficulty=SELECTABLE exit_camera=ACTOR_6DOF\n";
+    std::cout<<"C35_POLICY=PASS settings=VR3_READS_VR1 demo=FIRST_STEP_AND_END difficulty=SELECTABLE exit_camera=ACTOR_6DOF\n";
     if(argc==1)return 0;
     const std::filesystem::path root(argv[1]),map=root/"Maps/Lev_Tut1.unr";
     hpvr_hp1_player_start_report start{};Check(hpvr_hp1_load_player_start_utf8(map.string().c_str(),.02F,0,&start)==0,"owned start");

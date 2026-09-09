@@ -416,7 +416,7 @@ extern "C" void android_main(android_app* app) {
     host.app = app;
     app->userData = &host;
     app->onAppCmd = OnAppCommand;
-    HPVR_LOGI("[hpvr.quest.host] status=ENTER abi=arm64-v8a gate=C35 loading=WARNER_THEATER sprint=L3_TOGGLE running=MATCHED_TRANSLATION knights=ONESHOT_CLAMPED story=DRACO_THEN_OPTIONAL_FILCH peeves=MANDATORY_CONTACT ui=BOOK_HUD stairs=INVISIBLE_RAMPS_HIDDEN cutscene=6DOF_PCM_RELEASE basic_cast=SPELLNONE lesson=CLASSROOM_CAST_GHOST_BOARDS reward=APPROACH_FRED objective=OWNED_TEXT frog=ANIMATED_GROUNDED twins=STAGED_SWAP demo=FIRST_STEP_AND_LESSON_END lesson_difficulty=ORIGINAL_OPTIONAL_RELAXED");
+HPVR_LOGI("[hpvr.quest.host] status=ENTER abi=arm64-v8a gate=C37 loading=WARNER_THEATER sprint=L3_TOGGLE running=MATCHED_TRANSLATION knights=ONESHOT_CLAMPED story=DRACO_THEN_OPTIONAL_FILCH peeves=MANDATORY_CONTACT ui=BOOK_HUD stairs=INVISIBLE_RAMPS_HIDDEN cutscene=6DOF_PCM_RELEASE basic_cast=SPELLNONE lesson=CLASSROOM_CAST_GHOST_BOARDS reward=APPROACH_FRED objective=OWNED_TEXT frog=ANIMATED_GROUNDED twins=STAGED_SWAP demo=FIRST_STEP_AND_LESSON_END lesson_difficulty=ORIGINAL_OPTIONAL_RELAXED camera=LIVE_HARRY_OR_THEATRICAL vr_menu=CINEMATIC_RIG_WINDOW settings=VR3 defaults=HARRY_RELAXED_100_SSR30 ssr_budget=UNCHANGED_16_PLUS_4");
     if (!ValidatePortableCore()) {
         HPVR_LOGE("[hpvr.quest.host] status=PORTABLE_CORE_REJECTED");
         return;

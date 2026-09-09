@@ -1,7 +1,8 @@
 [CmdletBinding()]
 param(
     [string]$DestinationPath,
-    [switch]$AuditOnly
+    [switch]$AuditOnly,
+    [switch]$CreateArchive
 )
 
 $ErrorActionPreference = 'Stop'
@@ -13,16 +14,22 @@ if ([string]::IsNullOrWhiteSpace($DestinationPath)) {
 }
 $destination = [IO.Path]::GetFullPath($DestinationPath).TrimEnd('\', '/')
 $destinationParent = Split-Path -Parent $destination
+$archivePath = $destination + '.zip'
 
 # This exports current files, not HEAD: production changes can be uncommitted
 # or untracked. It never traverses the private local/build/retail data trees.
 $rootFiles = @(
-    '.gitattributes', '.gitignore', 'AGENTS.md', 'CMakeLists.txt', 'README.md',
+    '.gitattributes', '.gitignore', 'CMakeLists.txt', 'README.md',
     'SOURCE-KIT-README.md', 'EXPORT-SOURCE-KIT.ps1', 'BUILD-QUEST-DEBUG.ps1',
     'PACKAGE-QUEST-DEBUG.ps1', 'VERIFY-QUEST-APK.ps1', 'IMPORT-QUEST-DATA.ps1',
+    'BUILD-QUEST-RELEASE.ps1', 'PACKAGE-QUEST-PLAYER.ps1',
     'PREPARE-QUEST-AUDIO.ps1', 'PREPARE-QUEST-FRONTEND.ps1', 'RUN-LATEST-VR.cmd',
     'android/build.gradle', 'android/settings.gradle', 'android/gradle.properties',
     'android/app/build.gradle', 'tools/verify-baseline.ps1', 'tools/test-source-kit-export.ps1',
+    'tools/release/INSTALL-HPVR.ps1', 'tools/release/INSTALL-HPVR.cmd',
+    'tools/release/PLAYER-INSTALL.md', 'tools/release/TEST-PLAYER-INSTALL.ps1',
+    'docs/architecture.md', 'docs/wand-gesture-contract.md',
+    'docs/RELEASE-BUILD.md', 'docs/THIRD-PARTY-NOTICES.md',
     'tools/xr-runtime-probe/Cargo.toml', 'tools/xr-runtime-probe/Cargo.lock',
     'tools/xr-runtime-probe/rust-toolchain.toml', 'tools/xr-runtime-probe/build.rs'
 )
@@ -30,8 +37,7 @@ $optionalRootFiles = @('LICENSE', 'LICENSE.md', 'LICENSE.txt', 'COPYING', 'COPYI
 $treeRules = @(
     @{ Path = 'src'; Extensions = @('.cpp', '.c', '.h', '.hpp', '.cmake'); Names = @('CMakeLists.txt') },
     @{ Path = 'android/app/src/main'; Extensions = @('.cpp', '.c', '.h', '.hpp', '.cmake', '.vert', '.frag', '.xml', '.java', '.kt'); Names = @('CMakeLists.txt') },
-    @{ Path = 'tools/xr-runtime-probe/src'; Extensions = @('.rs', '.wgsl'); Names = @() },
-    @{ Path = 'docs'; Extensions = @('.md'); Names = @() }
+    @{ Path = 'tools/xr-runtime-probe/src'; Extensions = @('.rs', '.wgsl'); Names = @() }
 )
 $excludedDirectories = @(
     '.git', '.codex', '.agents', '.gradle', '.cxx', 'build', 'target', 'local',
@@ -145,6 +151,9 @@ while (-not [string]::IsNullOrWhiteSpace($ancestor)) {
 if (Test-Path -LiteralPath $destination) {
     throw "Destination already exists; refusing to merge or overwrite it: $destination"
 }
+if ($CreateArchive -and (Test-Path -LiteralPath $archivePath)) {
+    throw "Source archive already exists; refusing to overwrite it: $archivePath"
+}
 }
 
 $inventory = @(Get-SourceInventory)
@@ -200,7 +209,62 @@ try {
     Move-Item -LiteralPath $staging -Destination $destination
     Write-Host "[hpvr.source-kit.export] status=PASS path=$destination files=$($inventory.Count)"
     Write-Host "[hpvr.source-kit.export] manifest=$(Join-Path $destination 'SOURCE-SHA256.txt')"
+    if ($CreateArchive) {
+        Add-Type -AssemblyName System.IO.Compression
+        Add-Type -AssemblyName System.IO.Compression.FileSystem
+        $archiveEntries = @{}
+        foreach ($record in $inventory) { $archiveEntries[$record.Path] = $record.SHA256 }
+        foreach ($name in @('SOURCE-SHA256.txt', 'SOURCE-KIT.json')) {
+            $archiveEntries[$name] = (Get-FileHash -LiteralPath (Join-Path $destination $name) -Algorithm SHA256).Hash
+        }
+        $actualFiles = @(Get-ChildItem -LiteralPath $destination -Recurse -Force -File)
+        if ($actualFiles.Count -ne $archiveEntries.Count) { throw 'Unexpected file added to source kit before archiving.' }
+        foreach ($file in $actualFiles) {
+            Assert-NotReparsePoint $file.FullName
+            $relative = $file.FullName.Substring($destination.Length + 1).Replace('\', '/')
+            if (-not $archiveEntries.ContainsKey($relative) -or
+                (Get-FileHash -LiteralPath $file.FullName -Algorithm SHA256).Hash -ne $archiveEntries[$relative]) {
+                throw "Source kit changed before archiving: $relative"
+            }
+        }
+        $partialArchive = $archivePath + '.staging-' + [guid]::NewGuid().ToString('N')
+        if ((Split-Path -Parent $partialArchive) -ne $destinationParent) { throw 'Archive staging must remain beside the new kit.' }
+        $archiveFile = [IO.File]::Open($partialArchive, [IO.FileMode]::CreateNew, [IO.FileAccess]::Write)
+        try {
+            $writer = [IO.Compression.ZipArchive]::new($archiveFile, [IO.Compression.ZipArchiveMode]::Create, $true)
+            try {
+                # Explicit names avoid legacy .NET Framework backslash ZIP entries.
+                foreach ($relative in ($archiveEntries.Keys | Sort-Object)) {
+                    $entry = $writer.CreateEntry($relative, [IO.Compression.CompressionLevel]::Optimal)
+                    $sourceStream = [IO.File]::OpenRead((Join-Path $destination $relative))
+                    $destinationStream = $entry.Open()
+                    try { $sourceStream.CopyTo($destinationStream) }
+                    finally { $sourceStream.Dispose(); $destinationStream.Dispose() }
+                }
+            } finally { $writer.Dispose() }
+        } finally { $archiveFile.Dispose() }
+        $reader = [IO.Compression.ZipFile]::OpenRead($partialArchive)
+        try {
+            if ($reader.Entries.Count -ne $archiveEntries.Count) { throw 'Source ZIP entry count mismatch.' }
+            $seenEntries = @{}
+            foreach ($entry in $reader.Entries) {
+                if (-not $archiveEntries.ContainsKey($entry.FullName) -or $seenEntries.ContainsKey($entry.FullName)) {
+                    throw "Unexpected/duplicate source ZIP entry: $($entry.FullName)"
+                }
+                $seenEntries[$entry.FullName] = $true
+                $hash = [Security.Cryptography.SHA256]::Create()
+                $stream = $entry.Open()
+                try { $actualHash = [BitConverter]::ToString($hash.ComputeHash($stream)).Replace('-', '') }
+                finally { $stream.Dispose(); $hash.Dispose() }
+                if ($actualHash -ne $archiveEntries[$entry.FullName]) { throw "Source ZIP hash mismatch: $($entry.FullName)" }
+            }
+        } finally { $reader.Dispose() }
+        # Atomic file rename with no overwrite, even if the final ZIP appeared meanwhile.
+        [IO.File]::Move($partialArchive, $archivePath)
+        Write-Host "[hpvr.source-kit.archive] status=PASS path=$archivePath files=$($archiveEntries.Count)"
+        Write-Host "[hpvr.source-kit.archive] sha256=$((Get-FileHash -LiteralPath $archivePath -Algorithm SHA256).Hash)"
+    }
 } catch {
-    Write-Warning "Incomplete staging folder preserved for inspection: $staging"
+    Write-Warning "No existing files were removed or overwritten. Inspect any newly created staging, kit or archive at: $destination"
     throw
 }

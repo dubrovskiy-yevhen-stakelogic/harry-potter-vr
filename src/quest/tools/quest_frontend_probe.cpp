@@ -60,6 +60,8 @@ int main(int argc,char**argv){
  f.ShowDemoNotice(true);image("demo-end.ppm");
  f.screen=hpvr::quest::FrontScreen::Vr;f.selection=3;f.vr.relaxed_lesson=false;image("difficulty-original.ppm");
  f.vr.relaxed_lesson=true;image("difficulty-relaxed.ppm");
+ f.selection=4;f.vr.first_person_cutscenes=false;image("camera-theatrical.ppm");
+ f.vr.first_person_cutscenes=true;image("camera-harry.ppm");
  std::cout<<"FRONT_ASSETS=PASS pages="<<f.assets.story.size()<<" music="<<f.assets.music.size()
           <<" textures="<<f.assets.textures.size()<<"\n";
  for(const auto&p:f.assets.story)std::cout<<p.dialogue_name<<"\n";

@@ -1,6 +1,7 @@
 [CmdletBinding()]
 param(
-    [string]$ApkPath
+    [string]$ApkPath,
+    [switch]$Release
 )
 
 $ErrorActionPreference = 'Stop'
@@ -43,6 +44,12 @@ foreach ($expected in @(
 & $apksigner verify --verbose $ApkPath
 if ($LASTEXITCODE -ne 0) {
     throw 'APK signature verification failed'
+}
+if($Release){
+    if($badging.Contains('application-debuggable') -or -not $badging.Contains("versionCode='37'") -or
+       -not $badging.Contains("versionName='0.1.0-demo'")){throw 'Not the expected non-debuggable C37 demo release'}
+    $certificate=(& $apksigner verify --print-certs $ApkPath 2>&1) -join "`n"
+    if($LASTEXITCODE -ne 0 -or $certificate -match 'CN=Android Debug'){throw 'Release uses an invalid/debug certificate'}
 }
 & $zipalign -c -P 16 4 $ApkPath
 if ($LASTEXITCODE -ne 0) {
@@ -146,7 +153,7 @@ try {
     }
     $readOnlyData = (& $readelf --string-dump=.rodata $extractedLibrary 2>&1) -join "`n"
     if ($LASTEXITCODE -ne 0 -or
-        -not $readOnlyData.Contains('gate=C35 loading=WARNER_THEATER sprint=L3_TOGGLE running=MATCHED_TRANSLATION knights=ONESHOT_CLAMPED story=DRACO_THEN_OPTIONAL_FILCH') -or
+        -not $readOnlyData.Contains('gate=C37 loading=WARNER_THEATER sprint=L3_TOGGLE running=MATCHED_TRANSLATION knights=ONESHOT_CLAMPED story=DRACO_THEN_OPTIONAL_FILCH') -or
         -not $readOnlyData.Contains('/user/hand/left/input/thumbstick/click') -or
         -not $readOnlyData.Contains('[hpvr.quest.twins] status=AUTHORED_TRANSITION') -or
         -not $readOnlyData.Contains('content=WARNER_OWNED size=640x480') -or
@@ -230,18 +237,22 @@ try {
     if ($readOnlyData.Contains('RED_BLUE_CLEAR')) {
         throw 'APK ARM64 host still contains the retired red/blue loading path'
     }
-    # The writer now emits VR2. VR1 backward reads are exercised by the host
+    # The writer now emits VR3. VR1/VR2 backward reads are exercised by the host
     # migration test; optimized string comparisons need not retain a literal.
-    foreach ($marker in @('hprops.transtrestletable', '[hpvr.quest.ssr]', 'history=LEFT_SHARED passes=0', 'HPVR_VR2', 'left_squeeze', 'right_squeeze', 'before=%u after=%u')) {
+    foreach ($marker in @('hprops.transtrestletable', '[hpvr.quest.ssr]', 'history=LEFT_SHARED passes=0', 'HPVR_VR3', 'left_squeeze', 'right_squeeze', 'before=%u after=%u')) {
         if (-not $readOnlyData.Contains($marker)) { throw "APK missing C35 graphics/gameplay marker: $marker" }
     }
-    foreach ($marker in @('HPVR_VR2', 'notice=WELCOME trigger=FIRST_ACTUAL_STEP', 'notice=THANK_YOU trigger=LESSON_TRAVEL_BOUNDARY',
+    foreach ($marker in @('HPVR_VR3', 'notice=WELCOME trigger=FIRST_ACTUAL_STEP', 'notice=THANK_YOU trigger=LESSON_TRAVEL_BOUNDARY',
         'demo=FIRST_STEP_AND_LESSON_END', 'lesson_difficulty=ORIGINAL_OPTIONAL_RELAXED', 'OPEN DISCORD IN BROWSER',
         'https://discord.com/channels/747967102895390741/1547254536203407390',
         'capture=WORLD_BEFORE_OVERLAY trace=PROJECTED_16', 'vkCreateRenderPass(left_overlay_load)',
         '[hpvr.quest.perf]', '/perfmetrics_meta/device/gpu_utilization', 'PERFORMANCE DEBUGGER',
         'BOTH GRIPS + MENU: HIDE / SETTINGS', 'pickup_wizardcard2', 'hprops.hogwartsurn')) {
         if (-not $readOnlyData.Contains($marker)) { throw "APK missing C35 marker: $marker" }
+    }
+    foreach ($marker in @('camera=LIVE_HARRY_OR_THEATRICAL', 'vr_menu=CINEMATIC_RIG_WINDOW',
+        'CUTSCENE CAMERA', 'HARRY 1ST PERSON', '[hpvr.quest.camera]', 'rig=SCRIPTED_6DOF')) {
+        if (-not $readOnlyData.Contains($marker)) { throw "APK missing C37 marker: $marker" }
     }
 } finally {
     Remove-Item -LiteralPath $temporaryDirectory -Recurse -Force
@@ -251,4 +262,4 @@ $hash = Get-FileHash -Algorithm SHA256 -LiteralPath $ApkPath
 Write-Host '[hpvr.quest.apk.verify] status=PASS'
 Write-Host "[hpvr.quest.apk.verify] path=$ApkPath"
 Write-Host "[hpvr.quest.apk.verify] sha256=$($hash.Hash)"
-Write-Host '[hpvr.quest.apk.verify] gate=C35 ui=BOOK_HUD jump=ASSISTED sprint=L3_TOGGLE quest=APPROACH_FRED_25_BEANS story=DRACO_THEN_OPTIONAL_FILCH cutscenes=6DOF abi=arm64-v8a proprietary_assets=0 loading=WARNER_THEATER save_format=HPVR_PROGRESS_V7_READS_V1_TO_V6 music_tracks=4_stereo dialogue_clips=98 harry=THEATRICAL_ONLY lesson=CLASSROOM_CAST_GHOST_BOARDS objective=OWNED_TEXT frog=ANIMATED_GROUNDED signature=VALID alignment=VALID runtime_acceptance=PENDING'
+Write-Host '[hpvr.quest.apk.verify] gate=C37 ui=BOOK_HUD jump=ASSISTED sprint=L3_TOGGLE quest=APPROACH_FRED_25_BEANS story=DRACO_THEN_OPTIONAL_FILCH cutscenes=LIVE_HARRY_OR_THEATRICAL_6DOF abi=arm64-v8a proprietary_assets=0 loading=WARNER_THEATER save_format=HPVR_PROGRESS_V7_READS_V1_TO_V6 vr_settings=VR3_READS_V1_V2 music_tracks=4_stereo dialogue_clips=98 harry=HIDDEN_IN_FIRST_PERSON lesson=CLASSROOM_CAST_GHOST_BOARDS objective=OWNED_TEXT frog=ANIMATED_GROUNDED signature=VALID alignment=VALID runtime_acceptance=PENDING'

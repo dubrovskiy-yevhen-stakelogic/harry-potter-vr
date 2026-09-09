@@ -24,6 +24,7 @@
 #include "hpvr/quest_frontend.h"
 #include "hpvr/quest_basic_cast.h"
 #include "hpvr/quest_reflection_math.h"
+#include "hpvr/quest_cinematic.h"
 
 #include <algorithm>
 #include <cctype>
@@ -2633,7 +2634,8 @@ bool AppendFrontGeometry(QuestFrontEnd& front,std::vector<GpuVertex>& vertices,
     };
     auto emit=[&](){emit_quads(layout.DrawKey(),layout.Quads());};
     layout.screen=FrontScreen::Vr;
-    for(bool relaxed:{false,true})for(bool failed:{false,true})for(unsigned i=0;i<5;++i){
+    for(bool relaxed:{false,true})for(bool failed:{false,true})for(bool harry:{false,true})for(unsigned i=0;i<6;++i){
+        layout.vr.first_person_cutscenes=harry;
         layout.vr.relaxed_lesson=relaxed;layout.vr_save_failed=failed;layout.selection=i;emit();}
     layout.screen=FrontScreen::Debug;layout.selection=0;emit();
     layout.debug_pinned=true;emit();layout.debug_pinned=false;
@@ -3203,6 +3205,7 @@ struct QuestScene::State {
     QuestFrontEnd frontend;
     DemoFirstStep first_step;
     DemoCameraReturn exit_return;
+    CinematicPanelAnchor front_anchor;
     bool community_requested=false,lesson_finish_pending=false;
     std::map<std::string,FrontDrawRange> front_draws;
     std::uint32_t front_vertex_count=0;
@@ -4686,7 +4689,11 @@ void QuestScene::RecordDraw(
         // Actors follow after separately transformed mover brushes.
         const CharacterDraw& draw = state.character_draws[index];
         if (draw.child_template || !draw.enabled) return;
-        if (draw.actor_reference==kHarryActorReference && (!IsCutscenePlaying()||state.intro_cutscene.object_name=="cutscene60")) return;
+        if(draw.actor_reference==kHarryActorReference){
+            ViewPose camera;bool first_person=false;
+            (void)GetCinematicCameraPose(&camera,&first_person);
+            if(!IsCutscenePlaying()||first_person)return;
+        }
         auto offset = state.spell_targets.ReactionOffset(index);
         for (std::size_t axis = 0; axis < 3; ++axis) {
             offset[axis] += state.character_draws[index].cutscene_offset[axis];
@@ -5156,9 +5163,10 @@ unsigned QuestScene::LessonRound() const {
 bool QuestScene::ConsumeCommunityRequest(){
     const bool requested=state_->community_requested;state_->community_requested=false;return requested;
 }
-void QuestScene::UpdateExitTracking(const ViewPose& local_head,const ViewPose& reference){
-    ViewPose camera;
-    if(state_->tracking_active&&state_->intro_cutscene.object_name=="cutscene60"&&GetCinematicCameraPose(&camera))
+void QuestScene::UpdateExitTracking(const ViewPose& local_head,const ViewPose& reference,bool valid){
+    ViewPose camera;bool first_person=false;
+    state_->exit_return.valid=false;
+    if(valid&&state_->tracking_active&&GetCinematicCameraPose(&camera,&first_person)&&first_person)
         (void)state_->exit_return.Capture(camera,local_head,reference);
 }
 bool QuestScene::ConsumePlayerPlacement(std::array<float,3>* position,float* yaw) {
@@ -5504,15 +5512,18 @@ void QuestScene::UpdateFrontEnd(const LocomotionInput& input,bool confirm,bool b
         front.ShowDemoNotice(false);state.front_anchor_valid=false;
         HPVR_LOGI("[hpvr.quest.demo] notice=WELCOME trigger=FIRST_ACTUAL_STEP");
     }
-    if(front.Visible()&&(!was_visible||!state.front_anchor_valid)){
-        ViewPose theater;
-        if(BuildTheaterPose(head,&theater)&&BuildRigidTransform(theater,&state.front_transform)){
-            if(front.FloatingPanel())for(unsigned i=0;i<12;++i)state.front_transform[i]*=.65F;
-            state.front_anchor_valid=true;
-        }
-    }
+    if(front.Visible()&&!was_visible)state.front_anchor_valid=false;
     if(!front.Visible()&&!front.debug_pinned)state.front_anchor_valid=false;
     state.audio.SetPresentationAudio(front.WorldVisible(),front.PausesAudio());
+}
+
+void QuestScene::UpdateFrontPresentation(const ViewPose& rendered_head,const ViewPose* cinematic_rig,bool first_person,bool recapture){
+    auto& state=*state_;
+    const auto& front=state.frontend;
+    if(!state.tracking_active||(!front.Visible()&&!front.debug_pinned))return;
+    // Presentation only: never overwrite last_player/yaw with a spectator pose.
+    state.front_anchor_valid=state.front_anchor.Update(rendered_head,cinematic_rig,first_person,
+        recapture||!state.front_anchor_valid,front.FloatingPanel()||front.debug_pinned?.65F:1.0F,&state.front_transform);
 }
 
 void QuestScene::UpdateHudPose(const ViewPose& head){
@@ -6030,10 +6041,11 @@ void QuestScene::Advance(const float delta_seconds) {
                 PlaceWaitingTwins(state.twins_intro,state.character_draws,state.collision_triangles);
             }
             state.frontend.paused=FrontScreen::Game;
-            if(state.intro_cutscene.object_name=="cutscene60"&&state.exit_return.valid){
+            if(state.exit_return.valid){
                 state.last_player=AddVector(state.last_player,state.exit_return.offset);
                 state.last_yaw=state.exit_return.yaw;
             }
+            state.exit_return.valid=false;
             SaveCheckpoint();state.placement=state.frontend.progress;state.restore_pending=true;
             state.audio.SelectMusic(3);state.save_clock=0;
             if(state.frontend.progress.quest_stage==23){
@@ -6480,21 +6492,25 @@ bool QuestScene::GetCinematicCameraPosition(
     return true;
 }
 
-bool QuestScene::GetCinematicCameraPose(ViewPose* output) const {
+bool QuestScene::GetCinematicCameraPose(ViewPose* output,bool* first_person) const {
+    if(first_person)*first_person=false;
     if(!output)return false;
     const auto& scene=state_->intro_cutscene;
-    // The final classroom route is experienced from Harry's position, not the
-    // stationary authored spectator camera. Keep the existing 6DOF eye mapping
-    // and omit Harry's own mesh only for this first-person exit sequence.
-    if(IsCutscenePlaying()&&!state_->frontend.PausesWorld()&&scene.object_name=="cutscene60"){
-        for(const auto& actor:state_->character_draws)if(actor.actor_reference==kHarryActorReference){
-            return BuildDemoActorEye(AddVector(actor.base_origin,actor.cutscene_offset),actor.yaw,
-                kPlayerCapsuleHalfHeightMeters+kPlayerEyeHeightMeters,output);
+    if(!IsCutscenePlaying()||state_->frontend.PausesWorld())return false;
+    // Camera selection leaves authored tracks/cues and actor animation intact.
+    // The actor root avoids the exaggerated vertical motion of a head bone.
+    if(state_->frontend.vr.first_person_cutscenes){
+        for(const auto& actor:state_->character_draws)if(actor.actor_reference==kHarryActorReference&&actor.enabled){
+            if(BuildDemoActorEye(AddVector(actor.base_origin,actor.cutscene_offset),actor.yaw,
+                kPlayerCapsuleHalfHeightMeters+kPlayerEyeHeightMeters,output)){
+                if(first_person)*first_person=true;
+                return true;
+            }
         }
     }
-    // C52 temporarily releases the scripted camera while Harry follows the
-    // twins. Follow the visible actor instead of returning to the old VR body.
-    if(IsCutscenePlaying()&&!scene.camera_active&&!state_->frontend.PausesWorld()&&scene.object_name=="cutscene52"){
+    // Keep the final exit moving with Harry in BOTH camera modes. C52 also
+    // temporarily releases its spectator camera while Harry follows the twins.
+    if((!scene.camera_active&&scene.object_name=="cutscene52")||scene.object_name=="cutscene60"){
         for(const auto& actor:state_->character_draws)if(actor.actor_reference==kHarryActorReference){
             auto focus=AddVector(actor.base_origin,actor.cutscene_offset);focus[1]+=1.3F;
             std::array<float,3> offset{-std::sin(actor.yaw)*3.0F,0.8F,-std::cos(actor.yaw)*3.0F},direction{};

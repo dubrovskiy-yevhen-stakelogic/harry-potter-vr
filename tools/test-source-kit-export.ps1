@@ -27,17 +27,22 @@ function Write-Fixture([string]$RelativePath, [string]$Contents = '// Synthetic 
 
 # These are deliberately synthetic text fixtures, not copied game data or code.
 $required = @(
-    '.gitattributes', '.gitignore', 'AGENTS.md', 'CMakeLists.txt', 'README.md',
+    '.gitattributes', '.gitignore', 'CMakeLists.txt', 'README.md',
     'SOURCE-KIT-README.md', 'BUILD-QUEST-DEBUG.ps1', 'PACKAGE-QUEST-DEBUG.ps1',
+    'BUILD-QUEST-RELEASE.ps1', 'PACKAGE-QUEST-PLAYER.ps1',
     'VERIFY-QUEST-APK.ps1', 'IMPORT-QUEST-DATA.ps1', 'PREPARE-QUEST-AUDIO.ps1',
     'PREPARE-QUEST-FRONTEND.ps1', 'RUN-LATEST-VR.cmd', 'android/build.gradle',
     'android/settings.gradle', 'android/gradle.properties', 'android/app/build.gradle',
     'tools/verify-baseline.ps1', 'tools/test-source-kit-export.ps1',
+    'tools/release/INSTALL-HPVR.ps1', 'tools/release/INSTALL-HPVR.cmd',
+    'tools/release/PLAYER-INSTALL.md', 'tools/release/TEST-PLAYER-INSTALL.ps1',
     'tools/xr-runtime-probe/Cargo.toml', 'tools/xr-runtime-probe/Cargo.lock',
     'tools/xr-runtime-probe/rust-toolchain.toml', 'tools/xr-runtime-probe/build.rs',
     'src/CMakeLists.txt', 'src/test.cpp', 'src/header.h', 'src/fixture.c',
     'android/app/src/main/AndroidManifest.xml', 'android/app/src/main/cpp/test.cpp',
-    'tools/xr-runtime-probe/src/main.rs', 'docs/test.md'
+    'tools/xr-runtime-probe/src/main.rs',
+    'docs/architecture.md', 'docs/wand-gesture-contract.md',
+    'docs/RELEASE-BUILD.md', 'docs/THIRD-PARTY-NOTICES.md'
 )
 foreach ($relative in $required) { Write-Fixture $relative }
 $exporter = Join-Path $fixture 'EXPORT-SOURCE-KIT.ps1'
@@ -49,22 +54,54 @@ Write-Fixture 'src/never-export.u'
 Write-Fixture 'src/never-export.png'
 Write-Fixture 'android/app/src/main/assets/never-export.u'
 Write-Fixture 'android/app/build/never-export.cpp'
+Write-Fixture 'local/signing/release/never-export.p12'
+Write-Fixture 'local/signing/release/never-export.clixml'
+Write-Fixture 'tools/release/never-export.ps1'
+Write-Fixture 'tools/release/assets/never-export.md'
+$excludedDocs = @('AGENTS.md', 'docs/unknown-note.md', 'docs/runtime-evidence-fixture.md')
+foreach ($relative in $excludedDocs) { Write-Fixture $relative }
 
 $destination = Join-Path $runRoot 'kit'
 & $exporter -DestinationPath $destination -AuditOnly
 Expect (-not (Test-Path -LiteralPath $destination)) 'Audit-only created output.'
-& $exporter -DestinationPath $destination
+& $exporter -DestinationPath $destination -CreateArchive
 Expect (Test-Path -LiteralPath (Join-Path $destination 'src/test.cpp')) 'Source did not export.'
 Expect (Test-Path -LiteralPath (Join-Path $destination 'SOURCE-SHA256.txt')) 'Manifest is missing.'
 Expect (@(Get-ChildItem -LiteralPath $destination -Recurse -Filter 'never-export*').Count -eq 0) 'Excluded content exported.'
+foreach ($relative in $excludedDocs) {
+    Expect (-not (Test-Path -LiteralPath (Join-Path $destination $relative))) "Non-public documentation exported: $relative"
+}
+foreach ($relative in @('docs/architecture.md', 'docs/wand-gesture-contract.md', 'docs/RELEASE-BUILD.md', 'docs/THIRD-PARTY-NOTICES.md')) {
+    Expect (Test-Path -LiteralPath (Join-Path $destination $relative)) "Maintained documentation missing: $relative"
+}
 $manifest = @(Get-Content -LiteralPath (Join-Path $destination 'SOURCE-SHA256.txt'))
 foreach ($line in $manifest) {
     Expect ($line -match '^([0-9A-F]{64})  (.+)$') 'Malformed source hash record.'
     Expect ((Get-FileHash -LiteralPath (Join-Path $destination $Matches[2]) -Algorithm SHA256).Hash -eq $Matches[1]) 'Copy hash mismatch.'
 }
+Expect (Test-Path -LiteralPath ($destination + '.zip')) 'Source archive is missing.'
+Add-Type -AssemblyName System.IO.Compression.FileSystem
+$archive = [IO.Compression.ZipFile]::OpenRead($destination + '.zip')
+try {
+    Expect ($archive.Entries.Count -eq $manifest.Count + 2) 'Archive inventory mismatch.'
+    foreach ($entry in $archive.Entries) {
+        Expect (-not $entry.FullName.Contains('\')) 'Archive uses nonportable backslash names.'
+        $local = Join-Path $destination $entry.FullName
+        Expect (Test-Path -LiteralPath $local -PathType Leaf) 'Archive contains an unexpected file.'
+        $hasher = [Security.Cryptography.SHA256]::Create()
+        $stream = $entry.Open()
+        try { $hash = [BitConverter]::ToString($hasher.ComputeHash($stream)).Replace('-', '') }
+        finally { $stream.Dispose(); $hasher.Dispose() }
+        Expect ($hash -eq (Get-FileHash -LiteralPath $local -Algorithm SHA256).Hash) 'Archive content hash mismatch.'
+    }
+} finally { $archive.Dispose() }
 Expect-Failure { & $exporter -DestinationPath $destination } 'Existing output was overwritten.'
 Expect-Failure { & $exporter -DestinationPath (Join-Path $fixture 'nested') } 'Nested output was allowed.'
 Expect-Failure { & $exporter -DestinationPath $runRoot } 'Ancestor output was allowed.'
+$archiveConflict = Join-Path $runRoot 'archive-conflict'
+[IO.File]::WriteAllText($archiveConflict + '.zip', 'synthetic existing archive', $utf8)
+Expect-Failure { & $exporter -DestinationPath $archiveConflict -CreateArchive } 'Existing archive was overwritten.'
+Expect (-not (Test-Path -LiteralPath $archiveConflict)) 'Archive conflict created a kit.'
 
 $blockedOutput = Join-Path $runRoot 'blocked'
 $badSource = Join-Path $fixture 'src/test.cpp'

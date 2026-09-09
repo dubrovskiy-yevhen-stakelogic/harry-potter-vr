@@ -58,7 +58,7 @@ projected stroke with that template.
 
 Scoring occurs on release or at the Original-mode deadline. Changing difficulty
 or lesson round cancels an active attempt. The saved VR preference selects the
-mode; this source version defaults to Original.
+mode; fresh installations default to Relaxed.
 
 The template is hidden when idle and shown during recording and brief result
 feedback. Invalid input never emits a spell event.
