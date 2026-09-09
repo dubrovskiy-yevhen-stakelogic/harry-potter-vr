@@ -1,0 +1,39 @@
+# Build and generated output
+/build/
+/target/
+**/target/
+/out/
+/artifacts/
+/.cache/
+/.vs/
+/CMakeFiles/
+CMakeCache.txt
+
+# Local machine configuration
+/.idea/
+/.vscode/
+*.user
+*.suo
+*.VC.db
+
+# Proprietary or locally imported game data
+/game-data/
+/local/
+/install-snapshot/
+/asset-dumps/
+
+# Android/Quest outputs
+*.apk
+*.aab
+*.obb
+*.apks
+/android/.gradle/
+/android/build/
+/android/app/.cxx/
+/android/app/build/
+/android/local.properties
+
+# Logs and captures
+*.log
+*.dmp
+*.trace

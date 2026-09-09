@@ -1,0 +1,20 @@
+[package]
+name = "hpvr-xr-runtime-probe"
+version = "0.0.0"
+edition = "2024"
+publish = false
+default-run = "hpvr-xr-runtime-probe"
+
+[dependencies]
+ash = { version = "=0.38.0", default-features = false, features = ["loaded"] }
+bytemuck = { version = "=1.25.2", features = ["derive"] }
+glam = "=0.30.10"
+openxr = "=0.21.1"
+wgpu = { version = "=29.0.4", default-features = false, features = ["std", "vulkan", "wgsl"] }
+
+[features]
+default = []
+gesture-projection = ["dep:cc"]
+
+[build-dependencies]
+cc = { version = "=1.4.0", optional = true }
