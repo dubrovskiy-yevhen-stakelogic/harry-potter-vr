@@ -4,6 +4,7 @@ param(
     [string]$GamePath,
     [string]$AdbPath,
     [string]$FfmpegPath,
+    [switch]$NoToolDownload,
     [string]$DeviceSerial,
     [string]$WorkRoot,
     [switch]$PrepareOnly,
@@ -59,7 +60,7 @@ function Assert-HpvrSafeRelative([string]$Relative) {
     }
 }
 
-function Get-HpvrTool([string]$Explicit, [string]$Name, [string[]]$Candidates) {
+function Get-HpvrTool([string]$Explicit, [string]$Name, [string[]]$Candidates, [switch]$Optional) {
     if (-not [string]::IsNullOrWhiteSpace($Explicit)) {
         $path = Get-HpvrFullPath $Explicit
         if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { throw "$Name was not found: $path" }
@@ -72,7 +73,100 @@ function Get-HpvrTool([string]$Explicit, [string]$Name, [string[]]$Candidates) {
             return Get-HpvrFullPath $candidate
         }
     }
-    throw "$Name was not found. Supply its full path with -AdbPath or -FfmpegPath; this installer does not download third-party binaries."
+    if ($Optional) { return $null }
+    $option = if ($Name -eq 'adb.exe') { '-AdbPath' } else { '-FfmpegPath' }
+    throw "$Name was not found. Supply its full path with $option."
+}
+
+function Get-HpvrFfmpegSpec {
+    # Windows essentials build linked by ffmpeg.org. Pin both archive and EXE;
+    # never execute an unverified download or fetch a moving 'latest' release.
+    return [pscustomobject]@{
+        Version = '9.0.1'
+        Url = 'https://www.gyan.dev/ffmpeg/builds/packages/ffmpeg-9.0.1-essentials_build.zip'
+        ArchiveSha256 = 'FEC81AE03971D9DD4BE3EBE02E263BD2EC1D789483F931BDBA5F5715E65DA2E9'
+        ExeSha256 = '72A489ECCD008C2EC2C0A5856C5C75BC3D8BBFA90166C4566865C246445E6AA3'
+        Prefix = 'ffmpeg-9.0.1-essentials_build/'
+    }
+}
+
+function Save-HpvrFfmpegDownload([string]$Url, [string]$Destination) {
+    $protocol = [Net.ServicePointManager]::SecurityProtocol
+    $progress = $ProgressPreference
+    try {
+        [Net.ServicePointManager]::SecurityProtocol = $protocol -bor [Net.SecurityProtocolType]::Tls12
+        $ProgressPreference = 'SilentlyContinue'
+        Invoke-WebRequest -UseBasicParsing -Uri $Url -OutFile $Destination -TimeoutSec 180
+    } finally {
+        [Net.ServicePointManager]::SecurityProtocol = $protocol
+        $ProgressPreference = $progress
+    }
+}
+
+function Get-HpvrFfmpeg([string]$Explicit, [string[]]$Candidates, [string]$CacheRoot, [switch]$NoDownload) {
+    $found = Get-HpvrTool $Explicit 'ffmpeg.exe' $Candidates -Optional
+    if ($found) { return $found }
+    $spec = Get-HpvrFfmpegSpec
+    if ([string]::IsNullOrWhiteSpace($CacheRoot)) {
+        if (-not $env:LOCALAPPDATA) { throw 'LOCALAPPDATA is unavailable. Supply -FfmpegPath to an installed ffmpeg.exe.' }
+        $CacheRoot = Join-Path $env:LOCALAPPDATA ('HPVR\Tools\ffmpeg-' + $spec.Version)
+    }
+    $cache = Get-HpvrFullPath $CacheRoot
+    Assert-HpvrNoLinks $cache
+    $exe = Join-Path $cache 'ffmpeg.exe'
+    Assert-HpvrNoLinks $exe
+    if ((Test-Path -LiteralPath $exe -PathType Leaf) -and
+        (Get-FileHash -LiteralPath $exe -Algorithm SHA256).Hash -eq $spec.ExeSha256) {
+        Write-Host "Using verified cached FFmpeg $($spec.Version): $exe"
+        return $exe
+    }
+    if ($NoDownload) { throw 'FFmpeg is missing or its cache is invalid; automatic downloads are disabled. Supply -FfmpegPath.' }
+    if (-not [Environment]::Is64BitOperatingSystem) { throw 'Automatic FFmpeg setup requires 64-bit Windows. Supply a compatible -FfmpegPath.' }
+    New-Item -ItemType Directory -Path $cache -Force | Out-Null
+    $nonce = [Guid]::NewGuid().ToString('N')
+    $zipPath = Join-Path $cache ('download-' + $nonce + '.zip')
+    $pendingExe = Join-Path $cache ('ffmpeg-' + $nonce + '.pending')
+    Write-Host "FFmpeg was not found. Downloading FFmpeg $($spec.Version) from gyan.dev (about 106 MB)."
+    Write-Host 'It will be cached for future installs. No administrator rights or PATH changes are needed.'
+    try {
+        Save-HpvrFfmpegDownload $spec.Url $zipPath
+        if ((Get-Item -LiteralPath $zipPath).Length -gt 250MB -or
+            (Get-FileHash -LiteralPath $zipPath -Algorithm SHA256).Hash -ne $spec.ArchiveSha256) {
+            throw 'Downloaded archive failed its pinned SHA-256 check.'
+        }
+        Add-Type -AssemblyName System.IO.Compression, System.IO.Compression.FileSystem
+        $archive = [IO.Compression.ZipFile]::OpenRead($zipPath)
+        try {
+            # Extract only exact named entries, never arbitrary ZIP paths.
+            foreach ($item in @(@('bin/ffmpeg.exe', $pendingExe), @('LICENSE', (Join-Path $cache 'LICENSE')),
+                    @('README.txt', (Join-Path $cache 'README.txt')))) {
+                $name = $spec.Prefix + $item[0]
+                $entries = @($archive.Entries | Where-Object { $_.FullName -ceq $name })
+                $limit = if ($item[0] -eq 'bin/ffmpeg.exe') { 200MB } else { 2MB }
+                if ($entries.Count -ne 1 -or $entries[0].Length -le 0 -or $entries[0].Length -gt $limit) {
+                    throw "Missing, duplicate or oversized archive entry: $name"
+                }
+                Assert-HpvrNoLinks $item[1]
+                [IO.Compression.ZipFileExtensions]::ExtractToFile($entries[0], $item[1], $true)
+            }
+        } finally { $archive.Dispose() }
+        if ((Get-FileHash -LiteralPath $pendingExe -Algorithm SHA256).Hash -ne $spec.ExeSha256) {
+            throw 'Extracted FFmpeg failed its pinned SHA-256 check.'
+        }
+        Assert-HpvrNoLinks $exe
+        Move-Item -LiteralPath $pendingExe -Destination $exe -Force
+        Write-Host "FFmpeg is ready: $exe"
+        return $exe
+    } catch {
+        throw "Automatic FFmpeg setup failed: $($_.Exception.Message) Re-run to retry, or download FFmpeg manually and supply -FfmpegPath."
+    } finally {
+        foreach ($temporary in @($zipPath, $pendingExe)) {
+            if ((Test-HpvrWithin $temporary $cache) -and $temporary -ne $cache -and (Test-Path -LiteralPath $temporary -PathType Leaf)) {
+                Assert-HpvrNoLinks $temporary
+                Remove-Item -LiteralPath $temporary -Force
+            }
+        }
+    }
 }
 
 function Read-HpvrReleaseManifest([string]$Root) {
@@ -157,7 +251,7 @@ $sceneProbe = Join-Path $toolsRoot 'hpvr_quest_intro_probe.exe'
 
 $ffmpegCandidates = @()
 if ($env:ProgramFiles) { $ffmpegCandidates += Join-Path $env:ProgramFiles 'ffmpeg\bin\ffmpeg.exe' }
-$ffmpeg = Get-HpvrTool $FfmpegPath 'ffmpeg.exe' $ffmpegCandidates
+$ffmpeg = Get-HpvrFfmpeg $FfmpegPath $ffmpegCandidates -NoDownload:$NoToolDownload
 
 # Validate the device before doing potentially lengthy conversion, except for explicit offline preparation.
 $adb = $null

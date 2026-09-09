@@ -11,8 +11,9 @@ The release contains the APK and Windows import tools, **not game assets**.
   If Windows reports missing `VCRUNTIME140` or `MSVCP140`, install Microsoft's
   redistributable, not individual DLLs from download sites.
 - Quest 3 in developer mode, with USB debugging authorized for this PC.
-- Android platform-tools (`adb.exe`) and FFmpeg (`ffmpeg.exe`), on PATH or supplied
-  by full path. The installer does not download these tools.
+- Android platform-tools (`adb.exe`), on PATH or supplied with `-AdbPath`.
+- FFmpeg is downloaded automatically if it is not already installed. The first
+  download needs internet access (about 106 MB); later installs reuse its cache.
 - Space on both PC and headset for the imported packages and decoded audio.
 
 Extract the entire ZIP into a folder outside the PC game installation. Obtain it
@@ -21,7 +22,7 @@ integrity, not the identity of an untrusted download.
 
 ## Install
 
-If ADB and FFmpeg are on PATH, double-click `INSTALL-HPVR.cmd` and enter the game
+If ADB is on PATH, double-click `INSTALL-HPVR.cmd` and enter the game
 folder containing `Maps`, `Textures`, `Sounds`, `Music` and `system`.
 Otherwise, run this in the extracted release folder:
 
@@ -37,6 +38,19 @@ INSTALL-HPVR.cmd -GamePath "C:\Program Files\HP" -AdbPath "C:\Android\platform-t
 
 The wrapper's execution-policy override affects only its child process. For
 multiple connected devices, add `-DeviceSerial` with the serial from `adb devices`.
+
+`-FfmpegPath` is optional: an explicit path takes priority, then PATH/common
+locations, then the verified cache, then automatic download. Missing or mistyped
+explicit paths are reported instead of silently downloading another copy.
+Use `-NoToolDownload` to disable downloads; a verified cached copy still works.
+
+The automatic download is the pinned Windows x64 FFmpeg 9.0.1 essentials build
+from [gyan.dev](https://www.gyan.dev/ffmpeg/builds/), a distributor linked by
+[ffmpeg.org](https://ffmpeg.org/download.html). Archive and executable SHA-256
+hashes are verified before use. It is cached under
+`%LOCALAPPDATA%\HPVR\Tools\ffmpeg-9.0.1`, together with its GPLv3 license and
+README. No administrator access, global installation or PATH changes are made.
+If the download fails, rerun the installer or supply `-FfmpegPath` manually.
 
 Preparation takes several minutes. The installer checks hashes, prepares the
 required game packages and audio in a private working directory, installs the
