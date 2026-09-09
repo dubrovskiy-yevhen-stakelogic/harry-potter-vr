@@ -530,7 +530,7 @@ std::vector<FrontQuad> QuestFrontEnd::Quads()const{
             text(finished?"WE WOULD LOVE TO HEAR YOUR FEEDBACK.":"FOLLOW DEVELOPMENT NEWS ON DISCORD.",62,209,2,0xffffff);
             text("THANKS FOR TRYING HARRY POTTER VR!",62,245,2,0xffffff);
             text("https://discord.com/channels/",62,282,1.65F,0xc7eaff);
-            text("747967102895390741/1543691482861408276",62,305,1.65F,0xc7eaff);
+            text("747967102895390741/1547254536203407390",62,305,1.65F,0xc7eaff);
             for(unsigned i=0;i<2;++i){
                 const float y=354+float(i)*42;
                 if(selection==i)tile(42,y-7,556,32,assets.white,0x875f19);

@@ -237,7 +237,7 @@ try {
     }
     foreach ($marker in @('HPVR_VR2', 'notice=WELCOME trigger=FIRST_ACTUAL_STEP', 'notice=THANK_YOU trigger=LESSON_TRAVEL_BOUNDARY',
         'demo=FIRST_STEP_AND_LESSON_END', 'lesson_difficulty=ORIGINAL_OPTIONAL_RELAXED', 'OPEN DISCORD IN BROWSER',
-        'https://discord.com/channels/747967102895390741/1543691482861408276',
+        'https://discord.com/channels/747967102895390741/1547254536203407390',
         'capture=WORLD_BEFORE_OVERLAY trace=PROJECTED_16', 'vkCreateRenderPass(left_overlay_load)',
         '[hpvr.quest.perf]', '/perfmetrics_meta/device/gpu_utilization', 'PERFORMANCE DEBUGGER',
         'BOTH GRIPS + MENU: HIDE / SETTINGS', 'pickup_wizardcard2', 'hprops.hogwartsurn')) {

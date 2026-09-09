@@ -33,7 +33,7 @@ int main(int argc,char** argv){try{
         f.screen=screen;f.selection=0;
         for(const auto& q:f.Quads())Check(q.x>=0&&q.y>=0&&q.x+q.w<=640.01F&&q.y+q.h<=480.01F,"panel content stays within window");
     }
-    Check(std::string(kDemoCommunityUrl)=="https://discord.com/channels/747967102895390741/1543691482861408276","exact Discord channel");
+    Check(std::string(kDemoCommunityUrl)=="https://discord.com/channels/747967102895390741/1547254536203407390","exact Discord channel");
     DemoFirstStep motion;
     Check(!motion.Update(false,true,{0,0,0})&&!motion.Update(true,false,{0,0,0}),"menu and idle cannot welcome");
     Check(!motion.Update(true,true,{0,0,0})&&!motion.Update(true,true,{0,.2F,0}),"no greeting from vertical/head movement");

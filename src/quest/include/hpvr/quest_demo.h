@@ -4,7 +4,7 @@
 #include "hpvr/quest_view.h"
 
 namespace hpvr::quest {
-inline constexpr const char* kDemoCommunityUrl="https://discord.com/channels/747967102895390741/1543691482861408276";
+inline constexpr const char* kDemoCommunityUrl="https://discord.com/channels/747967102895390741/1547254536203407390";
 inline bool BuildDemoActorEye(const std::array<float,3>& feet,float yaw,float height,ViewPose* out){
     if(!out||!std::isfinite(yaw)||!std::isfinite(height)||height<=0)return false;
     for(float v:feet)if(!std::isfinite(v))return false;

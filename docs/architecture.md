@@ -1,59 +1,48 @@
-# Architecture constraints and gates
+# Architecture
 
-## One product, two proof layers
+The native C++20 Android ARM64 application uses OpenXR, Vulkan and AAudio. It
+loads data from the US PC edition of *Harry Potter and the Sorcerer's Stone*
+(2001), without running the original executable or engine.
 
-The fastest way to validate VR interaction is a PC OpenXR build of the same
-portable runtime intended for Quest. A hook against the working x86 game may
-still be useful as an observation tool, but it is not the primary product path.
-That distinction avoids proving interactions against a renderer and ABI that
-cannot move to Android.
+## Components
 
-It is not the Quest port. Quest 3 standalone requires an Android ARM64 runtime
-capable of loading the original UE1 packages and implementing HP1's engine and
-game-specific native behavior. The repository must keep those two claims
-separate.
+| Location | Responsibility |
+| --- | --- |
+| `src/wand/` | UE1 packages, dependencies, BSP, textures, models, animation and sound readers; gesture projection and scoring. |
+| `src/quest/` | Movement, spells, lighting, menus, tutorial logic, saves and VR settings. |
+| `android/app/src/main/cpp/android_main.cpp` | Android lifecycle, data checks and OpenXR startup. |
+| `android/app/src/main/cpp/xr_vulkan_smoke.cpp` | XR session, controllers, stereo rendering, tracking and frame timing. |
+| `android/app/src/main/cpp/quest_scene.cpp` | Scene loading and drawing, collision, characters, cutscene commands and events. |
+| `android/app/src/main/cpp/quest_audio.cpp` | Music, dialogue and effects through AAudio. |
+| `android/app/src/main/cpp/quest_reflections.cpp` | Color/depth history for SSR without another scene render. |
 
-## Runtime foundation requirements
+The scene executes a subset of the map's cutscene commands, with tutorial logic
+implemented in C++. It is not a general UnrealScript VM. The demo uses `Lev_Tut1`
+through the first Flipendo lesson.
 
-Any selected foundation must satisfy all of the following:
+## Data and storage
 
-1. Auditable legal provenance and redistribution terms.
-2. Original HP1 data remains external.
-3. UE1 package version 433 and UnrealScript VM compatibility can be measured.
-4. HP1-specific native classes/functions can be enumerated and implemented.
-5. A renderer can submit stereo views through OpenXR on Windows and Android.
-6. The core can build as 64-bit ARM code with Android NDK tooling.
-7. File I/O, audio, save data, timing, and input have Android replacements.
+Original packages are stored outside the APK:
 
-## Vertical-slice gate
+```text
+/sdcard/Android/data/io.github.hpvr.quest/files/HP/
+  Maps/  Music/  Sounds/  system/  Textures/
+  Cache/Audio/*.s16
+```
 
-The first meaningful slice is intentionally narrow:
+`PREPARE-QUEST-AUDIO.ps1` and `PREPARE-QUEST-FRONTEND.ps1` build the audio cache
+from the user's copy. Saves are stored in the private `files/SaveGames/` directory;
+VR settings use `files/vr-settings.0` and `.1`. These formats include generations
+and checksums. Original PC saves are not imported.
 
-- load one original room/map from external data;
-- render both eyes at correct scale;
-- drive view orientation from the headset;
-- render and aim a tracked wand independently of the head;
-- recognize one explicit gesture;
-- dispatch one original spell interaction to an original target;
-- emit timing and compatibility diagnostics.
+## Rendering and input
 
-If a candidate foundation cannot load the startup packages and enumerate the
-missing native surface without wholesale engine replacement, stop and reassess
-before building more VR UI around it.
+OpenXR provides head/controller poses and frame timestamps. This source version
+uses a theatrical cutscene camera with physical 6DOF. The wand is tracked
+independently of the head.
 
-## Current candidate
+Vulkan renders each eye. SSR uses left-eye history and excludes the HUD from
+capture. Render scale and SSR strength are saved VR settings. Wand behavior is
+documented in [wand-gesture-contract.md](wand-gesture-contract.md).
 
-OpenHP1 is the strongest technical candidate found so far. Its current Rust
-workspace separates package, script, runtime, scene, render, game, audio, and
-tool responsibilities; it loads an external original installation; and it
-already implements HP1's native gesture calls and spell-lesson runtime path.
-
-The candidate is not yet adopted. The audited checkout declares
-`MIT OR Apache-2.0` in Cargo metadata but contains no tracked license text. It
-also has no Android or OpenXR backend. A scoped Rust 1.97 toolchain is now
-installed under the user's rustup directories without changing global `PATH`,
-and the independent OpenXR capability probe passes `cargo check`. Those are
-tooling facts, not evidence that the candidate renderer works in a headset.
-
-The full decision record is in
-[`runtime-foundation-decision.md`](runtime-foundation-decision.md).
+Build commands are in [SOURCE-KIT-README.md](../SOURCE-KIT-README.md).
