@@ -24,7 +24,9 @@ bool PrepareGeometryFromOwnedData(const std::filesystem::path& root,unsigned map
     const hpvr_hp1_player_start_report& start,float yaw,const WorldMetadata& world,
     PreparedGeometry& output,const std::function<void(const char*)>& progress={}){
     const auto stage=[&](const char* name){if(progress)progress(name);};
-    const auto map=root/(map_id==0?"Maps/Lev_Tut1.unr":"Maps/Lev_Tut1b.unr");
+    const auto* descriptor=FindQuestMap(map_id);
+    if(!descriptor)return false;
+    const auto map=root/descriptor->package_path;
     PreparedGeometry g;g.flames=world.flames;g.glows=world.glows;
     auto scene=wand::build_hp1_textured_bsp_scene(root,map,kMetersPerUnrealUnit,kMaximumTriangles);
     if(scene.status!=wand::Hp1ProfileStatus::ok||scene.vertices.empty()||scene.vertices.size()%3||
@@ -33,6 +35,22 @@ bool PrepareGeometryFromOwnedData(const std::filesystem::path& root,unsigned map
         scene.vertices.size()>std::numeric_limits<std::uint32_t>::max()||
         scene.texture_rgba8.size()!=std::uint64_t(256)*256*scene.texture_layer_count*4||
         scene.lightmap_rgba8.size()!=std::uint64_t(scene.lightmap_width)*scene.lightmap_height*4)return false;
+    std::optional<std::array<float,3>> courtyard_ambient;
+    if(map_id==2) {
+        const auto topology=wand::load_hp1_bsp_topology(map);
+        const auto actors=wand::inspect_hp1_actor_visuals(map);
+        if(topology.status!=wand::Hp1ProfileStatus::ok || actors.status!=wand::Hp1ProfileStatus::ok ||
+           !RestoreBroomSky(map,topology,actors,scene))return false;
+        for(const auto& actor:actors.actors)
+            if(AsciiFold(actor.qualified_class_name)=="engine.zoneinfo") {
+                const auto ambient=wand::Hp1SerializedZoneAmbient(actor);
+                if(ambient) {
+                    if(courtyard_ambient)return false;
+                    courtyard_ambient=ambient;
+                }
+            }
+        if(!courtyard_ambient || scene.fallback_material_count!=0)return false;
+    }
     g.texture_layers=scene.texture_layer_count;
     g.lightmap_width=scene.lightmap_width;g.lightmap_height=scene.lightmap_height;
     g.decoded_lightmaps=static_cast<std::uint32_t>(scene.decoded_lightmap_count);
@@ -40,8 +58,9 @@ bool PrepareGeometryFromOwnedData(const std::filesystem::path& root,unsigned map
     g.fallback_materials=static_cast<std::uint32_t>(scene.fallback_material_count);
     g.vertices.reserve(scene.vertices.size());
     for(const auto& source:scene.vertices){
-        const auto p=RotateYaw({source.position_m.x-start.position_m[0],source.position_m.y-start.position_m[1],
-            source.position_m.z-start.position_m[2]},yaw);
+        const bool sky=(source.polygon_flags&kBroomSkyFlag)!=0;
+        const auto p=RotateYaw({source.position_m.x-(sky?0:start.position_m[0]),source.position_m.y-(sky?0:start.position_m[1]),
+            source.position_m.z-(sky?0:start.position_m[2])},yaw);
         g.vertices.push_back({{p[0],p[1],p[2]},
             {source.texture_uv[0],source.texture_uv[1]},{source.lightmap_uv[0],source.lightmap_uv[1]},
             source.texture_layer,source.polygon_flags|((source.texture_layer<scene.texture_layer_names.size()&&
@@ -76,6 +95,11 @@ bool PrepareGeometryFromOwnedData(const std::filesystem::path& root,unsigned map
     stage("CHARACTERS_READY");
     if(!LoadOwnedBeans(root,map,start,yaw,g.vertices,g.textures,g.texture_layers,g.beans,&g.collision))return false;
     if(map_id==1&&!LoadChallengeStars(root,map,start,yaw,g.vertices,g.textures,g.texture_layers,g.beans))return false;
+    if(courtyard_ambient) {
+        for(auto& vertex:g.vertices)
+            if(!vertex.has_lightmap && !(vertex.polygon_flags&kBroomSkyFlag))
+                vertex.packed_light=BroomAmbientLighting(vertex.packed_light,*courtyard_ambient);
+    }
     stage("GEOMETRY_PREPARED");
     output=std::move(g);return true;
 }

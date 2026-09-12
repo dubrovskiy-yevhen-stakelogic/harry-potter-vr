@@ -1,10 +1,14 @@
 # Quest release build
 
-The **0.1.1-alpha** release uses Android version code **54** and includes the
-opening level and the [Flipendo Challenge](FLIPENDO-CHALLENGE.md). The release
-contains the port, third-party libraries and the licensed offline voice model,
+The **0.1.2-alpha** release uses Android version code **57** and includes the
+opening level, [Flipendo Challenge](FLIPENDO-CHALLENGE.md) and Broomstick Training.
+The release contains the port, third-party libraries and the licensed offline voice model,
 not HP game assets, decoded game audio, user recordings, saves or signing keys.
-Players import their own compatible US PC data for both levels.
+Players import their own compatible US PC data for all three levels.
+
+Each newly restored level increments the last numeric version component:
+0.1.2, then 0.1.3, 0.1.4, and so on. The alpha label remains while the port is
+in early testing. Android version codes increase independently for new APKs.
 
 ## Tools
 
@@ -19,7 +23,7 @@ For an update, reuse the existing release signing identity. From the repository
 root, build into a new artifact directory:
 
 ```powershell
-.\BUILD-QUEST-RELEASE.ps1 -OutputDirectory artifacts\quest-release-0.1.1-alpha-c54
+.\BUILD-QUEST-RELEASE.ps1 -OutputDirectory artifacts\quest-release-0.1.2-alpha-c57
 ```
 
 Only a project's first release with no identity should use
@@ -45,16 +49,16 @@ cmake --build build --config Release --target hpvr_hp1_package_graph hpvr_hp1_so
 
 The packager reads the matching `RELEASE-METADATA.json`, checks the APK and
 includes the installer, required helper tools, documentation and hashes. Its
-default input is `artifacts/quest-release-0.1.1-alpha-c54/HPVR-Quest-0.1.1-alpha.apk`
-and default output is `artifacts/HPVR-Quest-Demo-0.1.1-alpha` plus the sibling ZIP.
+default input is `artifacts/quest-release-0.1.2-alpha-c57/HPVR-Quest-0.1.2-alpha.apk`
+and default output is `artifacts/HPVR-Quest-Demo-0.1.2-alpha` plus the sibling ZIP.
 Its default host-tool directory is `build/quest-host-tests`; the explicit
 `-HostBuildDirectory build` above selects the main tree instead. Build and
 packaging do not install or launch the game.
 Player instructions are in [PLAYER-INSTALL.md](../tools/release/PLAYER-INSTALL.md).
 
-The alpha manifest declares `mapIds: [0, 1]`. Installer revision 5 uses that
-selection for both package closures, dialogue/music enumeration and scene
-preparation. Both `map-0.hpvc` and `map-1.hpvc` are generated and independently
+The alpha manifest declares `mapIds: [0, 1, 2]`. Installer revision 6 uses that
+selection for package closures, dialogue/music enumeration and scene
+preparation. `map-0.hpvc`, `map-1.hpvc` and `map-2.hpvc` are generated and independently
 verified on the player's PC; they are never packaged into the ZIP. Historical
 manifests without map metadata retain map 0 only, with `-IncludeChallenge`
 available for compatible older development APKs.
@@ -67,7 +71,7 @@ Before packaging, run the synthetic installer tests:
 
 After packaging, validate the actual bundled helpers against an owned copy with
 the bundled `INSTALL-HPVR.ps1 -GamePath '<owned US PC game folder>' -PrepareOnly`.
-This prepares both selected maps without installing or accessing a headset.
+This prepares all three selected maps without installing or accessing a headset.
 
 ## Signing and upgrades
 
@@ -86,7 +90,7 @@ development build to bypass this conflict: saves, settings and imported data may
 be lost.** Arrange a backup/migration first. Public updates must keep the original
 release certificate.
 
-Version code 54 is newer than the original public demo, but certificate equality
+Version code 57 is newer than the previous public demo, but certificate equality
 must also be checked against the previous release's `RELEASE-METADATA.json`.
 The player installer uses a normal in-place `adb install -r`, without downgrade
 or uninstall flags. Android rejects an incompatible signer before data import.
@@ -95,7 +99,7 @@ validate packaging.
 
 ## Data and licenses
 
-The player installer imports packages, fingerprint-named PCM and both selected
+The player installer imports packages, fingerprint-named PCM and all selected
 scene caches to
 `/sdcard/Android/data/io.github.hpvr.quest/files/HP/`, including `Cache/Audio/`.
 This uses external storage access, not debug-only `run-as`. Saves and VR settings

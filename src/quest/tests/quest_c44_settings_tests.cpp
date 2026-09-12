@@ -51,6 +51,7 @@ int main(){try{
     Check(defaults.render_scale==100&&defaults.ssr==30&&defaults.relaxed_lesson&&defaults.first_person_cutscenes&&
           !defaults.welcome_seen&&defaults.refresh_rate==90,"existing defaults preserved");
     Check(!std::filesystem::exists(untouched),"reading absent settings does not create files");
+    Check(defaults.turning_mode==TurningMode::Snap&&defaults.smooth_turn_speed==90,"turning preserves snap by default");
     Check(!UsesGestureCasting(CastingMode::Classic)&&!ShowsGestureTrace(CastingMode::Classic),"classic gesture policy");
     Check(UsesGestureCasting(CastingMode::VisibleGesture)&&ShowsGestureTrace(CastingMode::VisibleGesture),"visible gesture policy");
     Check(UsesGestureCasting(CastingMode::Gesture)&&!ShowsGestureTrace(CastingMode::Gesture),"unassisted gesture policy");
@@ -66,7 +67,7 @@ int main(){try{
               !migrated.first_person_cutscenes&&migrated.refresh_rate==120,"VR4 unrelated choices preserved");
         Check(WriteVrSettings(root,migrated)&&migrated.generation==13,"migrated settings write new generation");
         std::ifstream saved(root/"vr-settings.1");std::string magic;saved>>magic;
-        Check(magic=="HPVR_VR6","migrated save upgrades to VR6");
+        Check(magic=="HPVR_VR7","migrated save upgrades to VR7");
         Check(ReadVrSettings(root).casting_mode==migrated.casting_mode,"migration survives second read");
     }
     for(int version=1;version<=3;++version){
@@ -90,11 +91,44 @@ int main(){try{
               migrated.voice_cast==voice&&!migrated.voice_hints,"VR5 voice choice survives with hints hidden");
         Check(migrated.render_scale==155&&migrated.ssr==65&&!migrated.relaxed_lesson&&migrated.welcome_seen&&
               !migrated.first_person_cutscenes&&migrated.refresh_rate==72,"VR5 migration preserves unrelated choices");
-        Check(WriteVrSettings(root,migrated),"VR5 settings upgrade to VR6");
+        Check(WriteVrSettings(root,migrated),"VR5 settings upgrade to VR7");
         const auto read=ReadVrSettings(root);
         Check(read.generation==21&&read.voice_cast==voice&&!read.voice_hints&&read.casting_mode==migrated.casting_mode,
               "VR5 migrated preferences survive reload");
     }
+
+    for(int version=1;version<=6;++version){
+        const auto root=temporary.path/("turn-migration-"+std::to_string(version));
+        std::string fields="145:55:42";
+        if(version>=2)fields+=":0:1";
+        if(version>=3)fields+=":0";
+        if(version==4)fields+=":1:120";
+        if(version>=5)fields+=":2:120:1";
+        if(version>=6)fields+=":1";
+        Fixture(root,0,Record(("HPVR_VR"+std::to_string(version)).c_str(),fields));
+        auto migrated=ReadVrSettings(root);
+        Check(migrated.generation==42&&migrated.turning_mode==TurningMode::Snap&&migrated.smooth_turn_speed==90,
+              "all legacy schemas default to snap and preserve their generation");
+        Check(migrated.render_scale==145&&migrated.ssr==55&&migrated.voice_cast==(version>=5)&&
+              migrated.voice_hints==(version>=6),"turn migration does not reset established quality or voice preferences");
+        Check(WriteVrSettings(root,migrated)&&ReadVrSettings(root).generation==43,"legacy turning migration round-trips");
+    }
+    const auto turn_round_trip=temporary.path/"turn-round-trip";
+    VrSettings turning;turning.voice_cast=true;turning.voice_hints=true;turning.casting_mode=CastingMode::VisibleGesture;
+    for(auto mode:{TurningMode::Snap,TurningMode::Smooth})for(int speed=30;speed<=180;speed+=30){
+        turning.turning_mode=mode;turning.smooth_turn_speed=speed;
+        Check(WriteVrSettings(turn_round_trip,turning),"save every turning choice");
+        const auto read=ReadVrSettings(turn_round_trip);
+        Check(read.turning_mode==mode&&read.smooth_turn_speed==speed&&read.voice_cast&&read.voice_hints&&
+              read.casting_mode==CastingMode::VisibleGesture,"turn choice persists independently of spell controls");
+    }
+    const auto turn_generation=turning.generation;
+    for(int speed:{-30,0,29,31,181,1000000}){
+        turning.smooth_turn_speed=speed;
+        Check(!WriteVrSettings(turn_round_trip,turning)&&turning.generation==turn_generation,"invalid turn speed cannot overwrite settings");
+    }
+    turning.smooth_turn_speed=90;turning.turning_mode=static_cast<TurningMode>(2);
+    Check(!WriteVrSettings(turn_round_trip,turning)&&turning.generation==turn_generation,"invalid turning enum cannot overwrite settings");
 
     const auto round_trip=temporary.path/"round-trip";
     VrSettings saved;saved.render_scale=175;saved.ssr=45;saved.relaxed_lesson=false;saved.first_person_cutscenes=false;
@@ -128,7 +162,12 @@ int main(){try{
                          Record("HPVR_VR6","100:30:5:1:0:1:2:90:0:-1"),
                          Record("HPVR_VR6","100:30:5:1:0:1:2:90:0:1")+" extra",
                          std::string("HPVR_VR6 100 30 5 1 0 1 2 90 0 1 0"),
-                         Record("HPVR_VR7","100:30:5:1:0:1:2:90:0:1")}){
+                         Record("HPVR_VR7","100:30:5:1:0:1:2:90:0:1"),
+                         Record("HPVR_VR7","100:30:5:1:0:1:2:90:0:1:2:90"),
+                         Record("HPVR_VR7","100:30:5:1:0:1:2:90:0:1:1:0"),
+                         Record("HPVR_VR7","100:30:5:1:0:1:2:90:0:1:1:95"),
+                         Record("HPVR_VR7","100:30:5:1:0:1:2:90:0:1:1:180")+" extra",
+                         Record("HPVR_VR8","100:30:5:1:0:1:2:90:0:1:1:90")}){
         Fixture(invalid,1,bad);
         const auto read=ReadVrSettings(invalid);
         Check(read.generation==4&&read.casting_mode==CastingMode::VisibleGesture&&read.voice_cast&&!read.voice_hints,
@@ -183,8 +222,31 @@ int main(){try{
     }
     Check(front.VrValueQuads(175,true).front().y==VrMenuRowY(0)&&front.VrValueQuads(30,false).front().y==VrMenuRowY(1)&&
           front.VrRefreshQuads(90).front().y==VrMenuRowY(6),"live numeric overlays align with compact rows");
+    front.selection=kVrTurningRow;front.vr.turning_mode=TurningMode::Snap;
+    const auto turn_key=front.DrawKey();Press(front);
+    Check(front.vr.turning_mode==TurningMode::Smooth&&ReadVrSettings(front.saves.parent_path()).turning_mode==TurningMode::Smooth,
+          "smooth turning enables and saves immediately");
+    Check(front.DrawKey()==turn_key,"turning values use separate overlays without multiplying baked menu variants");
+    front.Input(0,true,false);Check(front.vr.turning_mode==TurningMode::Smooth,"held confirm cannot repeatedly toggle turning");
+    Press(front);Check(front.vr.turning_mode==TurningMode::Snap,"turning can return to snap live");
+    front.selection=kVrTurnSpeedRow;front.vr.smooth_turn_speed=90;
+    front.Input(0,false,false);front.Input(0,false,false,-1);
+    Check(front.vr.smooth_turn_speed==60&&ReadVrSettings(front.saves.parent_path()).smooth_turn_speed==60,"left lowers and saves turn speed");
+    front.Input(0,false,false,-1);Check(front.vr.smooth_turn_speed==60,"held speed adjustment cannot repeat");
+    for(unsigned i=0;i<8;++i)Press(front);
+    Check(front.vr.smooth_turn_speed==180,"smooth speed upper bound");
+    for(unsigned i=0;i<8;++i){front.Input(0,false,false);front.Input(0,false,false,-1);}
+    Check(front.vr.smooth_turn_speed==30,"smooth speed lower bound");
+    for(bool smooth:{false,true}){
+        const auto mode=front.VrTurningQuads(smooth);
+        Check(mode.size()==(smooth?6U:4U)&&mode.front().y==VrMenuRowY(kVrTurningRow),"turn-mode overlay aligns with its row");
+        for(const auto& quad:mode)Check(quad.x+quad.w<600&&quad.y+quad.h<VrMenuRowY(kVrTurningRow+1),"turn label fits without overlap");
+    }
+    for(int speed=30;speed<=180;speed+=30)for(const auto& quad:front.VrTurnSpeedQuads(speed))
+        Check(quad.x+quad.w<600&&quad.y==VrMenuRowY(kVrTurnSpeedRow)&&quad.y+quad.h<VrMenuRowY(kVrTurnSpeedRow+1),
+              "every turn speed overlay fits without overlap");
     front.selection=0;front.Input(0,false,false);front.Input(1,false,false);
-    Check(kVrMenuRowCount==11&&front.selection==10,"selection wraps through all eleven rows");
+    Check(kVrMenuRowCount==13&&front.selection==12,"selection wraps through all thirteen rows");
     Press(front);Check(front.screen==FrontScreen::Game,"return row closes VR menu");
     const auto settings_generation=ReadVrSettings(front.saves.parent_path()).generation;
     front.page=11;front.progress.page=11;
@@ -208,12 +270,14 @@ int main(){try{
         }
         if(page==3)Check(TextAt(front,263)=="KEEPHOLDINGTOCASTAGAINBYVOICE."&&
                          TextAt(front,319)=="EXPERIMENTAL-ONLYTESTEDBYTHEAUTHOR.","voice repeat and experimental warning");
+        if(page==4)Check(TextAt(front,207)=="RIGHTSTICKUP/DOWN-ASCEND/DESCEND."&&
+                         TextAt(front,235)=="RELEASETHELEFTSTICKTOBRAKE.","broom controls explain height and braking");
         Press(front);
     }
     Check(front.controls_page==0,"controls next wraps to basics");
     front.Input(0,false,false);front.Input(0,false,false,-1);
-    Check(front.controls_page==3,"left stick visits previous help page");
-    front.Input(0,false,false,-1);Check(front.controls_page==3,"held stick cannot skip through help");
+    Check(front.controls_page==kControlsPageCount-1,"left stick visits previous help page");
+    front.Input(0,false,false,-1);Check(front.controls_page==kControlsPageCount-1,"held stick cannot skip through help");
     front.Input(0,false,false);front.Input(0,false,true);
     Check(front.screen==FrontScreen::Vr&&front.selection==kVrControlsRow,"B returns to controls row in settings");
     front.Input(0,false,true);Check(front.screen==FrontScreen::Vr,"held B cannot close settings too");
@@ -229,12 +293,34 @@ int main(){try{
     Check(front.WorldVisible()&&front.PausesWorld(),"controls opened over welcome retains notice pause");
     front.ToggleVrMenu();
     Check(front.screen==FrontScreen::Welcome,"controls closes back to welcome without dismissing it");
-    Check(TextAt(front,78)=="0.1.1ALPHA-WELCOME"&&TextAt(front,122)=="VERYEARLYALPHA-EXPECTBUGS."&&
+    Check(TextAt(front,78)=="0.1.2ALPHA-WELCOME"&&TextAt(front,122)=="VERYEARLYALPHA-EXPECTBUGS."&&
           TextAt(front,194)=="ITHASONLYBEENTESTEDBYTHEAUTHOR.","welcome states alpha status and author-only voice testing");
-    for(unsigned map:{0U,1U})for(auto screen:{FrontScreen::Welcome,FrontScreen::DemoEnd})for(unsigned row:{0U,1U}){
+    for(unsigned map:{0U,1U,2U})for(auto screen:{FrontScreen::Welcome,FrontScreen::DemoEnd})for(unsigned row:{0U,1U}){
         front.assets.map_id=map;front.screen=screen;front.selection=row;
         for(const auto& quad:front.Quads())Check(quad.x>=0&&quad.y>=0&&quad.x+quad.w<=640&&quad.y+quad.h<=480,
                                               "notice text and both actions fit on both maps");
     }
+    front.assets.map_id=2;front.screen=FrontScreen::DemoEnd;
+    Check(TextAt(front,78)=="BROOMSTICKTRAININGCOMPLETE","flying completion is not labeled as Flipendo");
+    const auto labels=front.BroomLabelQuads();
+    Check(!labels.empty()&&labels.size()<150,"broom labels remain a bounded static batch");
+    const auto overlaps=[](const FrontQuad& a,const FrontQuad& b){
+        return a.x<b.x+b.w&&a.x+a.w>b.x&&a.y<b.y+b.h&&a.y+a.h>b.y;
+    };
+    for(unsigned field=0;field<3;++field){
+        const unsigned maximum=field==0?82:field==1?180:5;
+        for(unsigned value=0;value<=maximum;++value){
+            const auto number=front.BroomNumberQuads(value,field);
+            Check(!number.empty()&&number.size()<=6,"each broom counter is independently bounded to three digits");
+            for(const auto& quad:number){
+                Check(quad.x>=0&&quad.y>=375&&quad.x+quad.w<=640&&quad.y+quad.h<396,"broom number fits compact row");
+                for(const auto& label:labels)Check(!overlaps(quad,label),"broom digits cannot overlap fixed text");
+            }
+        }
+        const auto clamped=front.BroomNumberQuads(1000000,field),last=front.BroomNumberQuads(maximum,field);
+        Check(clamped.size()==last.size()&&clamped.front().u==last.front().u&&clamped.front().v==last.front().v,
+              "broom counter overflow clamps to the supported range");
+    }
+    Check(front.BroomNumberQuads(1,3).empty(),"unknown broom counter field rejected");
     std::cout<<"C44_SETTINGS_TESTS=PASS\n";return 0;
 }catch(const std::exception& error){std::cerr<<error.what()<<'\n';return 1;}}

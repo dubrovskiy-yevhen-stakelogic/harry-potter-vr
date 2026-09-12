@@ -1,8 +1,8 @@
 #requires -Version 5.1
 [CmdletBinding()]
 param(
-    [string]$ApkPath = 'artifacts/quest-release-0.1.1-alpha-c54/HPVR-Quest-0.1.1-alpha.apk',
-    [string]$OutputDirectory = 'artifacts/HPVR-Quest-Demo-0.1.1-alpha',
+    [string]$ApkPath = 'artifacts/quest-release-0.1.2-alpha-c57/HPVR-Quest-0.1.2-alpha.apk',
+    [string]$OutputDirectory = 'artifacts/HPVR-Quest-Demo-0.1.2-alpha',
     [string]$HostBuildDirectory = 'build/quest-host-tests'
 )
 
@@ -226,7 +226,7 @@ $hpvrManifest = [ordered]@{
     gameAssetsIncluded = $false
     # Explicit release scope: installers do not guess from files beside them.
     # Keep rebuilding historical one-map APKs possible with explicit paths.
-    mapIds = @(if ($hpvrMetadata.versionCode -ge 38) { 0; 1 } else { 0 })
+    mapIds = @(if ($hpvrMetadata.versionCode -ge 57) { 0; 1; 2 } elseif ($hpvrMetadata.versionCode -ge 38) { 0; 1 } else { 0 })
     files = @($hpvrFiles.ToArray())
 }
 if ($hpvrPreparedSceneVersion -gt 0) { $hpvrManifest.preparedSceneVersion = $hpvrPreparedSceneVersion }

@@ -304,7 +304,13 @@ try {
     }
     # Older readers are exercised by the host migration tests. Optimized
     # comparisons need not retain every legacy literal.
-    $settingsWriter = if($ExpectedVersionCode -ge 48){'HPVR_VR6'}elseif($voiceBuild){'HPVR_VR5'}elseif($ExpectedVersionCode -ge 41){'HPVR_VR4'}else{'HPVR_VR3'}
+    $settingsWriter = if($ExpectedVersionCode -ge 56){'HPVR_VR7'}elseif($ExpectedVersionCode -ge 48){'HPVR_VR6'}elseif($voiceBuild){'HPVR_VR5'}elseif($ExpectedVersionCode -ge 41){'HPVR_VR4'}else{'HPVR_VR3'}
+    if($ExpectedVersionCode -ge 56){
+        foreach($marker in @('SNAP: 30 DEGREE STEPS / SMOOTH: CONTINUOUS',
+                'SMOOTH TURN SPEED - DEGREES PER SECOND','[hpvr.quest.broom.avatar]')){
+            if(-not $readOnlyData.Contains($marker)){throw "APK missing C56 feature: $marker"}
+        }
+    }
     if ($ExpectedVersionCode -ge 48) {
         foreach ($marker in @('VOICE HINTS', 'stream_renewals=%llu',
                 '[hpvr.quest.props.orientation]', '[hpvr.quest.ambient]',

@@ -78,6 +78,7 @@ public:
     void SetWandDrawing(bool drawing);
     void UpdateBasicCast(const ViewPose& wand, bool tracked, bool held, float seconds);
     void UpdateJumpInput(bool held,float seconds);
+    void ResetMovementContinuity();
     bool NeedsPhysicsTick() const;
     void UpdateHudPose(const ViewPose& head);
     void UpdatePlayerPose(const ViewPose& head,float yaw,const std::array<float,3>& capsule_center);
@@ -113,6 +114,14 @@ public:
     [[nodiscard]] std::uint32_t CurrentAnimationFrame() const;
 
 private:
+    void StartBroomScene(const std::string& tag,unsigned phase);
+    void BeginBroomTrial();
+    void AdvanceBroom(float seconds);
+    void DispatchBroomEvent(const std::string& event);
+    void RestoreBroomProgress();
+    void SaveBroomProgress();
+    void RequestBroomTravel();
+    bool ResolveBroomMovement(const std::array<float,3>& center,LocomotionMove* output) const;
     void BeginChallengeDeath(const char* reason) const;
     void AdvanceChallengeDeath(float step);
     void StartPickupFlight(std::int32_t actor_reference);

@@ -31,6 +31,9 @@ struct LocomotionInput {
     bool turn_active = false;
     bool physics_active = false; // Gravity must tick even with a centred stick.
     bool sprint = false;
+    float turn_y = 0.0F;
+    bool smooth_turn = false;
+    float smooth_turn_degrees = 90.0F;
 };
 
 struct LocomotionMove {
@@ -82,6 +85,7 @@ private:
     float yaw_radians_ = 0.0F;
     bool has_head_ = false;
     bool snap_armed_ = true;
+    bool smooth_turn_ = false;
     unsigned long long move_frames_ = 0;
     unsigned long long snap_turns_ = 0;
     unsigned long long blocked_substeps_ = 0;

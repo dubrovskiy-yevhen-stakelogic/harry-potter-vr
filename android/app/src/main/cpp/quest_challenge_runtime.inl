@@ -21,7 +21,7 @@ void QuestScene::RequestChallengeTravel(){
     HPVR_LOGI("[hpvr.quest.travel] status=REQUESTED from=Lev_Tut1 to=Lev_Tut1b");
 }
 void QuestScene::RebuildChallengeCollision(){
-    auto& s=*state_;if(s.map_id!=1)return;
+    auto& s=*state_;if(s.map_id==0)return;
     s.collision_triangles.resize(s.challenge.collision_base);
     for(std::size_t i=0;i<std::min(s.doors.size(),s.challenge.mover_triangles.size());++i){
         auto& door=s.doors[i];
@@ -73,6 +73,7 @@ void QuestScene::RestoreTransferredProgress(const ProgressSave& progress,unsigne
     s.frontend.progress=progress;s.frontend.slot=slot;
     s.frontend.paused=FrontScreen::Game;s.frontend.BeginGame();
     if(s.map_id==0){RestoreCurrentProgress();return;}
+    if(s.map_id==2){RestoreBroomProgress();return;}
     auto& p=s.frontend.progress;
     if(!s.challenge_initial_checkpoint_valid){
         auto initial=p;initial.health=100;initial.quest_stage=0;initial.challenge_stars=0;
@@ -226,7 +227,7 @@ void QuestScene::RestoreTransferredProgress(const ProgressSave& progress,unsigne
     s.audio.SelectMusic(s.frontend.assets.level_music_index);s.audio.SetPresentationAudio(true,false);
     if(s.challenge.barrel_time>0)for(auto& a:s.character_draws)
         if(AsciiFold(a.class_name)=="tut1.flipbarrel"&&a.clips.contains("roll"))a.active_clip="roll";
-    if(s.challenge.complete&&!resume_scene){s.frontend.ShowDemoNotice(true);s.front_anchor_valid=false;}
+    if(s.challenge.complete&&!resume_scene)RequestBroomTravel();
     else if(resume_scene)StartChallengeScene(resume_scene);
     else if(p.quest_stage==0){s.frontend.screen=FrontScreen::Objective;s.frontend.selection=0;}
     // Commit only after XR has adopted the scene, not from the background loader.
@@ -663,5 +664,5 @@ void QuestScene::AdvanceChallenge(float seconds){
         SaveCheckpoint(true);c.authored_checkpoint_pending=false;
     }
     c.checkpoint_pending=false;
-    if(c.complete&&!s.intro_cutscene.playing){s.frontend.ShowDemoNotice(true);s.front_anchor_valid=false;}
+    if(c.complete&&!s.intro_cutscene.playing)RequestBroomTravel();
 }

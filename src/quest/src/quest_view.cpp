@@ -146,6 +146,7 @@ void LocomotionState::Reset() {
     yaw_radians_ = 0.0F;
     has_head_ = false;
     snap_armed_ = true;
+    smooth_turn_ = false;
 }
 
 bool LocomotionState::ObserveHead(const ViewPose& local_head) {
@@ -180,7 +181,8 @@ bool LocomotionState::Tick(const LocomotionInput& input,
                            const LocomotionResolver resolver,
                            void* const resolver_context) {
     if (!std::isfinite(input.move_x) || !std::isfinite(input.move_y) ||
-        !std::isfinite(input.turn_x) || !std::isfinite(delta_seconds) ||
+        !std::isfinite(input.turn_x) || !std::isfinite(input.smooth_turn_degrees) ||
+        input.smooth_turn_degrees < 30.0F || input.smooth_turn_degrees > 180.0F || !std::isfinite(delta_seconds) ||
         delta_seconds < 0.0F) {
         return false;
     }
@@ -230,22 +232,38 @@ bool LocomotionState::Tick(const LocomotionInput& input,
         }
     }
 
-    if (!input.turn_active || std::abs(input.turn_x) <= kSnapRelease) {
+    if (smooth_turn_ != input.smooth_turn) {
+        // Switching back to snap cannot add a snap while the stick is held.
+        snap_armed_ = false;
+        smooth_turn_ = input.smooth_turn;
+    }
+    float turn_radians = 0.0F;
+    if (input.smooth_turn) {
+        constexpr float deadzone = 0.25F;
+        if (input.turn_active && has_head_ && std::abs(input.turn_x) > deadzone) {
+            const float strength = std::clamp((std::abs(input.turn_x) - deadzone) / (1.0F - deadzone), 0.0F, 1.0F);
+            const float sign = input.turn_x > 0.0F ? 1.0F : -1.0F;
+            turn_radians = -sign * strength * input.smooth_turn_degrees * (kTau / 360.0F) * std::min(delta_seconds, 0.05F);
+        }
+    } else if (!input.turn_active || std::abs(input.turn_x) <= kSnapRelease) {
         snap_armed_ = true;
-    } else if (snap_armed_ && std::abs(input.turn_x) >= kSnapEnter) {
+    } else if (snap_armed_ && has_head_ && delta_seconds > 0.0F && std::abs(input.turn_x) >= kSnapEnter) {
+        const float sign = input.turn_x > 0.0F ? 1.0F : -1.0F;
+        turn_radians = -sign * kSnapRadians;
+        snap_armed_ = false;
+        ++snap_turns_;
+    }
+    if (turn_radians != 0.0F) {
         const auto old_head = RotateYaw(head_position_, yaw_radians_);
         const std::array<float, 3> world_head{
             old_head[0] + translation_[0], old_head[1] + translation_[1],
             old_head[2] + translation_[2]};
-        const float sign = input.turn_x > 0.0F ? 1.0F : -1.0F;
-        yaw_radians_ = std::fmod(yaw_radians_ - sign * kSnapRadians + kTau,
+        yaw_radians_ = std::fmod(yaw_radians_ + turn_radians + kTau,
                                 kTau);
         const auto new_head = RotateYaw(head_position_, yaw_radians_);
         translation_ = {world_head[0] - new_head[0],
                         world_head[1] - new_head[1],
                         world_head[2] - new_head[2]};
-        snap_armed_ = false;
-        ++snap_turns_;
     }
     return true;
 }

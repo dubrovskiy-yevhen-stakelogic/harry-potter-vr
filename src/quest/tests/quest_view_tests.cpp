@@ -1,6 +1,8 @@
 #include "hpvr/quest_view.h"
 #include "hpvr/quest_recenter.h"
+#include "hpvr/quest_reflection_math.h"
 
+#include <algorithm>
 #include <array>
 #include <cmath>
 #include <cstdlib>
@@ -152,6 +154,110 @@ void TestRecenterChord() {
     Expect(!chord.Update(true, true, true, true) && chord.consumed, "session reset requires neutral again");
 }
 
+void TestSmoothTurning() {
+    using namespace hpvr::quest;
+    constexpr float pi=3.14159265358979323846F;
+    ViewPose head{{.4F,1.6F,-.25F}};
+    for(int speed:{30,60,90,120,150,180})for(unsigned fps:{20U,30U,60U,72U,80U,90U,120U}){
+        LocomotionState player;
+        Expect(player.ObserveHead(head),"smooth turn has tracked head");
+        ViewPose before,after;Expect(player.MapPose(head,&before),"map head before smooth turn");
+        const auto capsule=player.CapsuleCenter();
+        LocomotionInput input;input.turn_active=true;input.turn_x=1;input.smooth_turn=true;
+        input.smooth_turn_degrees=static_cast<float>(speed);
+        for(unsigned frame=0;frame<fps;++frame)Expect(player.Tick(input,1.0F/static_cast<float>(fps)),"smooth turn frame accepted");
+        Expect(std::abs(player.yaw_radians()-(2*pi-float(speed)*pi/180))<.00015F,
+               "smooth turn uses seconds rather than frames at every supported refresh rate");
+        Expect(player.MapPose(head,&after),"map head after smooth turn");
+        ExpectPosition(after.position,before.position,"smooth turn pivots around the head without orbiting");
+        ExpectPosition(player.CapsuleCenter(),capsule,"smooth turn does not translate the physical capsule");
+        Expect(player.snap_turns()==0,"smooth frames are not counted as snap turns");
+    }
+    for(float axis:{-1.F,-.625F,0.F,.25F,.625F,1.F,4.F}){
+        LocomotionState player;Expect(player.ObserveHead(head),"analog turn tracked head");
+        LocomotionInput input;input.turn_active=true;input.turn_x=axis;input.smooth_turn=true;
+        Expect(player.Tick(input,.05F),"analog smooth turn accepted");
+        const float strength=std::clamp((std::abs(axis)-.25F)/.75F,0.F,1.F);
+        const float rotation=-(axis>0?1.F:-1.F)*strength*90.F*pi/180.F*.05F;
+        const float expected=rotation<0?2*pi+rotation:rotation;
+        Expect(Near(player.yaw_radians(),expected),"analog deadzone, direction and clamping are continuous");
+    }
+    LocomotionState player;Expect(player.ObserveHead(head),"smooth lifecycle tracked head");
+    LocomotionInput input;input.turn_active=true;input.turn_x=1;input.smooth_turn=true;
+    const auto initial=player.translation();
+    Expect(player.Tick(input,0)&&player.yaw_radians()==0&&player.translation()==initial,"zero time cannot turn");
+    input.turn_active=false;
+    Expect(player.Tick(input,.05F)&&player.yaw_radians()==0,"menu, cutscene or tracking suppression cannot turn");
+    input.turn_active=true;
+    Expect(player.Tick(input,.02F),"smooth turn resumes when input active");
+    const auto yaw=player.yaw_radians();const auto translation=player.translation();
+    for(float bad:{-1.F,std::numeric_limits<float>::infinity(),std::numeric_limits<float>::quiet_NaN()}){
+        Expect(!player.Tick(input,bad)&&player.yaw_radians()==yaw&&player.translation()==translation,
+               "invalid time rejects atomically without a turn");
+    }
+    for(float speed:{0.F,29.F,181.F,std::numeric_limits<float>::infinity(),std::numeric_limits<float>::quiet_NaN()}){
+        input.smooth_turn_degrees=speed;
+        Expect(!player.Tick(input,.02F)&&player.yaw_radians()==yaw&&player.translation()==translation,
+               "invalid turning speed rejects atomically");
+    }
+    input.smooth_turn_degrees=90;
+    LocomotionState limited=player;
+    Expect(player.Tick(input,5.F)&&limited.Tick(input,.05F),"stalled frame rotation is bounded");
+    Expect(Near(player.yaw_radians(),limited.yaw_radians()),"long frames cannot cause an unexpected large turn");
+    const auto before_snap=player.yaw_radians();
+    input.smooth_turn=false;
+    Expect(player.Tick(input,.02F)&&Near(player.yaw_radians(),before_snap)&&player.snap_turns()==0,
+           "switching smooth to snap while held cannot add a snap");
+    input.turn_x=0;Expect(player.Tick(input,.02F),"neutral rearms snap after switching mode");
+    input.turn_x=1;Expect(player.Tick(input,.02F)&&player.snap_turns()==1,"fresh stick gets original snap after live switch");
+    const auto snapped=player.yaw_radians();
+    Expect(player.Tick(input,.02F)&&Near(player.yaw_radians(),snapped)&&player.snap_turns()==1,"held snap still does not repeat");
+    input.smooth_turn=true;
+    Expect(player.Tick(input,.02F)&&!Near(player.yaw_radians(),snapped),"switching back to smooth works immediately");
+    LocomotionState untracked;
+    Expect(untracked.Tick(input,.02F)&&untracked.yaw_radians()==0,"smooth turning without a tracked head cannot move world");
+}
+
+void TestEyeRelativeSkyProjection() {
+    using namespace hpvr::quest;
+    const std::array<ViewFov,2> fovs{{{-.9F,.68F,-.76F,.83F},{-.68F,.9F,-.76F,.83F}}};
+    for(const auto position:std::array<std::array<float,3>,3>{{{0,1.6F,0},{12,8,-21},{-70,35,81}}})
+    for(const auto look:std::array<std::array<float,3>,3>{{{0,0,-1},{1,.5F,-1},{-.4F,-.7F,1}}}){
+        ViewPose head{position};
+        const std::array target{position[0]+look[0],position[1]+look[1],position[2]+look[2]};
+        Expect(BuildLookOrientation(position,target,&head.orientation),"sky test look direction");
+        Matrix4 head_model;Expect(BuildRigidTransform(head,&head_model),"sky test head basis");
+        for(unsigned eye=0;eye<2;++eye){
+            ViewPose pose=head;
+            const float offset=eye?.032F:-.032F;
+            for(unsigned axis=0;axis<3;++axis)pose.position[axis]+=head_model[axis]*offset;
+            Matrix4 vp,inverse;
+            Expect(BuildViewProjection(pose,fovs[eye],0,.05F,250,&vp)&&InvertReflectionMatrix(vp,inverse),
+                   "asymmetric stereo sky projection has inverse");
+            Expect(std::abs(inverse[11])>1e-6F,"perspective camera extraction has finite divisor");
+            const std::array origin{inverse[8]/inverse[11],inverse[9]/inverse[11],inverse[10]/inverse[11]};
+            for(unsigned axis=0;axis<3;++axis)Expect(std::abs(origin[axis]-pose.position[axis])<.0001F,
+                "inverse VP column two recovers each eye, not a shared mono origin");
+            for(const auto local:std::array<std::array<float,4>,3>{{{2,1,-15,0},{-3,4,-20,0},{0,0,15,0}}}){
+                const auto direction=Transform(head_model,local);
+                const auto expected=Transform(vp,{direction[0],direction[1],direction[2],0});
+                auto actual=Transform(vp,{direction[0]+origin[0],direction[1]+origin[1],direction[2]+origin[2],1});
+                for(unsigned axis:{0U,1U,3U})Expect(std::abs(expected[axis]-actual[axis])<.00015F,
+                    "eye-relative sky cancels translation while preserving perspective orientation");
+                actual[2]=actual[3]*.99999F;
+                if(local[2]<0){
+                    Expect(actual[3]>0&&actual[2]>0&&actual[2]<actual[3],"front-facing sky remains inside Vulkan depth clipping");
+                    Expect(Near(actual[2]/actual[3],.99999F),"sky is pinned near far depth, independent of cube size");
+                    const auto foreground_direction=Transform(head_model,{0,0,-10,0});
+                    const auto foreground=Transform(vp,{foreground_direction[0]+origin[0],foreground_direction[1]+origin[1],
+                        foreground_direction[2]+origin[2],1});
+                    Expect(foreground[2]/foreground[3]<actual[2]/actual[3],"courtyard foreground occludes sky");
+                }else Expect(actual[3]<0&&actual[2]<0,"behind-eye sky retains the correct homogeneous clipping sign");
+            }
+        }
+    }
+}
+
 }  // namespace
 
 int main() {
@@ -255,6 +361,8 @@ int main() {
     Expect(Near(sprint.translation()[2],walk.translation()[2]*1.5F),"L3 sprint is 6 m/s, walk unchanged");
     TestCapsuleRecenter();
     TestRecenterChord();
+    TestSmoothTurning();
+    TestEyeRelativeSkyProjection();
     std::cout << "quest view tests passed\n";
     return EXIT_SUCCESS;
 }

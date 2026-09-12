@@ -1,8 +1,8 @@
 # Harry Potter VR — source code
 
-Source code for **0.1.1 Alpha**, the native Meta Quest 3 port. It includes the
-opening tutorials, Flipendo lesson and Flipendo Challenge. See [README](README.md)
-for features, controls and limitations.
+Source code for **0.1.2 Alpha**, the native Meta Quest 3 port. It includes the
+opening tutorials, Flipendo lesson, Flipendo Challenge and Broomstick Training.
+See [README](README.md) for features, controls and limitations.
 
 ## Layout
 
@@ -77,7 +77,7 @@ packaging are covered in the [release build guide](docs/RELEASE-BUILD.md).
 
 `PACKAGE-QUEST-PLAYER.ps1` creates the player installation kit. It contains the
 APK and importer, not game data. The [installer](tools/release/PLAYER-INSTALL.md)
-prepares the two supported maps from the player's own US PC copy.
+prepares all three supported maps from the player's own US PC copy.
 
 Normal debug and all release APKs exclude microphone-recording diagnostics.
 Do not distribute the separate opt-in diagnostic build.

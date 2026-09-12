@@ -24,6 +24,10 @@ layout(location = 6) out vec3 out_world_position;
 
 void main() {
     gl_Position = eye.view_projection * vec4(in_position, 1.0);
+    if ((in_polygon_flags & 0x08000000u)!=0u) {
+        gl_Position=eye.view_projection*vec4(in_position+eye.dark_position_radius[0].xyz,1.0);
+        gl_Position.z=gl_Position.w*0.99999;
+    }
     out_uv = in_uv;
     out_texture_layer = in_texture_layer;
     out_polygon_flags = in_polygon_flags;

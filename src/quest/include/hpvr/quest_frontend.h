@@ -2,6 +2,7 @@
 #include "hpvr/hp1_gesture.h"
 #include "hpvr/quest_vr_settings.h"
 #include "hpvr/quest_demo.h"
+#include "hpvr/quest_maps.h"
 #include <array>
 #include <filesystem>
 #include <string>
@@ -61,7 +62,7 @@ struct ProgressSave {
     std::array<std::array<float,4>,11> cast{}; // Opening cast, then Filch, Draco, Crabbe, Goyle, Hermione, Quirrell.
     std::vector<std::int32_t> collected_beans; // Stable owned actor references, sorted.
     std::array<float,2> doors{};
-    unsigned map_id=0; // 0: Lev_Tut1; 1: Lev_Tut1b. Actor references are map-local.
+    unsigned map_id=kIntroductionMapId; // Stable QuestMapDescriptor ID; actor references are map-local.
     unsigned banked_beans=0; // Beans collected on completed maps.
     std::vector<std::int32_t> activated_events; // Sorted unique map-local one-shot references.
     unsigned challenge_stars=0;
@@ -79,10 +80,12 @@ bool ReadProgress(const std::filesystem::path& directory,unsigned slot,ProgressS
 bool WriteProgress(const std::filesystem::path& directory,unsigned slot,ProgressSave* inout);
 enum class FrontScreen { Main, Slots, Slot, Replace, Story, Game, Pause, Stub, Cards, Report, Objective, Vr, Debug, Welcome, DemoEnd, Levels, LevelSlots, LevelStart, Controls };
 enum class FrontAction { None, NewGame, Continue, StoryDone, SaveMenu, SkipScene, Resume, BeginLevel, OpenCommunity, StartSelectedLevel };
-inline constexpr unsigned kVrControlsRow=9;
-inline constexpr unsigned kVrMenuRowCount=11;
-inline constexpr unsigned kControlsPageCount=4;
-inline constexpr float VrMenuRowY(unsigned row){return 120.0F+24.0F*float(row);}
+inline constexpr unsigned kVrTurningRow=9;
+inline constexpr unsigned kVrTurnSpeedRow=10;
+inline constexpr unsigned kVrControlsRow=11;
+inline constexpr unsigned kVrMenuRowCount=13;
+inline constexpr unsigned kControlsPageCount=5;
+inline constexpr float VrMenuRowY(unsigned row){return 110.0F+20.0F*float(row);}
 struct FrontQuad {
     float x=0,y=0,w=0,h=0,u=0,v=0,uw=1,vh=1;
     std::uint32_t texture=0, tint=0xffffff;
@@ -111,6 +114,8 @@ public:
     void ShowDemoNotice(bool finished);
     std::vector<FrontQuad> VrValueQuads(int value,bool scale) const;
     std::vector<FrontQuad> VrRefreshQuads(int hz) const;
+    std::vector<FrontQuad> VrTurningQuads(bool smooth) const;
+    std::vector<FrontQuad> VrTurnSpeedQuads(int degrees) const;
     std::vector<FrontQuad> VrVoiceStatusQuads(unsigned status) const;
     std::vector<FrontQuad> VoiceAimQuads(unsigned status) const;
     std::string message;
@@ -133,6 +138,9 @@ public:
     std::vector<FrontQuad> Quads() const;
     std::vector<FrontQuad> BeanCounterQuads(unsigned count) const;
     std::vector<FrontQuad> ChallengeStarQuads(unsigned count,bool report=false) const;
+    std::vector<FrontQuad> BroomLabelQuads() const;
+    // Fields: 0 hoop hits, 1 remaining seconds, 2 stage. Independently cached.
+    std::vector<FrontQuad> BroomNumberQuads(unsigned value,unsigned field) const;
     std::vector<FrontQuad> HudQuads(unsigned count,bool show_beans) const;
     std::vector<FrontQuad> LessonQuads(unsigned passes,bool ready) const;
     std::string DrawKey() const;

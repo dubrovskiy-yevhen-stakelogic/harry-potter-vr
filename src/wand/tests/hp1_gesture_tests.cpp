@@ -538,7 +538,7 @@ Bytes make_class_export_package(std::string_view object_name,
     return bytes;
 }
 
-Bytes make_p8_texture_package(std::uint16_t package_version = 76) {
+Bytes make_p8_texture_package(std::uint16_t package_version = 76, int wet_source = 0) {
     enum Name : std::int32_t {
         none,
         core,
@@ -550,10 +550,15 @@ Bytes make_p8_texture_package(std::uint16_t package_version = 76) {
         format_name,
         texture_name,
         palette_object,
+        fire,
+        wet_class,
+        source_name,
+        wet_name,
     };
     constexpr std::array names{
         "None", "Core", "Package", "Class", "Engine", "Texture",
         "Palette", "Format", "SyntheticTexture", "SyntheticPalette",
+        "Fire", "WetTexture", "SourceTexture", "SyntheticWater",
     };
     Bytes bytes = make_header(package_version);
     const auto name_offset = bytes.size();
@@ -564,6 +569,8 @@ Bytes make_p8_texture_package(std::uint16_t package_version = 76) {
     append_import(bytes, core, package_object, engine);
     append_import(bytes, core, class_object, texture_class, -1);
     append_import(bytes, core, class_object, palette_name, -1);
+    append_import(bytes, core, package_object, fire);
+    append_import(bytes, core, class_object, wet_class, -4);
 
     Bytes palette_payload;
     append_compact(palette_payload, none);
@@ -604,17 +611,25 @@ Bytes make_p8_texture_package(std::uint16_t package_version = 76) {
                   texture_offset + after_mip_data));
     bytes.insert(bytes.end(), texture_payload.begin(), texture_payload.end());
 
+    Bytes wet_payload;
+    append_compact(wet_payload, source_name);
+    append_u8(wet_payload, 0x05U);
+    append_compact(wet_payload, wet_source);
+    append_compact(wet_payload, none);
+    const auto wet_offset=bytes.size();
+    if(wet_source)bytes.insert(bytes.end(),wet_payload.begin(),wet_payload.end());
     const auto export_offset = bytes.size();
     append_export(bytes, -2, texture_name, 0, texture_offset,
                   texture_payload.size());
     append_export(bytes, -3, palette_object, 0, palette_offset,
                   palette_payload.size());
+    if(wet_source)append_export(bytes,-5,wet_name,0,wet_offset,wet_payload.size());
     finish_header(bytes,
                   static_cast<std::uint32_t>(names.size()),
                   static_cast<std::uint32_t>(name_offset),
-                  2,
+                  wet_source ? 3 : 2,
                   static_cast<std::uint32_t>(export_offset),
-                  3,
+                  5,
                   static_cast<std::uint32_t>(import_offset));
     return bytes;
 }
@@ -630,7 +645,8 @@ Bytes make_level_package(bool imported_actor = false,
                          std::uint16_t package_version = 76,
                          bool truncate_model = false,
                          bool invalid_active_vertex = false,
-                         bool include_player_start = false) {
+                         bool include_player_start = false,
+                         const Bytes& actor_properties = {}) {
     enum Name : std::int32_t {
         none,
         core,
@@ -658,6 +674,7 @@ Bytes make_level_package(bool imported_actor = false,
         "Model", "Actor", "Polys", "SyntheticLevel", "SyntheticModel",
         "Actor0", "Actor1", "SyntheticPolys", "PlayerStart", "Location",
         "Rotation", "Vector", "Rotator", "PlayerStart0",
+        "CutCast", "CutLoc", "cast", "Locs",
     };
     Bytes bytes = make_header(package_version);
     const auto name_offset = bytes.size();
@@ -805,11 +822,15 @@ Bytes make_level_package(bool imported_actor = false,
     bytes.insert(bytes.end(), player_start_payload.begin(),
                  player_start_payload.end());
 
+    const auto actor_payload_offset = bytes.size();
+    bytes.insert(bytes.end(), actor_properties.begin(), actor_properties.end());
+
     const auto export_offset = bytes.size();
     append_export(bytes, -2, level_name, 0, payload_offset, payload.size());
     append_export(bytes, -3, model_name, 0, model_payload_offset,
                   model_payload.size());
-    append_export(bytes, -4, actor_zero, 0, 0, 0);
+    append_export(bytes, -4, actor_zero, 0, actor_payload_offset,
+                  actor_properties.size());
     append_export(bytes, -4, actor_one, 0, 0, 0);
     append_export(bytes, -5, polys_name, 0, 0, 0);
     if (include_player_start) {
@@ -1594,6 +1615,50 @@ void actor_visual_census_retains_slots_and_instance_overrides() {
            "actor visual census decodes transform and leaves defaults explicit");
 }
 
+void actor_visual_census_accepts_empty_cutscene_aliases() {
+    const TemporaryGraphRoot files;
+    for (const auto structure : {20, 21}) {
+        for (const auto count : {0, 1, 5, -1, 50}) {
+            Bytes value;
+            append_compact(value, 4);
+            append_compact(value, count);
+            if (count == 1) append_u8(value, 0);
+            if (count == 5) {
+                for (const auto c : std::string_view("Hero")) append_u8(value, c);
+                append_u8(value, 0);
+            }
+            value.insert(value.end(), 12, 0);
+            Bytes properties;
+            append_compact(properties, structure + 2);
+            append_u8(properties, 0x5a);
+            append_compact(properties, structure);
+            append_u8(properties, static_cast<std::uint8_t>(value.size()));
+            properties.insert(properties.end(), value.begin(), value.end());
+            append_compact(properties, 0);
+            const auto map = files.write(
+                "maps/CutAlias" + std::to_string(structure) + "_" +
+                    std::to_string(count) + ".unr",
+                make_level_package(false, false, 76, false, false, false,
+                                   properties));
+            const auto census = hpvr::wand::inspect_hp1_actor_visuals(map);
+            if (count < 0 || count == 50) {
+                expect(census.status == Hp1ProfileStatus::invalid_profile,
+                       "negative or out-of-bounds cutscene alias fails closed");
+                continue;
+            }
+            expect(census.status == Hp1ProfileStatus::ok &&
+                       census.actors.front().serialized_properties.size() == 1,
+                   "empty and named cutscene aliases retain actor properties");
+            const auto& alias = census.actors.front().serialized_properties.front();
+            expect(alias.object_reference == 4 && alias.object_reference_serialized &&
+                       alias.text_value_serialized &&
+                       alias.text_value == (count == 5 ? "Hero" : "") &&
+                       alias.value == value,
+                   "cutscene alias keeps reference, text, and trailing struct fields");
+        }
+    }
+}
+
 void model_census_decodes_only_bounded_collection_framing() {
     const TemporaryGraphRoot files;
     const auto map = files.write("maps/Synthetic.unr", make_level_package());
@@ -2034,6 +2099,19 @@ void p8_texture_decoder_validates_mips_palette_and_rgba() {
     const auto imported = hpvr::wand::load_hp1_p8_texture(package, -2);
     expect(imported.status == Hp1ProfileStatus::invalid_profile,
            "import reference cannot be decoded as a local Texture");
+    for(const auto source: {1,2,3,-2}) {
+        const auto wet_package=files.write("textures/Water"+std::to_string(source)+".utx",
+                                           make_p8_texture_package(76,source));
+        const auto water=hpvr::wand::load_hp1_p8_texture(wet_package,3);
+        if(source==1) {
+            expect(water.status==Hp1ProfileStatus::ok && water.texture_reference==3 &&
+                   water.object_name=="SyntheticWater" && water.rgba8==texture.rgba8,
+                   "WetTexture uses authored source pixels and retains wrapper identity");
+        } else {
+            expect(water.status!=Hp1ProfileStatus::ok && water.rgba8.empty(),
+                   "WetTexture rejects palette sources, cyclic sources, and unresolved imports");
+        }
+    }
 }
 
 std::vector<Vec2> dense_line_template() {
@@ -2203,6 +2281,7 @@ int main() {
     level_handles_decode_actor_slots_and_world_model();
     player_start_census_decodes_only_direct_level_actor_properties();
     actor_visual_census_retains_slots_and_instance_overrides();
+    actor_visual_census_accepts_empty_cutscene_aliases();
     model_census_decodes_only_bounded_collection_framing();
     skeletal_mesh_census_decodes_exact_ue1_framing();
     bsp_topology_decodes_and_validates_active_cross_indices();

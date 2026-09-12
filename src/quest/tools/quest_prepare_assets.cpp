@@ -33,19 +33,21 @@ void RejectRedirects(const fs::path& path){
 }
 int Run(const std::vector<fs::path>& args){
     if(args.size()!=6&&args.size()!=7){
-        std::cerr<<"usage: hpvr_quest_prepare_assets <owned-root> --output <private-output-outside-root> --map <0|1> [--verify]\n";
+        std::cerr<<"usage: hpvr_quest_prepare_assets <owned-root> --output <private-output-outside-root> --map <0|1|2> [--verify]\n";
         return 2;
     }
     try{
+        const auto map_argument=args[5].string();
+        const auto map=std::ranges::find_if(kQuestMaps,[&](const auto& item){return std::to_string(item.id)==map_argument;});
         if(args[2]!="--output"||args[4]!="--map"||
-            (args[5]!="0"&&args[5]!="1")||(args.size()==7&&args[6]!="--verify"))
+            map==kQuestMaps.end()||(args.size()==7&&args[6]!="--verify"))
             throw std::runtime_error("invalid preparation arguments");
         RejectRedirects(args[1]);RejectRedirects(args[3]);
         const auto root=fs::canonical(args[1]);
         const auto output=fs::weakly_canonical(fs::absolute(args[3]));
         if(!fs::is_directory(root)||output==output.root_path()||Within(output,root)||Within(root,output))
             throw std::runtime_error("output must be a dedicated private folder outside the input game tree");
-        const unsigned map_id=args[5]=="0"?0:1;
+        const unsigned map_id=map->id;
         const auto path=output/("map-"+std::to_string(map_id)+".hpvc");
         RejectRedirects(path);
         const bool verify=args.size()==7;
@@ -56,15 +58,15 @@ int Run(const std::vector<fs::path>& args){
         const auto fingerprint=cache::ComputeSourceFingerprint(root,map_id);
         const auto fingerprint_seconds=elapsed();
         if(!verify){
-            const auto map=root/(map_id==0?"Maps/Lev_Tut1.unr":"Maps/Lev_Tut1b.unr");
+            const auto package=root/map->package_path;
             hpvr_hp1_player_start_report start{};
-            if(hpvr_hp1_load_player_start_utf8(map.string().c_str(),kMetersPerUnrealUnit,0,&start)!=HPVR_HP1_PROFILE_OK||
+            if(hpvr_hp1_load_player_start_utf8(package.string().c_str(),kMetersPerUnrealUnit,0,&start)!=HPVR_HP1_PROFILE_OK||
                 start.status!=HPVR_HP1_PROFILE_OK||start.abi_version!=HPVR_HP1_PLAYER_START_ABI_VERSION||
                 !start.location_serialized||start.rotation_units[0]!=0||start.rotation_units[2]!=0)
                 throw std::runtime_error("owned player start is invalid");
             const float yaw=static_cast<float>(start.rotation_units[1])*kTau/65536.0F;
             WorldMetadata world;
-            if(!LoadWorldMetadata(root,map,start,yaw,&world))throw std::runtime_error("owned scene metadata could not be loaded");
+            if(!LoadWorldMetadata(root,package,start,yaw,&world))throw std::runtime_error("owned scene metadata could not be loaded");
             PreparedGeometry geometry;
             if(!PrepareGeometryFromOwnedData(root,map_id,start,yaw,world,geometry,[&](const char* stage){
                 std::cout<<"PREPARE_STAGE="<<stage<<" map="<<map_id<<" seconds="<<elapsed()<<std::endl;
@@ -86,6 +88,14 @@ int Run(const std::vector<fs::path>& args){
         if(!ValidatePreparedGeometry(candidate))throw std::runtime_error("prepared read-back layout is invalid");
         const auto read_seconds=elapsed()-read_at;
         if(verify){
+            if(map_id==2){
+                const auto player=std::ranges::find_if(candidate.characters,[](const auto& draw){return draw.player;});
+                BroomAvatar avatar;
+                if(player==candidate.characters.end()||!BuildBroomAvatar(root,candidate.vertices,*player,avatar))
+                    throw std::runtime_error("prepared mounted avatar is incomplete");
+                std::cout<<"PREPARED_BROOM_AVATAR=PASS vertices="<<avatar.vertex_count<<" frames="<<avatar.frame_count
+                    <<" body="<<!avatar.broom_only<<" broom_triangles="<<avatar.broom_triangles<<'\n';
+            }
             const auto* vertex_address=candidate.vertices.data();
             const auto* texture_address=candidate.textures.data();
             QuestFrontEnd front;
@@ -104,7 +114,7 @@ int Run(const std::vector<fs::path>& args){
                 <<" layers="<<candidate.texture_layers<<" scene_buffer_reallocated=NO\n";
         }
         std::cout<<std::fixed<<std::setprecision(3)<<"PREPARED_SCENE=PASS map="<<map_id
-            <<" schema="<<cache::kSchema<<" cook="<<cache::kCookRevision<<" bytes="<<fs::file_size(path)
+            <<" schema="<<cache::kSchema<<" cook="<<cache::CookRevision(map_id)<<" bytes="<<fs::file_size(path)
             <<" vertices="<<candidate.vertices.size()<<" fingerprint_seconds="<<fingerprint_seconds
             <<" read_seconds="<<read_seconds<<" total_seconds="<<elapsed()<<" mode="<<(verify?"VERIFY":"PREPARE")<<'\n';
         return 0;

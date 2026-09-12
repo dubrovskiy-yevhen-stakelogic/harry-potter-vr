@@ -627,7 +627,8 @@ struct Hp1BspTriangleMesh {
     const std::filesystem::path& package_path,
     std::int32_t class_reference);
 
-// Decodes one local direct Engine.Texture export and its local Engine.Palette.
+// Decodes a local Engine.Texture and its local Engine.Palette, or follows a
+// bounded local WetTexture SourceTexture chain to the authored P8 pixels.
 // Gate B9 supports only the legacy P8 layout observed in owned HP1 packages.
 // No image or package data is written.
 [[nodiscard]] Hp1P8Texture load_hp1_p8_texture(

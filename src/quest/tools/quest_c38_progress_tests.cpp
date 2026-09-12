@@ -40,8 +40,25 @@ std::string Body(unsigned version,unsigned stage=12){
     return body.str();
 }
 void OwnedAssets(const std::filesystem::path& root){
-    FrontAssets intro,challenge;
+    FrontAssets intro,challenge,flying;
     Check(LoadFrontAssets(root,&intro),"owned tutorial frontend");
+    const std::array<std::string_view,4> common_effects{
+        "pickup_star","vase_breaking","cauldron_flip","save_game"};
+    Check(intro.gameplay_audio.size()>common_effects.size(),"intro contains dialogue and common effects");
+    const auto prefix_size=intro.gameplay_audio.size()-common_effects.size();
+    const auto check_audio_prefix=[&](const FrontAssets& other){
+        Check(other.gameplay_audio.size()>=intro.gameplay_audio.size(),"map preserves common audio");
+        for(std::size_t i=0;i<prefix_size;++i)
+            Check(intro.gameplay_audio[i].object_name==other.gameplay_audio[i].object_name&&
+                  intro.gameplay_audio[i].encoded_bytes==other.gameplay_audio[i].encoded_bytes,
+                  "legacy dialogue prefix and payloads stable");
+        for(std::size_t i=0;i<common_effects.size();++i){
+            const auto& baseline=intro.gameplay_audio[prefix_size+i];
+            const auto& effect=other.gameplay_audio[other.gameplay_audio.size()-common_effects.size()+i];
+            Check(baseline.object_name==common_effects[i]&&effect.object_name==common_effects[i]&&
+                  baseline.encoded_bytes==effect.encoded_bytes,"common effect suffix and payloads stable");
+        }
+    };
     Check(LoadFrontAssets(root,&challenge,1),"owned challenge frontend");
     Check(intro.map_id==0&&challenge.map_id==1,"owned asset map association");
     Check(challenge.level_objective=="Collect the challenge stars.","owned localized challenge objective");
@@ -50,8 +67,7 @@ void OwnedAssets(const std::filesystem::path& root){
     for(std::size_t i=0;i<intro.music.size();++i)
         Check(intro.music[i].object_name==challenge.music[i].object_name,"legacy music indices stable");
     Check(challenge.gameplay_audio.size()>intro.gameplay_audio.size(),"challenge voices added");
-    for(std::size_t i=0;i<intro.gameplay_audio.size();++i)
-        Check(intro.gameplay_audio[i].object_name==challenge.gameplay_audio[i].object_name,"legacy voice indices stable");
+    check_audio_prefix(challenge);
     const auto cue=std::ranges::find_if(challenge.music_cues,[](const auto& c){return c.tag=="MU1";});
     Check(cue!=challenge.music_cues.end()&&cue->music_index>=4,"entry music cue linked");
     Check(challenge.music.at(static_cast<std::size_t>(cue->music_index)).object_name=="Arg_SecretCauldron_loop",
@@ -76,6 +92,23 @@ void OwnedAssets(const std::filesystem::path& root){
         "decoration manifest resolves all eight authored stars");
     Check(std::ranges::any_of(decorated.actors,[](const auto& a){return a.qualified_class_name=="HProps.RectangleWoodTable";}),
         "decorations stop at owned baseProps visual boundary");
+    Check(LoadFrontAssets(root,&flying,kBroomstickTrainingMapId),"owned flying frontend");
+    check_audio_prefix(flying);
+    Check(flying.map_id==2&&flying.level_objective=="Flying lesson with Madam Hooch. Fly Harry through the hoops.",
+        "owned flying objective and map identity");
+    Check(flying.music.size()==7&&flying.level_music_index==4&&flying.music[4].object_name=="Arg_trollchase_loop",
+        "flying entry uses LevelInfo-owned music");
+    for(std::size_t i=0;i<intro.music.size();++i)
+        Check(intro.music[i].object_name==flying.music[i].object_name,"flying keeps original music prefix");
+    for(const auto& name:{"HOOCH_001","HOOCH_010","HOOCH_011","HOOCH_013","HOOCH_012","HOOCH_004","HOOCH_005",
+                          "HOOCH_006","HOOCH_007","HOOCH_008","HOOCH_009","Q_whistle_short","Q_through_hoop",
+                          "Q_through_hoop01","Q_through_hoop15","broom_accel"})
+        Check(std::ranges::any_of(flying.gameplay_audio,[&](const auto& sound){return sound.object_name==name;}),
+            "flying authored stage commentary and effects loaded");
+    const auto neutral=std::ranges::find_if(flying.music_cues,[](const auto& cue){return cue.tag=="Neutral07Music";});
+    const auto chase=std::ranges::find_if(flying.music_cues,[](const auto& cue){return cue.tag=="RememberallChaseMusic";});
+    Check(neutral!=flying.music_cues.end()&&neutral->music_index==5&&
+          chase!=flying.music_cues.end()&&chase->music_index==6,"flying authored music event links");
 }
 }
 int main(int argc,char** argv){
@@ -104,7 +137,7 @@ int main(int argc,char** argv){
         }
         save.quest_stage=65;Check(!WriteProgress(journal,1,&save),"challenge stage overflow rejected");
         save.map_id=0;save.quest_stage=24;Check(!WriteProgress(journal,1,&save),"tutorial bounds preserved");
-        save.map_id=2;save.quest_stage=0;Check(!WriteProgress(journal,1,&save),"unknown map rejected");
+        save.map_id=3;save.quest_stage=0;Check(!WriteProgress(journal,1,&save),"unknown map rejected");
         save.map_id=1;save.banked_beans=1000001;Check(!WriteProgress(journal,1,&save),"bean counter bound");
         save.banked_beans=2;save.challenge_stars=1025;Check(!WriteProgress(journal,1,&save),"star counter bound");
         save.challenge_stars=3;save.activated_events={1,1};Check(!WriteProgress(journal,1,&save),"duplicate event rejected");
@@ -151,7 +184,7 @@ int main(int argc,char** argv){
         Bank(malformed,Body(8)+"1 0 0 0 \"\" \"\"\n");
         Check(ReadProgress(malformed,0,&read)&&read.map_id==1,"known-good synthetic v8 fixture");
         expect_bad(Body(9)+"0 0 0 0 \"\" \"\"\n","future format rejected");
-        expect_bad(Body(8)+"2 0 0 0 \"\" \"\"\n","corrupt map rejected despite valid checksum");
+        expect_bad(Body(8)+"3 0 0 0 \"\" \"\"\n","corrupt map rejected despite valid checksum");
         expect_bad(Body(8)+"1 0 0 1025 \"\" \"\"\n","oversized event allocation rejected");
         expect_bad(Body(8)+"1 0 0 -1 \"\" \"\"\n","negative event count rejected");
         expect_bad(Body(8)+"1 0 0 2 11 11 \"\" \"\"\n","duplicate serialized events rejected");
@@ -198,10 +231,25 @@ int main(int argc,char** argv){
         Check(front.ChallengeStarQuads(1000000).size()==front.ChallengeStarQuads(8).size(),
             "invalid large display count stays bounded");
         FrontAssets assets;
-        Check(!LoadFrontAssets({},&assets,2)&&!assets.error.empty(),"unsupported asset map fails before loading");
+        Check(!LoadFrontAssets({},&assets,3)&&!assets.error.empty(),"unsupported asset map fails before loading");
+        const auto flying_journal=temp.path/"flying";
+        ProgressSave flying;flying.map_id=kBroomstickTrainingMapId;flying.phase=2;flying.page=14;
+        flying.lesson_passes=4;flying.banked_beans=73;flying.collected_beans={21,81};flying.activated_events={34};
+        flying.graph_state="FLYING_TEST 1";flying.world_state="FLYING_WORLD_TEST 1";flying.quest_stage=64;
+        Check(WriteProgress(flying_journal,0,&flying)&&ReadProgress(flying_journal,0,&read)&&
+            read.map_id==2&&read.banked_beans==73&&read.collected_beans==flying.collected_beans&&
+            read.activated_events==flying.activated_events&&read.graph_state==flying.graph_state&&read.world_state==flying.world_state,
+            "third-map progress retains map-local state and inherited bean bank");
+        Check(!TutorialRewardReady(read)&&!ApplyFirstPeevesContact(read),"third-map progress cannot enter introduction-only events");
+        flying.quest_stage=65;Check(!WriteProgress(flying_journal,0,&flying),"third-map stage remains bounded");
+        flying.quest_stage=0;flying.collected_beans={0x20000000+16};
+        Check(!WriteProgress(flying_journal,0,&flying),"challenge-only spawned bean IDs cannot enter flying map");
+        front.assets.map_id=2;front.progress.map_id=2;front.progress.quest_stage=64;front.screen=FrontScreen::Pause;
+        const auto flying_key=front.DrawKey();front.progress.quest_stage=0;
+        Check(front.DrawKey()==flying_key&&!front.Quads().empty(),"third-map objective uses stable cached panel");
         if(argc==2)OwnedAssets(argv[1]);
         else Check(argc==1,"usage: test [owned-data-root]");
-        std::cout<<"C38_PROGRESS=PASS checks="<<checks<<" version=8 legacy=1-7 maps=2 corruption=PASS\n";
+        std::cout<<"C38_PROGRESS=PASS checks="<<checks<<" version=8 legacy=1-7 maps=3 corruption=PASS\n";
         return 0;
     }catch(const std::exception& e){std::cerr<<"C38_PROGRESS=FAIL "<<e.what()<<'\n';return 1;}
 }

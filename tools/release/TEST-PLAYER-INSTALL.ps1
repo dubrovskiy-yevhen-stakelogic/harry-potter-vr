@@ -49,6 +49,12 @@ Assert-HpvrReject { Get-HpvrMapInputs $owned $true } 'Requested missing challeng
 $challengeMaps=@(Get-HpvrMapInputs $owned $true)
 Assert-HpvrTest ($challengeMaps.Count -eq 2 -and $challengeMaps[1].Relative -eq 'Maps/Lev_Tut1b.unr') 'Opt-in includes exact challenge map'
 Assert-HpvrTest (@(Get-HpvrMapInputs $owned).Count -eq 1) 'Challenge presence does not change released default'
+Assert-HpvrReject { Get-HpvrMapInputs $owned $true $true } 'Requested missing broom map rejected'
+[IO.File]::WriteAllBytes((Join-Path $owned 'Maps\Lev_Tut2.unr'), [byte[]](7,8,9))
+$broomMaps = @(Get-HpvrMapInputs $owned $true $true)
+Assert-HpvrTest ($broomMaps.Count -eq 3 -and $broomMaps[2].Relative -eq 'Maps/Lev_Tut2.unr') 'Three-map selection includes exact broom map'
+Assert-HpvrReject { Get-HpvrMapInputs $owned $false $true } 'Broom map requires preceding challenge selection'
+Assert-HpvrTest (@(Get-HpvrMapInputs $owned $true).Count -eq 2) 'Broom file presence does not expand older release selection'
 [IO.File]::WriteAllBytes((Join-Path $owned 'system\HP.exe'), [byte[]](77,90))
 $inputData = Get-HpvrOwnedInput $owned (Join-Path $owned 'system\test.u')
 Assert-HpvrTest ($inputData.Relative -eq 'system/test.u') 'Owned package accepted'
@@ -97,6 +103,17 @@ $verifiedAlpha = Read-HpvrReleaseManifest $kit
 $alphaMaps = @(Get-HpvrReleaseMapIds $verifiedAlpha)
 Assert-HpvrTest ($alphaMaps.Count -eq 2 -and $alphaMaps[0] -eq 0 -and $alphaMaps[1] -eq 1) 'Two-map alpha selects both maps without a CLI switch'
 Assert-HpvrTest (@(Get-HpvrReleaseMapIds $verifiedAlpha -IncludeChallenge).Count -eq 2) 'Explicit challenge option does not duplicate declared maps'
+$broomRelease = [pscustomobject]@{ schema=1; packageName='io.github.hpvr.quest'; apk='HPVR-Quest-Demo.apk'; versionName='0.1.2-alpha'; versionCode=57; mapIds=@(0,1,2); files=$entries }
+Write-FixtureManifest $broomRelease
+$verifiedBroom = Read-HpvrReleaseManifest $kit
+$broomMapIds = @(Get-HpvrReleaseMapIds $verifiedBroom)
+Assert-HpvrTest (($broomMapIds -join ',') -eq '0,1,2') 'Three-map release selects every map automatically'
+Assert-HpvrTest ((@(Get-HpvrReleaseMapIds $verifiedBroom -IncludeChallenge) -join ',') -eq '0,1,2') 'Legacy challenge flag cannot remove the declared broom map'
+Assert-HpvrReject { Get-HpvrReleaseMapIds ([pscustomobject]@{versionCode=56;mapIds=@(0,1,2)}) } 'Development APK cannot claim the new public three-map contract'
+Assert-HpvrTest (@(Get-HpvrReleaseMapIds ([pscustomobject]@{versionCode=57})).Count -eq 1) 'New version alone cannot silently expand a legacy manifest'
+foreach ($badMaps in @(@(0,1,1), @(0,2,1), @(0,1,3), @(0,1,2,3))) {
+    Assert-HpvrReject { Get-HpvrReleaseMapIds ([pscustomobject]@{versionCode=57;mapIds=$badMaps}) } 'Three-map release rejects duplicate, reordered, or unsupported maps'
+}
 $alpha.mapIds = @(0)
 $alpha.versionCode = 37
 Write-FixtureManifest $alpha
@@ -196,6 +213,11 @@ $script:graphMode='escape'
 Assert-HpvrReject {Get-HpvrDependencySet $owned 'synthetic-graph.exe' $true} 'Graph cannot smuggle an external package'
 $script:graphMode='truncated'
 Assert-HpvrReject {Get-HpvrDependencySet $owned 'synthetic-graph.exe' $true} 'Incomplete graph fails closed'
+$script:graphMode='valid'
+$script:graphCalls.Clear()
+$closure=Get-HpvrDependencySet $owned 'synthetic-graph.exe' ($broomMapIds -contains 1) ($broomMapIds -contains 2)
+Assert-HpvrTest ($script:graphCalls.Count -eq 3 -and $closure.Inputs.Relative -contains 'Maps/Lev_Tut2.unr') 'Three-map release scans broom dependency closure'
+Assert-HpvrTest (@($closure.Inputs | Where-Object {$_.Relative -eq 'system/HPBase.u'}).Count -eq 1) 'Three-map closure deduplicates shared packages'
 
 # Scene preparation stays opt-in by release capability, never by the presence
 # of an arbitrary EXE beside an older installer. All native work below is mocked.
@@ -247,12 +269,13 @@ function Invoke-HpvrChecked([string]$Executable,[string[]]$Arguments,[string]$La
     if($script:sceneMode -eq 'extra'){[IO.File]::WriteAllBytes((Join-Path $Arguments[2] 'unexpected.hpvc'),[byte[]](1))}
     'SCENE_PREPARE=PASS'
 }
-function New-HpvrSceneFixture([bool]$Challenge=$true){
+function New-HpvrSceneFixture([bool]$Challenge=$true, [bool]$Broom=$false){
     $run=Join-Path $fixture ('private-'+[Guid]::NewGuid().ToString('N'))
     $stage=Join-Path $run 'HP'
     New-Item -ItemType Directory -Path (Join-Path $stage 'Maps') | Out-Null
     [IO.File]::WriteAllBytes((Join-Path $stage 'Maps/Lev_Tut1.unr'),[byte[]](1,2,3))
     if($Challenge){[IO.File]::WriteAllBytes((Join-Path $stage 'Maps/Lev_Tut1b.unr'),[byte[]](4,5,6))}
+    if($Broom){[IO.File]::WriteAllBytes((Join-Path $stage 'Maps/Lev_Tut2.unr'),[byte[]](7,8,9))}
     return [pscustomobject]@{Run=$run;Stage=$stage}
 }
 $testScene=New-HpvrSceneFixture
@@ -279,6 +302,14 @@ foreach ($map in @(0,1)) {
     Assert-HpvrTest ($prepared[$map].sha256 -eq (Get-FileHash -LiteralPath (Join-Path $testScene.Stage $prepared[$map].path) -Algorithm SHA256).Hash) ("Alpha map $map transfer entry matches prepared bytes")
 }
 $script:sceneCalls.Clear()
+$testScene=New-HpvrSceneFixture $true $true
+$prepared=@(Invoke-HpvrScenePreparation $sceneToolPath $testScene.Stage $owned $kit $testScene.Run $true $true)
+Assert-HpvrTest ($prepared.Count -eq 3 -and $script:sceneCalls.Count -eq 6 -and $prepared[2].path -eq 'Cache/Scenes/map-2.hpvc') 'Three-map release prepares and verifies exactly three caches'
+foreach ($map in @(0,1,2)) {
+    Assert-HpvrTest ($script:sceneCalls[2*$map].Arguments[4] -eq [string]$map -and $script:sceneCalls[2*$map+1].Arguments[-1] -eq '--verify') ("Three-map release independently verifies map $map")
+    Assert-HpvrTest ($prepared[$map].sha256 -eq (Get-FileHash -LiteralPath (Join-Path $testScene.Stage $prepared[$map].path) -Algorithm SHA256).Hash) ("Three-map cache $map matches transfer entry")
+}
+$script:sceneCalls.Clear()
 $testScene=New-HpvrSceneFixture
 $prepared=@(Invoke-HpvrScenePreparation '' $testScene.Stage $owned $kit $testScene.Run)
 Assert-HpvrTest ($prepared.Count -eq 0 -and $script:sceneCalls.Count -eq 0 -and -not (Test-Path -LiteralPath (Join-Path $testScene.Stage 'Cache'))) 'Legacy or explicit skipped preparation performs no cache work'
@@ -288,6 +319,9 @@ Assert-HpvrReject {Invoke-HpvrScenePreparation $sceneToolPath (Join-Path $fixtur
 $testScene=New-HpvrSceneFixture $false
 Assert-HpvrReject {Invoke-HpvrScenePreparation $sceneToolPath $testScene.Stage $owned $kit $testScene.Run $true} 'Missing requested challenge fails before native preparation'
 Assert-HpvrTest ($script:sceneCalls.Count -eq 0) 'Unsafe targets and missing map cannot invoke helper'
+$testScene=New-HpvrSceneFixture $true
+Assert-HpvrReject {Invoke-HpvrScenePreparation $sceneToolPath $testScene.Stage $owned $kit $testScene.Run $true $true} 'Missing requested broom map fails before native preparation'
+Assert-HpvrTest ($script:sceneCalls.Count -eq 0) 'Missing broom map cannot invoke preparation helper'
 foreach($mode in @('short','failure','verify-failure','extra')){
     $script:sceneMode=$mode
     $testScene=New-HpvrSceneFixture
@@ -318,9 +352,10 @@ Assert-HpvrTest ($script:sceneCalls.Count -eq 0) 'Native output junction rejecte
 # dialogue/audio enumeration, and scene preparation. No native tool is run.
 $installerSource=Get-Content -LiteralPath (Join-Path $PSScriptRoot 'INSTALL-HPVR.ps1') -Raw
 Assert-HpvrTest ($installerSource.Contains('$selectedMapIds = @(Get-HpvrReleaseMapIds $release -IncludeChallenge:$IncludeChallenge)') -and $installerSource.Contains('$withChallenge = $selectedMapIds -contains 1')) 'Main installer resolves manifest and legacy switch once'
-Assert-HpvrTest ($installerSource.Contains('Get-HpvrDependencySet $ownedRoot $graphProbe $withChallenge')) 'Package import uses resolved map selection'
-Assert-HpvrTest ($installerSource.Contains('if ($withChallenge) { $frontendArguments += ''--challenge'' }')) 'Speech and music enumeration uses the same resolved map selection'
-Assert-HpvrTest ($installerSource.Contains('Invoke-HpvrScenePreparation $scenePreparationTool $stagedGame $ownedRoot $bundleRoot $privateRun $withChallenge')) 'Prepared scenes use the same resolved map selection'
+Assert-HpvrTest ($installerSource.Contains('$withBroom = $selectedMapIds -contains 2')) 'Main installer resolves broom map from release metadata'
+Assert-HpvrTest ($installerSource.Contains('Get-HpvrDependencySet $ownedRoot $graphProbe $withChallenge $withBroom')) 'Package import uses resolved map selection'
+Assert-HpvrTest ($installerSource.Contains('Get-HpvrFrontendAudioPlan $stagedGame $frontendProbe $encodedRoot $privateRun $withChallenge $withBroom')) 'Speech and music enumeration uses the same resolved map selection'
+Assert-HpvrTest ($installerSource.Contains('Invoke-HpvrScenePreparation $scenePreparationTool $stagedGame $ownedRoot $bundleRoot $privateRun $withChallenge $withBroom')) 'Prepared scenes use the same resolved map selection'
 # Evaluate only the packager's mapIds value expression, never its executable
 # script body. In particular, PowerShell must not unwrap a single-map array.
 $packagePath=Join-Path $PSScriptRoot '../../PACKAGE-QUEST-PLAYER.ps1'
@@ -335,11 +370,67 @@ $mapTables=@($packageAst.FindAll({param($node)
 Assert-HpvrTest ($mapTables.Count -eq 1) 'Packager has one explicit release map declaration'
 $mapValue=@($mapTables[0].KeyValuePairs | Where-Object {$_.Item1.Extent.Text -eq 'mapIds'})[0].Item2.Extent.Text
 $mapEvaluator=[scriptblock]::Create('[pscustomobject]@{ mapIds = ' + $mapValue + ' }')
-foreach($code in @(37,54)) {
+foreach($code in @(37,54,56,57)) {
     $hpvrMetadata=[pscustomobject]@{versionCode=$code}
     $roundtrip=(& $mapEvaluator | ConvertTo-Json -Depth 4) | ConvertFrom-Json
-    $expectedCount=if($code -eq 37){1}else{2}
+    $expectedCount=if($code -eq 37){1}elseif($code -ge 57){3}else{2}
     Assert-HpvrTest ($roundtrip.mapIds -is [Array] -and $roundtrip.mapIds.Count -eq $expectedCount -and $roundtrip.mapIds[0] -eq 0) ("Packager C$code map declaration survives JSON as an array")
     if($code -eq 54){Assert-HpvrTest ($roundtrip.mapIds[1] -eq 1) 'Packager alpha includes challenge map one'}
+    if($code -eq 57){Assert-HpvrTest ($roundtrip.mapIds[1] -eq 1 -and $roundtrip.mapIds[2] -eq 2) 'Packager new alpha includes challenge and broom maps'}
 }
+# Audio uses synthetic probe output; no original clips or native programs are used.
+$script:audioCalls = [Collections.Generic.List[object]]::new()
+$script:audioMode = 'valid'
+function Invoke-HpvrChecked([string]$Executable, [string[]]$Arguments, [string]$Label) {
+    $script:audioCalls.Add([pscustomobject]@{Arguments=$Arguments; Label=$Label})
+    $passRoot = $Arguments[1]
+    New-Item -ItemType Directory -Path $passRoot -Force | Out-Null
+    $map = if ($Arguments -contains '--map') { [int]$Arguments[-1] } else { -1 }
+    $rows = [Collections.Generic.List[string]]::new()
+    $count = if ($script:audioMode -eq 'truncated') { 2 } else { 20 }
+    for ($index = 0; $index -lt $count; ++$index) {
+        $key = 'Shared' + $index + '.0123abcd.s16'
+        $rows.Add($key + "`t1")
+        if ($script:audioMode -ne 'missing-source' -or $index -ne 0) {
+            $bytes = if ($script:audioMode -eq 'conflicting-source' -and $map -eq 1 -and $index -eq 0) { [byte[]](9,8,7) } else { [byte[]](1,2,3) }
+            [IO.File]::WriteAllBytes((Join-Path $passRoot ($key + '.mp2')), $bytes)
+        }
+    }
+    if ($script:audioMode -eq 'duplicate') { $rows.Add($rows[0]) }
+    if ($script:audioMode -eq 'unsafe-name') { $rows.Add("../escape.0123abcd.s16`t1") }
+    if ($script:audioMode -eq 'channel-mismatch') { $rows.Add("Invalid.0123abcd.stereo.s16`t1") }
+    $unique = 'Map' + ($map + 1) + '.0123abcd.s16'
+    $rows.Add($unique + "`t1")
+    [IO.File]::WriteAllBytes((Join-Path $passRoot ($unique + '.mp2')), [byte[]](4,5,6))
+    [IO.File]::WriteAllLines((Join-Path $passRoot 'audio-plan.tsv'), $rows)
+    'FRONTEND=PASS'
+}
+function New-HpvrAudioFixture {
+    $run = Join-Path $fixture ('audio-' + [Guid]::NewGuid().ToString('N'))
+    $encoded = Join-Path $run 'encoded-private'
+    New-Item -ItemType Directory -Path $encoded | Out-Null
+    return [pscustomobject]@{Run=$run; Encoded=$encoded}
+}
+foreach ($challenge in @($false, $true)) {
+    $script:audioCalls.Clear()
+    $audioFixture = New-HpvrAudioFixture
+    $plan = Get-HpvrFrontendAudioPlan $owned 'synthetic-audio.exe' $audioFixture.Encoded $audioFixture.Run $challenge
+    Assert-HpvrTest ($plan.Count -eq 21 -and $script:audioCalls.Count -eq 1) 'Legacy audio extraction remains a single pass'
+    Assert-HpvrTest (($script:audioCalls[0].Arguments -contains '--challenge') -eq $challenge -and $script:audioCalls[0].Arguments -notcontains '--map') 'Legacy probe keeps compatible challenge argument'
+}
+$script:audioCalls.Clear()
+$audioFixture = New-HpvrAudioFixture
+$plan = Get-HpvrFrontendAudioPlan $owned 'synthetic-audio.exe' $audioFixture.Encoded $audioFixture.Run $true $true
+Assert-HpvrTest ($plan.Count -eq 23 -and $script:audioCalls.Count -eq 3) 'Three-map audio merges distinct clips and deduplicates shared originals'
+foreach ($map in @(0,1,2)) {
+    Assert-HpvrTest ($script:audioCalls[$map].Arguments[-2] -eq '--map' -and $script:audioCalls[$map].Arguments[-1] -eq [string]$map) ("Map $map audio is enumerated explicitly")
+    $key = 'Map' + ($map + 1) + '.0123abcd.s16'
+    Assert-HpvrTest ($plan.ContainsKey($key) -and (Test-Path -LiteralPath (Join-Path $audioFixture.Encoded ($key + '.mp2')))) ("Map $map unique speech reaches the shared decoding input")
+}
+foreach ($mode in @('truncated', 'duplicate', 'unsafe-name', 'channel-mismatch', 'missing-source', 'conflicting-source')) {
+    $script:audioMode = $mode
+    $audioFixture = New-HpvrAudioFixture
+    Assert-HpvrReject { Get-HpvrFrontendAudioPlan $owned 'synthetic-audio.exe' $audioFixture.Encoded $audioFixture.Run $true $true } ("Invalid audio union fails closed: $mode")
+}
+Assert-HpvrReject { Get-HpvrFrontendAudioPlan $owned 'synthetic-audio.exe' $audioFixture.Encoded $audioFixture.Run $false $true } 'Broom audio cannot bypass the preceding map'
 Write-Output "PLAYER_INSTALL_TESTS=PASS checks=$script:checks device_actions=0 native_tools_executed=0 fixtures=$fixture"

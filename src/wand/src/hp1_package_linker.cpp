@@ -839,6 +839,9 @@ Hp1TexturedBspScene build_hp1_textured_bsp_scene(
         const auto light_actors=detail::GatherLightSources(prepared.actors);
         const detail::DarkZoneAmbient dark_zone_ambient(topology, prepared.actors,
             brush_model_reference == 0 && ascii_fold(map_package.stem().string()) == "lev_tut1b");
+        const bool outdoor_lesson = ascii_fold(map_package.stem().string()) == "lev_tut2";
+        const Hp1AuthoredZoneAmbient authored_ambient(topology, prepared.actors,
+                                                     outdoor_lesson && brush_model_reference == 0);
 
         const auto layout = detail::MakeLightmapLayout(topology, mesh, selected_count);
         const auto& placements = layout.placements;
@@ -877,8 +880,8 @@ Hp1TexturedBspScene build_hp1_textured_bsp_scene(
             const auto& target = *imported->second;
             if (target.target_kind != Hp1ImportTargetKind::export_object ||
                 target.target_reference <= 0 ||
-                !ascii_equal_fold(target.qualified_class_name,
-                                  "Engine.Texture")) {
+                !(ascii_equal_fold(target.qualified_class_name, "Engine.Texture") ||
+                  (outdoor_lesson && ascii_equal_fold(target.qualified_class_name,"Fire.WetTexture")))) {
                 continue;
             }
             const auto path = package_paths.find(
@@ -991,7 +994,8 @@ Hp1TexturedBspScene build_hp1_textured_bsp_scene(
             if (placement.surface < 0) continue;
             const auto& light_map = topology.light_maps[map_index];
             const auto pixels = detail::BakeLightmapTile(topology, light_actors,
-                dark_zone_ambient, placement, map_index, true);
+                dark_zone_ambient, placement, map_index, true, true, true,
+                outdoor_lesson ? &authored_ambient : nullptr);
             detail::VisitLightmapTile(light_map, placement, pixels, write_lightmap_pixel);
             const auto width=static_cast<std::size_t>(light_map.u_clamp);
             const auto height=static_cast<std::size_t>(light_map.v_clamp);

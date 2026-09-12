@@ -424,7 +424,7 @@ bool CreateInput(auto& state) {
                       "left_move", "Move", state.left_hand,
                       &state.move_action) ||
         !CreateAction(state.action_set, XR_ACTION_TYPE_VECTOR2F_INPUT,
-                      "right_turn", "Snap Turn", state.right_hand,
+                      "right_turn", "Turn", state.right_hand,
                       &state.turn_action)) {
         return false;
     }
@@ -586,6 +586,7 @@ bool SyncInput(auto& state, const XrTime predicted_time, const bool tracking_act
     }
     if (locomotion_input->turn_active) {
         locomotion_input->turn_x = turn.currentState.x;
+        locomotion_input->turn_y = turn.currentState.y;
     }
 
     XrActionStateGetInfo get_info{};
@@ -1742,6 +1743,7 @@ bool XrVulkanSmoke::RenderFrame() {
             }
             if(input_ok&&state.locomotion.RecenterToCapsule(capsule,yaw)){
                 state.rebase_head=false;recentered=true;
+                state.scene.ResetMovementContinuity();
                 state.cinematic_reference_valid=false;state.startup_anchor_valid=false;
                 state.gesture->Reset();state.scene.SetWandDrawing(false);
                 state.sprint_enabled=false;state.input_release_pending=true;
@@ -1778,6 +1780,9 @@ bool XrVulkanSmoke::RenderFrame() {
         state.gesture->SetGameplayMode(!state.scene.IsGestureLesson());
         state.gesture->SetLessonDifficulty(state.scene.GetVrSettings().relaxed_lesson);
         state.gesture->SetLessonRound(state.scene.LessonRound());
+        const auto turning = state.scene.GetVrSettings();
+        locomotion_input.smooth_turn = turning.turning_mode == TurningMode::Smooth;
+        locomotion_input.smooth_turn_degrees = static_cast<float>(turning.smooth_turn_speed);
         if (!input_ok || !state.locomotion.Tick(
                 locomotion_input, delta_seconds,
                 ResolveSceneLocomotion, &state.scene)) {

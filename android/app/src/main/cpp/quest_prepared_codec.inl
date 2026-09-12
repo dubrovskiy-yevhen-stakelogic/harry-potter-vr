@@ -6,7 +6,7 @@ constexpr std::uint64_t kMaxVertices = 22000000;
 constexpr std::uint64_t kMaxTriangles = 4000000;
 constexpr std::uint64_t kMaxBytes = 1024ULL*1024ULL*1024ULL;
 // Includes all menu variants without reallocating the cooked world buffer.
-constexpr std::uint64_t kMaxFrontendVertexReserve = 786432;
+constexpr std::uint64_t kMaxFrontendVertexReserve = 1048576;
 // Transient original gnome clips are appended after cache validation on map 1.
 constexpr std::uint64_t kMaxRuntimeVertexReserve = kMaxFrontendVertexReserve + 600000;
 constexpr std::uint64_t kTextureCapacityBytes = 256ULL*256ULL*256ULL*4ULL;
@@ -248,7 +248,7 @@ bool ValidatePreparedGeometry(const PreparedGeometry& g){
     ids.clear();
     for(const auto& b:g.beans){
         const auto count=std::uint64_t(b.count)*b.frames;
-        if(b.actor_reference<=0||!ids.insert(b.actor_reference).second||b.source_actor<0||b.kind>3||
+        if(b.actor_reference<=0||!ids.insert(b.actor_reference).second||b.source_actor<0||b.kind>4||
             b.first!=expected||!b.frames||b.frames>4096||!Range(b.first,count,g.vertices.size())||
             !FiniteVector(b.position)||!FiniteVector(b.emission)||!Finite(b.duration)||b.duration<=0||
             !Finite(b.yaw)||!Finite(b.emission_time)||b.emission_time<0||b.emission_time>1)return false;

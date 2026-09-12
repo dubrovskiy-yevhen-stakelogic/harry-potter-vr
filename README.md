@@ -1,10 +1,11 @@
-# Harry Potter VR — 0.1.1 Alpha
+# Harry Potter VR — 0.1.2 Alpha
 
 An unofficial native VR port of *Harry Potter and the Sorcerer's Stone*
 (PC, 2001) for **Meta Quest 3**. Runs standalone, without a PC or Quest Link.
 
 This early alpha includes the opening Hogwarts tutorials, the first Flipendo
-lesson and the **Flipendo Challenge**. A user-owned US PC copy is required.
+lesson, **Flipendo Challenge** and **Broomstick Training**. A user-owned US PC
+copy is required.
 Original maps, textures, models, music and dialogue are not included in the
 download.
 
@@ -19,9 +20,9 @@ download.
   accept rotated and reversed strokes without requiring precise tracing.
 - **Optional offline voice casting:** aim at a Flipendo target and say
   “Flipendo”; repeat while holding the trigger. Voice hints are optional.
-- **Two playable maps:** the opening tutorials and Flipendo Challenge, including
-  spell-operated doors and blocks, moving platforms, gnomes and eight challenge stars.
-- **VR movement:** smooth locomotion, toggle sprint, snap turning, jumping,
+- **Three playable maps:** the opening tutorials, Flipendo Challenge and
+  Broomstick Training, with timed hoop routes and a hidden wizard card.
+- **VR movement:** smooth locomotion, toggle sprint, snap or smooth turning, jumping,
   automatic ledge climbing and L3 + R3 height recentering.
 - **Live VR menu**, accessible during gameplay and cutscenes, with saved settings.
 - **Graphics controls:** render scale, reflection strength, supported headset
@@ -43,7 +44,7 @@ download.
 
 The installer downloads and caches FFmpeg and Android Platform Tools when
 missing; the first ADB download asks you to accept the Android SDK terms.
-It prepares both maps and their audio on the PC for faster headset loading.
+It prepares all three maps and their audio on the PC for faster headset loading.
 It does not modify or launch the original game.
 
 See the [installation guide](tools/release/PLAYER-INSTALL.md) for requirements,
@@ -57,7 +58,7 @@ bypass a signing-key mismatch: that can erase saves and imported data.
 | Move | Left stick |
 | Toggle sprint | Click left stick (L3) |
 | Recenter height at the current body position | Click both sticks together (L3 + R3), then release |
-| Snap turn 30 degrees | Right stick left / right |
+| Turn (snap or smooth, selected in VR settings) | Right stick left / right |
 | Jump | A |
 | Aim, cast, draw a gesture or confirm | Right trigger |
 | Game pause / back | B, or left Menu without both grips held |
@@ -77,16 +78,26 @@ hold the trigger on a Flipendo target and say the spell. Keep holding to cast
 again after the projectile and Harry's incantation finish. Release to change
 targets. It works with voice hints hidden and is available in the challenge.
 
+**BROOM FLIGHT:** use the left stick to fly, right stick left/right to turn and
+right stick up/down to change height. The mounted view shows the broom and
+Harry's body without his head. Wand casting is disabled throughout this map.
+Hoops allow a small VR aiming margin, but you must still fly through them.
+
 ## Settings and limitations
 
 Defaults: render scale **100%**, SSR **30**, refresh rate **90 Hz**, difficulty
 **RELAXED**, cutscenes **HARRY 1ST PERSON**, casting **CLASSIC**. Voice casting
-and voice hints are off. Settings persist between sessions. Refresh-rate choices
+and voice hints are off. Turning defaults to **SNAP**; select **SMOOTH** and
+adjust **TURN SPEED** from 30 to 180 degrees/second in the VR menu. Settings
+persist between sessions. Refresh-rate choices
 depend on headset support; ORIGINAL restores the original lesson difficulty.
 
-This is an early alpha, not the complete game. It ends after the Flipendo
-Challenge; later levels, Quidditch and the full original options menu are not
+This is an early alpha, not the complete game. It ends after Broomstick
+Training; later levels, Quidditch and the full original options menu are not
 implemented. Original PC saves cannot be imported.
+
+Fountain water uses the original texture; its original procedural ripple
+simulation is not implemented yet.
 
 **Voice casting is experimental and has only been tested by the author.**
 Some pronunciations may be missed; similar-sounding phrases can trigger a spell

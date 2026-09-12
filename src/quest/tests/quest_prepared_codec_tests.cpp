@@ -164,7 +164,7 @@ int main(){
         Reject(directory.path,"actor-missing-clip",[](auto& g){g.characters[0].active_clip="missing";});
         Reject(directory.path,"actor-frame-overflow",[](auto& g){g.characters[0].clips.at("walk").frame_count=0xffffffffU;});
         Reject(directory.path,"actor-overlap",[](auto& g){g.characters[0].clips.at("walk").first_vertex=15;});
-        Reject(directory.path,"bean-kind",[](auto& g){g.beans[0].kind=4;});
+        Reject(directory.path,"bean-kind",[](auto& g){g.beans[0].kind=5;});
         Reject(directory.path,"bean-frame-range",[](auto& g){g.beans[0].frames=4097;});
         Reject(directory.path,"knight-layer",[](auto& g){g.knights[0].layer=1;});
         Reject(directory.path,"prop-range",[](auto& g){g.challenge_props[0].count=300;});

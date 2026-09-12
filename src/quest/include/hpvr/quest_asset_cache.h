@@ -1,5 +1,6 @@
 #pragma once
 #include "hpvr/hp1_package_graph.h"
+#include "hpvr/quest_maps.h"
 #include <algorithm>
 #include <array>
 #include <atomic>
@@ -33,6 +34,7 @@
 
 namespace hpvr::quest::cache {
 inline constexpr std::uint32_t kSchema=1,kCookRevision=45;
+inline constexpr std::uint32_t CookRevision(std::uint32_t map){return map==2?56:kCookRevision;}
 inline constexpr std::uint64_t kMaximumPayload=1024ULL*1024ULL*1024ULL;
 inline constexpr std::uint32_t kMaximumString=1024U*1024U;
 inline constexpr std::size_t kHeaderSize=48;
@@ -125,7 +127,7 @@ inline void PublishNoReplace(const std::filesystem::path& temporary,const std::f
 inline std::array<std::uint8_t,kHeaderSize> Header(std::uint32_t map,SourceFingerprint fingerprint,std::uint64_t size,std::uint64_t checksum){
     std::array<std::uint8_t,kHeaderSize> bytes{};
     constexpr char magic[]="HPVRSCN1";std::memcpy(bytes.data(),magic,8);
-    WriteLE(bytes.data()+8,kSchema,4);WriteLE(bytes.data()+12,kCookRevision,4);WriteLE(bytes.data()+16,map,4);
+    WriteLE(bytes.data()+8,kSchema,4);WriteLE(bytes.data()+12,CookRevision(map),4);WriteLE(bytes.data()+16,map,4);
     WriteLE(bytes.data()+24,fingerprint,8);WriteLE(bytes.data()+32,size,8);WriteLE(bytes.data()+40,checksum,8);return bytes;
 }
 inline std::string RelativeKey(const std::filesystem::path& root,const std::filesystem::path& file){
@@ -151,7 +153,7 @@ inline std::filesystem::path ResolveRelative(const std::filesystem::path& root,s
 // Content, relative identity and length are hashed; timestamps and absolute
 // installation paths deliberately are not. This survives PC-to-Quest copies.
 inline SourceFingerprint FingerprintFiles(const std::filesystem::path& root,const std::vector<std::filesystem::path>& files,std::uint32_t map){
-    Require(map<=1,"Unsupported cooked scene map");
+    Require(IsSupportedQuestMap(map),"Unsupported cooked scene map");
     std::map<std::string,std::filesystem::path> ordered;
     for(const auto& file:files){
         const auto key=RelativeKey(root,file);
@@ -196,7 +198,7 @@ class Writer {
     void Integer(std::uint64_t value,unsigned bytes){std::array<std::uint8_t,8> encoded{};detail::WriteLE(encoded.data(),value,bytes);Write(encoded.data(),bytes);}
 public:
     Writer(const std::filesystem::path& final,std::uint32_t map,SourceFingerprint fingerprint):final_(final),map_(map),fingerprint_(fingerprint){
-        detail::Require(map<=1,"Unsupported cooked scene map");
+        detail::Require(IsSupportedQuestMap(map),"Unsupported cooked scene map");
         detail::Require(!final.filename().empty(),"Cooked scene path has no filename");
         std::error_code filesystem_error;
         if(!final.parent_path().empty())std::filesystem::create_directories(final.parent_path(),filesystem_error);
@@ -259,13 +261,13 @@ class Reader {
     std::uint64_t Integer(unsigned size){std::array<std::uint8_t,8> bytes{};Read(bytes.data(),size);return detail::ReadLE(bytes.data(),size);}
 public:
     Reader(const std::filesystem::path& path,std::uint32_t map,SourceFingerprint fingerprint):file_(detail::OpenRead(path)){
-        detail::Require(map<=1,"Unsupported cooked scene map");
+        detail::Require(IsSupportedQuestMap(map),"Unsupported cooked scene map");
         std::error_code filesystem_error;const auto size=std::filesystem::file_size(path,filesystem_error);
         detail::Require(!filesystem_error&&size>=kHeaderSize&&size<=kHeaderSize+kMaximumPayload,"Cooked scene file size is invalid");
         std::array<std::uint8_t,kHeaderSize> header{};detail::Require(std::fread(header.data(),1,header.size(),file_.get())==header.size(),"Cooked scene envelope is truncated");
         detail::Require(std::memcmp(header.data(),"HPVRSCN1",8)==0,"Cooked scene magic mismatch");
         detail::Require(detail::ReadLE(header.data()+8,4)==kSchema,"Cooked scene schema mismatch");
-        detail::Require(detail::ReadLE(header.data()+12,4)==kCookRevision,"Cooked scene cook revision mismatch");
+        detail::Require(detail::ReadLE(header.data()+12,4)==CookRevision(map),"Cooked scene cook revision mismatch");
         detail::Require(detail::ReadLE(header.data()+16,4)==map&&detail::ReadLE(header.data()+20,4)==0,"Cooked scene map or reserved field mismatch");
         detail::Require(detail::ReadLE(header.data()+24,8)==fingerprint,"Cooked scene does not match original game content");
         remaining_=detail::ReadLE(header.data()+32,8);expected_checksum_=detail::ReadLE(header.data()+40,8);
@@ -295,7 +297,8 @@ public:
 
 inline SourceFingerprint ComputeSourceFingerprint(const std::filesystem::path& root,std::uint32_t map){
     try{
-        detail::Require(map<=1,"Unsupported cooked scene map");
+        const auto* descriptor=FindQuestMap(map);
+        detail::Require(descriptor!=nullptr,"Unsupported cooked scene map");
         std::vector<std::filesystem::path> sources;
         const auto include_graph=[&](std::string_view relative){
             const auto entry=detail::ResolveRelative(root,relative);
@@ -304,7 +307,7 @@ inline SourceFingerprint ComputeSourceFingerprint(const std::filesystem::path& r
             for(const auto& package:graph.packages)if(package.kind==wand::Hp1ResolvedPackageKind::data_package)sources.push_back(package.path);
         };
         include_graph("Maps/Lev_Tut1.unr");
-        if(map==1)include_graph("Maps/Lev_Tut1b.unr");
+        if(map!=kIntroductionMapId)include_graph(descriptor->package_path);
         // These are loaded by name rather than by the level's import table.
         // Derived PCM, cooked Cache files and player saves are not inputs.
         for(const auto name:{"system/HPMenu.u","system/HPBase.u","system/HPParticle.u","system/HProps.u","system/HPSounds.u",

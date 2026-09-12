@@ -98,6 +98,20 @@ int main(){
     Check(ReadProgress(dir,0,&r)&&r.phase==1&&r.page==14,"story complete durable");
     f.paused=FrontScreen::Story;f.BeginGame();
     Check(f.paused==FrontScreen::Game,"loaded game cannot inherit old book pause state");
+    f.screen=FrontScreen::Main;f.selection=4;click();
+    Check(f.screen==FrontScreen::Levels,"level select opens from main menu");
+    f.selection=2;click();
+    Check(f.screen==FrontScreen::LevelSlots&&f.selected_map==2,"third level selects its stable map ID");
+    f.selection=2;click();
+    Check(f.screen==FrontScreen::LevelStart&&f.slot==2&&f.selection==1,"third-level overwrite confirmation defaults to keep save");
+    click();Check(f.screen==FrontScreen::LevelSlots,"third-level cancel returns without starting or writing");
+    f.selection=3;click();Check(f.screen==FrontScreen::Levels&&f.selection==2,"slot back returns to third level row");
+    f.selection=3;click();Check(f.screen==FrontScreen::Main&&f.selection==4,"level-select back is after all three maps");
+    for(unsigned row=0;row<=kQuestMaps.size();++row){
+        f.screen=FrontScreen::Levels;f.selection=row;
+        for(const auto& quad:f.Quads())Check(quad.x>=0&&quad.y>=0&&quad.x+quad.w<=640&&quad.y+quad.h<=480,
+                                            "three-level menu fits existing panel");
+    }
     const auto blocked=dir/"not-a-directory";
     {std::ofstream block(blocked);block<<"occupied";}
     f.saves=blocked;f.BeginStory(6);f.progress.page=6;f.progress.phase=0;

@@ -728,9 +728,14 @@ struct PropertyTag {
         property.object_path = package.object_path(property.object_reference);
         property.object_reference_serialized = true;
         const auto count = value.read_compact_index();
-        if (count <= 0 || static_cast<std::size_t>(count) > value.remaining()) {
+        if (count < 0 || static_cast<std::size_t>(count) > value.remaining()) {
             fail(Hp1ProfileStatus::invalid_profile,
                  "CutScene structure alias has an invalid byte count");
+        }
+        if (count == 0) {
+            // An unassigned cast/marker alias is serialized as an empty FString.
+            property.text_value_serialized = true;
+            return property;
         }
         const auto bytes = value.take(static_cast<std::size_t>(count));
         if (bytes.empty() || bytes.back() != 0) {
@@ -2431,9 +2436,9 @@ Hp1ClassVisualDefaults inspect_hp1_class_visual_defaults(
     return result;
 }
 
-Hp1P8Texture load_hp1_p8_texture(
+static Hp1P8Texture load_hp1_p8_texture_impl(
     const std::filesystem::path& texture_package,
-    std::int32_t texture_reference, bool palette_zero_transparent) {
+    std::int32_t texture_reference, bool palette_zero_transparent, unsigned source_depth) {
     Hp1P8Texture result;
     try {
         const Package package(texture_package);
@@ -2448,10 +2453,12 @@ Hp1P8Texture load_hp1_p8_texture(
         const auto texture_index =
             static_cast<std::size_t>(texture_reference - 1);
         const auto& texture = package.export_at(texture_index);
-        if (!package.reference_is_class(
+        const bool wet_texture = package.reference_is_class(
+            texture.class_reference, "Fire", "WetTexture");
+        if (!wet_texture && !package.reference_is_class(
                 texture.class_reference, "Engine", "Texture")) {
             fail(Hp1ProfileStatus::invalid_profile,
-                 "selected export is not a direct Engine.Texture");
+                 "selected export is not an Engine.Texture or Fire.WetTexture");
         }
 
         result.texture_reference = texture_reference;
@@ -2460,13 +2467,23 @@ Hp1P8Texture load_hp1_p8_texture(
         skip_object_stack(cursor, texture.object_flags);
         bool properties_terminated = false;
         bool has_compressed_mips = false;
+        std::int32_t source_texture_reference = 0;
         while (cursor.remaining() != 0) {
             const auto tag = read_property_tag(package, cursor);
             if (!tag.has_value()) {
                 properties_terminated = true;
                 break;
             }
-            if (ascii_equal_fold(tag->name, "Format")) {
+            if (wet_texture && ascii_equal_fold(tag->name, "SourceTexture")) {
+                if (source_texture_reference != 0 || tag->kind != PropertyKind::object ||
+                    tag->array_index.has_value())
+                    fail(Hp1ProfileStatus::invalid_profile, "WetTexture SourceTexture is not one object property");
+                Cursor value(tag->value);
+                source_texture_reference = value.read_compact_index();
+                if (value.remaining() != 0 || source_texture_reference <= 0)
+                    fail(Hp1ProfileStatus::unsupported_package, "WetTexture requires a local SourceTexture");
+                package.require_valid_reference(source_texture_reference);
+            } else if (ascii_equal_fold(tag->name, "Format")) {
                 if (result.format_serialized ||
                     tag->kind != PropertyKind::byte ||
                     tag->array_index.has_value() ||
@@ -2508,6 +2525,17 @@ Hp1P8Texture load_hp1_p8_texture(
         if (!properties_terminated) {
             fail(Hp1ProfileStatus::invalid_profile,
                  "Texture properties have no terminator");
+        }
+        if (wet_texture) {
+            if (source_depth >= 8 || source_texture_reference <= 0)
+                fail(Hp1ProfileStatus::invalid_profile, "WetTexture SourceTexture is missing or cyclic");
+            auto source = load_hp1_p8_texture_impl(texture_package, source_texture_reference,
+                                                  palette_zero_transparent, source_depth + 1);
+            if (source.status != Hp1ProfileStatus::ok) return source;
+            source.texture_reference = texture_reference;
+            source.object_name = result.object_name;
+            source.polygon_flags |= result.polygon_flags;
+            return source;
         }
         if (result.format_serialized && result.format != 0) {
             fail(Hp1ProfileStatus::unsupported_package,
@@ -2668,6 +2696,13 @@ Hp1P8Texture load_hp1_p8_texture(
         result.error = error.what();
     }
     return result;
+}
+
+Hp1P8Texture load_hp1_p8_texture(
+    const std::filesystem::path& texture_package,
+    std::int32_t texture_reference, bool palette_zero_transparent) {
+    return load_hp1_p8_texture_impl(texture_package, texture_reference,
+                                   palette_zero_transparent, 0);
 }
 
 namespace {

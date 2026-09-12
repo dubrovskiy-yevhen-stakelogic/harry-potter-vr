@@ -170,6 +170,11 @@ bool LoadChallengeProps(const std::filesystem::path& root,const std::filesystem:
     std::vector<FlameEmitter>& flames,std::vector<GlowEmitter>& glows){
     const auto manifest=wand::build_hp1_character_manifest(root,map,0,{},true);
     if(manifest.status!=wand::Hp1ProfileStatus::ok)return false;
+    broom::LessonMetadata flight;
+    if(AsciiFold(map.stem().string())=="lev_tut2"){
+        flight=broom::LoadLessonMetadata(root,wand::inspect_hp1_actor_visuals(map));
+        if(!flight.valid)return false;
+    }
     std::map<std::vector<std::string>,LoadedStaticMesh> meshes;
     std::map<std::vector<std::string>,std::pair<wand::Hp1SkeletalSkin,wand::Hp1Animation>> animations;
     auto ordered=manifest.actors;
@@ -183,7 +188,8 @@ bool LoadChallengeProps(const std::filesystem::path& root,const std::filesystem:
     for(const auto& a:ordered){
         const auto cls=AsciiFold(a.qualified_class_name);
         const bool savebook=cls=="harrypotter.savepoint";
-        if((!cls.starts_with("hprops.")&&!savebook)||cls.ends_with("bean")||cls=="hprops.star")continue;
+        if((!cls.starts_with("hprops.")&&!savebook)||cls.ends_with("bean")||cls=="hprops.star"||
+           (flight.valid&&cls=="hprops.wcmerlin"))continue;
         std::vector<std::string> key{a.mesh_package.string(),std::to_string(a.mesh_reference)};
         for(const auto& skin:a.skins){
             key.push_back(std::to_string(skin.material_slot));
@@ -215,11 +221,14 @@ bool LoadChallengeProps(const std::filesystem::path& root,const std::filesystem:
             a.location_unreal.z*kMetersPerUnrealUnit-start.position_m[1],
             -a.location_unreal.x*kMetersPerUnrealUnit-start.position_m[2]},yaw);
         const bool chandelier=cls.find("chandalier")!=std::string::npos;
+        const auto hoop=std::ranges::find_if(flight.hoops,[&](const auto& h){return h.id==a.actor_reference;});
+        const bool flying_hoop=hoop!=flight.hoops.end();
+        const float draw_scale=flying_hoop?hoop->play_scale:a.draw_scale;
         float ground=0;
-        if(!chandelier&&!savebook&&FindPropGroundBelow(collision,origin,&ground))
+        if(!chandelier&&!savebook&&!flying_hoop&&FindPropGroundBelow(collision,origin,&ground))
             origin[1]=ground-mesh.report.bounds_min_m[1]*a.draw_scale;
         const float angle=yaw+a.rotation_units[1]*kTau/65536.0F;
-        const auto transform=[&](const std::array<float,3>& p){return AddVector(origin,RotateYaw(ScaleVector(p,a.draw_scale),angle));};
+        const auto transform=[&](const std::array<float,3>& p){return AddVector(origin,RotateYaw(ScaleVector(p,draw_scale),angle));};
         ChallengeProp prop;prop.reference=a.actor_reference;prop.name=cls;
         prop.breakable=cls.starts_with("hprops.flipendovase");
         prop.cauldron=cls=="hprops.bronzecauldron";prop.savebook=savebook;
@@ -233,7 +242,8 @@ bool LoadChallengeProps(const std::filesystem::path& root,const std::filesystem:
                 mesh.layer_base+v.texture_layer,v.polygon_flags,0,PackAuthoredLighting(p,lights)});
         }
         prop.count=static_cast<std::uint32_t>(vertices.size())-prop.first;
-        if(!chandelier&&!prop.breakable&&!savebook){
+        if(!chandelier&&!prop.breakable&&!savebook&&!flying_hoop&&
+           !(flight.valid&&cls=="hprops.rememberallbroom")){
             std::vector<GpuVertex> solid(vertices.begin()+prop.first,vertices.begin()+prop.first+prop.count);
             auto extra=BuildCollisionTriangles(solid,prop.count);collision.insert(collision.end(),extra.begin(),extra.end());
         }
@@ -340,7 +350,7 @@ bool LoadChallengeStars(const std::filesystem::path& root,const std::filesystem:
     HPVR_LOGI("[hpvr.quest.challenge.stars] count=%u",stars);return stars==8;
 }
 bool LoadChallengeMetadata(const wand::Hp1ActorVisualCensus& census,
-    const hpvr_hp1_player_start_report& start,float yaw,ChallengeRuntime& challenge){
+    const hpvr_hp1_player_start_report& start,float yaw,ChallengeRuntime& challenge,unsigned expected_scenes=15){
     if(!challenge.graph.Load(census))return false;
     for(const auto& a:census.actors){
         const auto cls=AsciiFold(a.qualified_class_name);
@@ -363,5 +373,5 @@ bool LoadChallengeMetadata(const wand::Hp1ActorVisualCensus& census,
         for(unsigned i=0;i<route.size();++i)if(object==route[i])challenge.barrel_route[i]=ActorLocalPosition(a,start,yaw);
     }
     HPVR_LOGI("[hpvr.quest.challenge.graph] scenes=%zu spatial=%zu",challenge.scenes.size(),challenge.spatial.size());
-    return challenge.scenes.size()==15;
+    return challenge.scenes.size()==expected_scenes;
 }

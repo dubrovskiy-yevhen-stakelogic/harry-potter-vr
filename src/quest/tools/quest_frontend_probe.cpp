@@ -5,10 +5,17 @@
 #include <cmath>
 #include <string_view>
 int main(int argc,char**argv){
- if(argc!=3&&(argc!=4||std::string_view(argv[3])!="--challenge")){
-  std::cerr<<"usage: hpvr_quest_frontend_probe <owned-root> <output> [--challenge]\n";return 2;
+ unsigned map_id=hpvr::quest::kIntroductionMapId;
+ bool valid=argc==3;
+ if(argc==4&&std::string_view(argv[3])=="--challenge"){
+  map_id=hpvr::quest::kFlipendoChallengeMapId;valid=true;
  }
- const unsigned map_id=argc==4?1U:0U;
+ if(argc==5&&std::string_view(argv[3])=="--map"){
+  for(const auto& map:hpvr::quest::kQuestMaps)if(std::to_string(map.id)==argv[4]){map_id=map.id;valid=true;break;}
+ }
+ if(!valid){
+  std::cerr<<"usage: hpvr_quest_frontend_probe <owned-root> <output> [--challenge | --map <0|1|2>]\n";return 2;
+ }
  hpvr::quest::QuestFrontEnd f;
  if(!hpvr::quest::LoadFrontAssets(argv[1],&f.assets,map_id)){std::cerr<<f.assets.error;return 3;}
  f.progress.map_id=map_id;
@@ -26,6 +33,13 @@ int main(int argc,char**argv){
  auto image=[&](const std::string& name,bool hud=false){
   std::vector<unsigned char> pixels(640*480*3,0);
   auto quads=hud?f.HudQuads(14,true):f.Quads();
+  if(hud&&map_id==hpvr::quest::kBroomstickTrainingMapId){
+   const auto labels=f.BroomLabelQuads();quads.insert(quads.end(),labels.begin(),labels.end());
+   constexpr std::array<unsigned,3> sample{27,150,2};
+   for(unsigned field=0;field<sample.size();++field){
+    const auto digits=f.BroomNumberQuads(sample[field],field);quads.insert(quads.end(),digits.begin(),digits.end());
+   }
+  }
   if(f.screen==hpvr::quest::FrontScreen::Vr&&!hud)for(bool scale:{false,true}){
    const auto values=f.VrValueQuads(scale?f.vr.render_scale:f.vr.ssr,scale);quads.insert(quads.end(),values.begin(),values.end());}
   if(f.screen==hpvr::quest::FrontScreen::Debug&&!hud){
@@ -67,6 +81,9 @@ int main(int argc,char**argv){
  f.vr.relaxed_lesson=true;image("difficulty-relaxed.ppm");
  f.selection=4;f.vr.first_person_cutscenes=false;image("camera-theatrical.ppm");
  f.vr.first_person_cutscenes=true;image("camera-harry.ppm");
+ f.screen=hpvr::quest::FrontScreen::Controls;
+ for(unsigned page=0;page<hpvr::quest::kControlsPageCount;++page){f.controls_page=page;image("controls-"+std::to_string(page)+".ppm");}
+ f.screen=hpvr::quest::FrontScreen::Levels;f.selection=map_id;image("levels.ppm");
  std::cout<<"FRONT_ASSETS=PASS pages="<<f.assets.story.size()<<" music="<<f.assets.music.size()
           <<" textures="<<f.assets.textures.size()<<" map="<<map_id<<" voices="<<f.assets.gameplay_audio.size()<<"\n";
  for(const auto&p:f.assets.story)std::cout<<p.dialogue_name<<"\n";

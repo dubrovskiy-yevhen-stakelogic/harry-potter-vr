@@ -274,21 +274,26 @@ function Get-HpvrReleaseMapIds($Release, [switch]$IncludeChallenge) {
     $maps = @(0)
     if ($Release.PSObject.Properties['mapIds']) {
         $declared = $Release.mapIds
-        if ($declared -isnot [Array] -or $declared.Count -lt 1 -or $declared.Count -gt 2) {
-            throw 'Release mapIds must be [0] or [0,1].'
+        if ($declared -isnot [Array] -or $declared.Count -lt 1 -or $declared.Count -gt 3) {
+            throw 'Release mapIds must be [0], [0,1], or [0,1,2].'
         }
         foreach ($map in $declared) {
             if ($map -isnot [int] -and $map -isnot [long]) { throw 'Release mapIds must contain integer map IDs.' }
         }
-        if ($declared[0] -ne 0 -or ($declared.Count -eq 2 -and $declared[1] -ne 1)) {
-            throw 'Unsupported or duplicate release map IDs; only [0] and [0,1] are supported.'
+        for ($index = 0; $index -lt $declared.Count; ++$index) {
+            if ($declared[$index] -ne $index) {
+                throw 'Unsupported or duplicate release map IDs; only [0], [0,1], and [0,1,2] are supported.'
+            }
         }
-        if ($declared.Count -eq 2 -and (-not $Release.PSObject.Properties['versionCode'] -or $Release.versionCode -lt 38)) {
+        if ($declared.Count -ge 2 -and (-not $Release.PSObject.Properties['versionCode'] -or $Release.versionCode -lt 38)) {
             throw 'This APK version does not support the declared Flipendo Challenge.'
+        }
+        if ($declared.Count -eq 3 -and $Release.versionCode -lt 57) {
+            throw 'This release APK version does not support the declared Broomstick Training.'
         }
         $maps = @($declared)
     }
-    if ($IncludeChallenge) { $maps = @(0, 1) }
+    if ($IncludeChallenge -and $maps -notcontains 1) { $maps = @(0, 1) }
     return $maps
 }
 
@@ -361,16 +366,20 @@ function Assert-HpvrPcm([string]$Path, [int]$Channels) {
     throw "Decoded audio is entirely silent: $Path"
 }
 
-function Get-HpvrMapInputs([string]$Root, [bool]$WithChallenge = $false) {
+function Get-HpvrMapInputs([string]$Root, [bool]$WithChallenge = $false, [bool]$WithBroom = $false) {
     $names = @('Maps/Lev_Tut1.unr')
     if ($WithChallenge) { $names += 'Maps/Lev_Tut1b.unr' }
+    if ($WithBroom) {
+        if (-not $WithChallenge) { throw 'Broomstick Training requires the preceding challenge map.' }
+        $names += 'Maps/Lev_Tut2.unr'
+    }
     foreach ($name in $names) { Get-HpvrOwnedInput $Root (Join-Path $Root $name) }
 }
 
-function Get-HpvrDependencySet([string]$Root, [string]$GraphProbe, [bool]$WithChallenge = $false) {
+function Get-HpvrDependencySet([string]$Root, [string]$GraphProbe, [bool]$WithChallenge = $false, [bool]$WithBroom = $false) {
     $inputs = @{}
     $report = [Collections.Generic.List[string]]::new()
-    foreach ($mapInput in @(Get-HpvrMapInputs $Root $WithChallenge)) {
+    foreach ($mapInput in @(Get-HpvrMapInputs $Root $WithChallenge $WithBroom)) {
         $lines = @(Invoke-HpvrChecked $GraphProbe @($Root, $mapInput.Source) 'Owned package dependency scan')
         $count = 0
         foreach ($line in $lines) {
@@ -396,6 +405,59 @@ function Get-HpvrDependencySet([string]$Root, [string]$GraphProbe, [bool]$WithCh
         $inputs[$inputFile.Relative] = $inputFile
     }
     return [pscustomobject]@{ Inputs = @($inputs.Values | Sort-Object Relative); Report = @($report) }
+}
+
+function Get-HpvrFrontendAudioPlan([string]$Root, [string]$FrontendProbe, [string]$EncodedRoot,
+                                  [string]$ReportRoot, [bool]$WithChallenge = $false, [bool]$WithBroom = $false) {
+    if ($WithBroom -and -not $WithChallenge) { throw 'Broomstick audio requires the preceding challenge map.' }
+    $plan = @{}
+    # Older release probes accept --challenge; the three-map probe supports --map.
+    $passes = if ($WithBroom) { @(0, 1, 2) } else { @(-1) }
+    foreach ($map in $passes) {
+        $passRoot = if ($map -lt 0) { $EncodedRoot } else { Join-Path $ReportRoot "encoded-map-$map" }
+        Assert-HpvrNoLinks $passRoot
+        $arguments = @($Root, $passRoot)
+        if ($map -ge 0) { $arguments += @('--map', [string]$map) }
+        elseif ($WithChallenge) { $arguments += '--challenge' }
+        $report = Join-Path $ReportRoot $(if ($map -lt 0) { 'frontend-report.txt' } else { "frontend-$map-report.txt" })
+        Assert-HpvrNoLinks $report
+        Invoke-HpvrChecked $FrontendProbe $arguments 'Owned frontend/audio extraction' |
+            Set-Content -LiteralPath $report -Encoding UTF8
+        $planPath = Join-Path $passRoot 'audio-plan.tsv'
+        Assert-HpvrNoLinks $planPath
+        $passPlan = @{}
+        foreach ($line in (Get-Content -LiteralPath $planPath)) {
+            if ($line -notmatch '^([A-Za-z0-9_]+\.[0-9a-f]{8}(\.stereo)?\.s16)\t([12])$') {
+                throw 'Invalid frontend audio conversion plan.'
+            }
+            $key = $Matches[1]
+            $channels = [int]$Matches[3]
+            if (($key.Contains('.stereo.')) -ne ($channels -eq 2) -or
+                ($plan.ContainsKey($key) -and $plan[$key] -ne $channels) -or $passPlan.ContainsKey($key)) {
+                throw "Conflicting or duplicate audio plan: $key"
+            }
+            $source = Join-Path $passRoot ($key + '.mp2')
+            $destination = Join-Path $EncodedRoot ($key + '.mp2')
+            Assert-HpvrNoLinks $source
+            Assert-HpvrNoLinks $destination
+            $sourceHash = (Get-FileHash -LiteralPath $source -Algorithm SHA256).Hash
+            if ($source -ne $destination) {
+                if (Test-Path -LiteralPath $destination) {
+                    if ((Get-FileHash -LiteralPath $destination -Algorithm SHA256).Hash -ne $sourceHash) {
+                        throw "Conflicting encoded audio source: $key"
+                    }
+                } else { Copy-Item -LiteralPath $source -Destination $destination }
+            }
+            if ((Get-FileHash -LiteralPath $destination -Algorithm SHA256).Hash -ne $sourceHash -or
+                (Get-FileHash -LiteralPath $source -Algorithm SHA256).Hash -ne $sourceHash) {
+                throw "Encoded audio changed or failed to copy: $key"
+            }
+            $plan[$key] = $channels
+            $passPlan[$key] = $channels
+        }
+        if ($passPlan.Count -lt 20) { throw "The frontend audio plan is incomplete for pass $map." }
+    }
+    return $plan
 }
 
 function Add-HpvrSupplementalAudioPlan([string]$Root, [string]$SoundProbe, [string]$EncodedRoot, [hashtable]$Plan) {
@@ -446,7 +508,8 @@ function Get-HpvrScenePreparationTool([string]$Root, $Release, [switch]$Skip) {
 }
 
 function Invoke-HpvrScenePreparation([string]$Tool, [string]$StagedGame, [string]$OwnedRoot,
-                                    [string]$ReleaseRoot, [string]$ReportRoot, [bool]$WithChallenge = $false) {
+                                    [string]$ReleaseRoot, [string]$ReportRoot, [bool]$WithChallenge = $false,
+                                    [bool]$WithBroom = $false) {
     if ([string]::IsNullOrWhiteSpace($Tool)) { return }
     $stage = Get-HpvrFullPath $StagedGame
     $reports = Get-HpvrFullPath $ReportRoot
@@ -459,7 +522,7 @@ function Invoke-HpvrScenePreparation([string]$Tool, [string]$StagedGame, [string
         throw 'Scene preparation must use the isolated private HP staging directory.'
     }
     foreach ($path in @($Tool, $stage, $reports)) { Assert-HpvrNoLinks $path }
-    $null = @(Get-HpvrMapInputs $stage $WithChallenge)
+    $null = @(Get-HpvrMapInputs $stage $WithChallenge $WithBroom)
     $output = Join-Path $reports 'PreparedScenes'
     $stagedCache = Join-Path $stage 'Cache\Scenes'
     if (Test-HpvrWithin $output $stage) { throw 'Native scene preparation output must be outside its game-input tree.' }
@@ -467,6 +530,7 @@ function Invoke-HpvrScenePreparation([string]$Tool, [string]$StagedGame, [string
     New-Item -ItemType Directory -Path $output, $stagedCache -Force | Out-Null
     $maps = @(0)
     if ($WithChallenge) { $maps += 1 }
+    if ($WithBroom) { $maps += 2 }
     $expected = @($maps | ForEach-Object { "map-$_.hpvc" })
     foreach ($folder in @($output, $stagedCache)) {
         foreach ($item in @(Get-ChildItem -LiteralPath $folder -Force)) {
@@ -520,7 +584,7 @@ function Invoke-HpvrScenePreparation([string]$Tool, [string]$StagedGame, [string
 
 if ($LibraryOnly) { return }
 
-Write-Host 'HPVR installer revision 5: automatic tools + release-selected maps + PC scene preparation.'
+Write-Host 'HPVR installer revision 6: automatic tools + three-map releases + PC scene preparation.'
 
 if ($PromptForGamePath -and [string]::IsNullOrWhiteSpace($GamePath)) {
     $GamePath = Read-Host 'Folder of your installed US PC game'
@@ -536,7 +600,8 @@ if (Test-HpvrWithin $bundleRoot $ownedRoot) { throw 'Keep the release folder out
 $release = Read-HpvrReleaseManifest $bundleRoot
 $selectedMapIds = @(Get-HpvrReleaseMapIds $release -IncludeChallenge:$IncludeChallenge)
 $withChallenge = $selectedMapIds -contains 1
-Write-Host ("Selected release maps: " + ($selectedMapIds -join ', ') + '. Both-map releases need no extra command-line option.')
+$withBroom = $selectedMapIds -contains 2
+Write-Host ("Selected release maps: " + ($selectedMapIds -join ', ') + '. All declared release maps are installed automatically.')
 $toolsRoot = Join-Path $bundleRoot 'tools'
 $frontendProbe = Join-Path $toolsRoot 'hpvr_quest_frontend_probe.exe'
 $soundProbe = Join-Path $toolsRoot 'hpvr_hp1_sound_probe.exe'
@@ -587,7 +652,7 @@ Write-Host "Private working data: $privateRun"
 Write-Host 'Original installation is read-only. No proprietary data will be added to the release directory.'
 
 # One selection drives package closure, audio, and prepared scenes together.
-$dependencies = Get-HpvrDependencySet $ownedRoot $graphProbe $withChallenge
+$dependencies = Get-HpvrDependencySet $ownedRoot $graphProbe $withChallenge $withBroom
 $dependencies.Report | Set-Content -LiteralPath (Join-Path $privateRun 'dependency-report.txt') -Encoding UTF8
 $ownedInputs = $dependencies.Inputs
 
@@ -605,22 +670,8 @@ foreach ($entry in $ownedInputs) {
 }
 Write-Host "Staged $($ownedInputs.Count) required game-data files; no EXE, DLL, user config, or save was copied."
 
-# This probe enumerates the same FrontAssets sources used by the shipping runtime:
-# opening story, four music streams, quest speech, NPC bump lines, lesson speech and pickups.
-$frontendArguments = @($stagedGame, $encodedRoot)
-if ($withChallenge) { $frontendArguments += '--challenge' }
-Invoke-HpvrChecked $frontendProbe $frontendArguments 'Owned frontend/audio extraction' |
-    Set-Content -LiteralPath (Join-Path $privateRun 'frontend-report.txt') -Encoding UTF8
-$plan = @{}
-foreach ($line in (Get-Content -LiteralPath (Join-Path $encodedRoot 'audio-plan.tsv'))) {
-    if ($line -notmatch '^([A-Za-z0-9_]+\.[0-9a-f]{8}(\.stereo)?\.s16)\t([12])$') { throw 'Invalid frontend audio conversion plan.' }
-    $key = $Matches[1]
-    $channels = [int]$Matches[3]
-    if (($key.Contains('.stereo.')) -ne ($channels -eq 2)) { throw "Inconsistent PCM channel plan: $key" }
-    if ($plan.ContainsKey($key) -and $plan[$key] -ne $channels) { throw "Conflicting audio plan: $key" }
-    $plan[$key] = $channels
-}
-if ($plan.Count -lt 20) { throw 'The full story/lesson audio plan is incomplete.' }
+# The probe enumerates the same original audio sources as each runtime level.
+$plan = Get-HpvrFrontendAudioPlan $stagedGame $frontendProbe $encodedRoot $privateRun $withChallenge $withBroom
 
 Add-HpvrSupplementalAudioPlan $stagedGame $soundProbe $encodedRoot $plan
 
@@ -640,7 +691,7 @@ Write-Progress -Activity 'Preparing original music and speech' -Completed
 # Conversion can take several minutes. Recheck the helper immediately before
 # execution, rather than relying only on the manifest check at installer start.
 if ($scenePreparationTool) { $scenePreparationTool = Get-HpvrScenePreparationTool $bundleRoot $release }
-$preparedScenes = @(Invoke-HpvrScenePreparation $scenePreparationTool $stagedGame $ownedRoot $bundleRoot $privateRun $withChallenge)
+$preparedScenes = @(Invoke-HpvrScenePreparation $scenePreparationTool $stagedGame $ownedRoot $bundleRoot $privateRun $withChallenge $withBroom)
 foreach ($entry in $preparedScenes) { $privateManifest.Add($entry) }
 
 Write-Host 'Checking the complete staged first-level scene and audio. This is offline validation, not a game launch.'

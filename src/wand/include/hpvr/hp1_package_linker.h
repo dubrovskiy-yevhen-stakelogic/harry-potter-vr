@@ -190,8 +190,8 @@ struct Hp1CharacterManifest {
 
 // Builds a bounded BSP preview with repeating normalized UVs and a uniform
 // RGBA8 texture array. Direct Engine.Texture P8 materials are decoded from the
-// user-owned dependency graph; unsupported dynamic/non-texture materials use
-// layer zero's explicit diagnostic checkerboard.
+// user-owned dependency graph. Lev_Tut2 also resolves WetTexture SourceTexture;
+// unsupported dynamic/non-texture materials use layer zero's diagnostic checkerboard.
 [[nodiscard]] Hp1TexturedBspScene build_hp1_textured_bsp_scene(
     const std::filesystem::path& data_root,
     const std::filesystem::path& map_package,

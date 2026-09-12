@@ -99,6 +99,10 @@ void main() {
     bool ui=(in_polygon_flags & 0x40000000u)!=0u;
     vec2 uv=ui?clamp(in_uv,vec2(0.5/256.0),vec2(255.5/256.0)):in_uv;
     vec4 color = texture(map_texture, vec3(uv, float(in_texture_layer)));
+    if ((in_polygon_flags & 0x08000000u)!=0u) {
+        out_color=vec4(color.rgb,1.0);
+        return;
+    }
     if ((in_polygon_flags & PF_MASKED) != 0u && color.a < 0.5) {
         discard;
     }

@@ -1,5 +1,6 @@
 #pragma once
 #include "hp1_zone_ambient.h"
+#include "hpvr/hp1_authored_environment.h"
 #include <map>
 #include <optional>
 #include <stdexcept>
@@ -173,7 +174,8 @@ inline LightmapPixels BakeLightmapTile(const Hp1BspTopology &topology,
                                        const DarkZoneAmbient &dark_zone_ambient,
                                        const LightmapPlacement &placement, std::size_t map_index,
                                        bool signed_lights, bool dark_non_incidence = true,
-                                       bool abyss_lighting = true) {
+                                       bool abyss_lighting = true,
+                                       const Hp1AuthoredZoneAmbient* authored_ambient = nullptr) {
     if (map_index >= topology.light_maps.size() || placement.surface < 0 ||
         static_cast<std::size_t>(placement.surface) >= topology.surfaces.size())
         throw std::runtime_error("invalid lightmap tile");
@@ -244,6 +246,10 @@ inline LightmapPixels BakeLightmapTile(const Hp1BspTopology &topology,
                 texture_u, texture_v, normal,
                 base_u + (static_cast<float>(x) + 0.5F) * light_map.u_scale,
                 base_v + (static_cast<float>(y) + 0.5F) * light_map.v_scale, plane);
+            if (world && authored_ambient) {
+                const auto ambient = authored_ambient->Sample(*world, unit_normal);
+                if (ambient) lighting = *ambient;
+            }
             if (world.has_value() &&
                 dark_zone_ambient.Suppress(static_cast<std::size_t>(placement.surface), *world,
                                            unit_normal)) {
