@@ -1,4 +1,5 @@
 #include "hpvr/quest_view.h"
+#include "hpvr/quest_recenter.h"
 
 #include <array>
 #include <cmath>
@@ -28,6 +29,127 @@ std::array<float, 4> Transform(const hpvr::quest::Matrix4& matrix,
         }
     }
     return result;
+}
+
+void ExpectPosition(const std::array<float,3>& actual, const std::array<float,3>& expected,
+                    const char* message) {
+    for (unsigned axis = 0; axis < 3; ++axis) Expect(Near(actual[axis], expected[axis]), message);
+}
+
+void TestCapsuleRecenter() {
+    using namespace hpvr::quest;
+    constexpr float eye_height = .815F;
+    LocomotionState player(eye_height);
+    const std::array body{4.F, 2.F, -7.F};
+    const auto initial_translation = player.translation();
+    Expect(!player.RecenterToCapsule(body, .7F) && player.translation() == initial_translation,
+           "recenter before an observed head fails atomically");
+    ViewPose head{{.2F, 1.6F, -.3F}};
+    Expect(player.ObserveHead(head) && player.RecenterToCapsule(body, .7F), "initial capsule recenter");
+
+    LocomotionInput movement;
+    movement.move_active = true; movement.move_y = 1; movement.turn_active = true; movement.turn_x = 1;
+    const auto resolver = [](void*, const std::array<float,3>&, const std::array<float,3>& requested,
+                             LocomotionMove* result) {
+        *result = {requested, 2, 3}; result->displacement[1] = .1F; return true;
+    };
+    Expect(player.Tick(movement, .02F, resolver), "prime movement, snap and collision counters");
+    const auto preserved = player.CapsuleCenter();
+    const auto move_frames = player.move_frames(), snap_turns = player.snap_turns();
+    const auto blocked = player.blocked_substeps(), grounded = player.grounded_substeps();
+    const auto vertical = player.vertical_adjustment_m();
+    const auto yaw = player.yaw_radians();
+    head.position[1] = .7F;
+    Expect(player.ObserveHead(head), "lower head before tracking recovers");
+    ExpectPosition(player.CapsuleCenter(), preserved, "crouching never changes physical capsule height");
+    Expect(player.RecenterToCapsule(preserved, yaw), "recenter while crouching");
+    ExpectPosition(player.CapsuleCenter(), preserved, "crouched resume preserves complete capsule XYZ");
+    ViewPose world;
+    Expect(player.MapPose(head, &world), "map recentered head");
+    ExpectPosition(world.position, {preserved[0], preserved[1] + eye_height, preserved[2]},
+                   "observed head is rebased to body plus configured eye height");
+    Expect(player.move_frames() == move_frames && player.snap_turns() == snap_turns &&
+           player.blocked_substeps() == blocked && player.grounded_substeps() == grounded &&
+           player.vertical_adjustment_m() == vertical, "recenter preserves all movement counters");
+    LocomotionInput held_turn; held_turn.turn_active = true; held_turn.turn_x = 1;
+    Expect(player.Tick(held_turn, .02F) && player.snap_turns() == snap_turns,
+           "recenter does not retrigger a held snap-turn stick");
+
+    for (unsigned attempt = 0; attempt < 30; ++attempt) {
+        // Simulate a new LOCAL tracking origin, including seated/crouched height.
+        head.position = {float(attempt) * .21F - 3.F, .3F + float(attempt % 5) * .27F,
+                         2.F - float(attempt) * .14F};
+        const float new_yaw = -.7F + float(attempt) * .11F;
+        Expect(player.ObserveHead(head) && player.RecenterToCapsule(preserved, new_yaw), "repeated tracking-origin rebase");
+        ExpectPosition(player.CapsuleCenter(), preserved, "repeated rebases never accumulate body drop");
+        Expect(player.MapPose(head, &world), "repeated rebase maps head");
+        ExpectPosition(world.position, {preserved[0], preserved[1] + eye_height, preserved[2]},
+                       "new local XYZ origin maps to unchanged world capsule");
+        Expect(Near(player.yaw_radians(), new_yaw), "supplied world yaw retained");
+    }
+    head.position[1] -= .25F;
+    Expect(player.ObserveHead(head) && player.MapPose(head, &world), "crouch after recenter");
+    ExpectPosition(player.CapsuleCenter(), preserved, "new reference retains room-scale crouch without body drop");
+    Expect(Near(world.position[1], preserved[1] + eye_height - .25F), "physical crouch remains visible after rebase");
+    const std::array transport{.4F, .15F, -.3F};
+    Expect(player.TranslateWorld(transport), "moving platform transport before tracking loss");
+    const auto transported = player.CapsuleCenter();
+    ExpectPosition(transported, {preserved[0] + transport[0], preserved[1] + transport[1], preserved[2] + transport[2]},
+                   "platform moves physical capsule in all axes");
+    head.position = {-.8F, .2F, 1.4F};
+    Expect(player.ObserveHead(head) && player.RecenterToCapsule(transported, yaw), "resume after platform transport");
+    ExpectPosition(player.CapsuleCenter(), transported, "recenter preserves transported capsule rather than old head");
+    LocomotionState recreated(eye_height);
+    Expect(recreated.ObserveHead(head) && recreated.RecenterToCapsule(transported, yaw),
+           "new session can rebase to saved platform-transported body");
+    ExpectPosition(recreated.CapsuleCenter(), transported, "session recreation does not lose capsule placement");
+
+    const auto unchanged = player;
+    const auto check_unchanged = [&]() {
+        Expect(player.translation() == unchanged.translation() && player.CapsuleCenter() == unchanged.CapsuleCenter() &&
+               player.yaw_radians() == unchanged.yaw_radians() && player.move_frames() == unchanged.move_frames() &&
+               player.snap_turns() == unchanged.snap_turns() && player.blocked_substeps() == unchanged.blocked_substeps() &&
+               player.grounded_substeps() == unchanged.grounded_substeps() &&
+               player.vertical_adjustment_m() == unchanged.vertical_adjustment_m(), "invalid rebase leaves all state unchanged");
+    };
+    for (unsigned axis = 0; axis < 3; ++axis) for (const float bad : {
+         std::numeric_limits<float>::quiet_NaN(), std::numeric_limits<float>::infinity(), 2000.F}) {
+        auto invalid = transported; invalid[axis] = bad;
+        Expect(!player.RecenterToCapsule(invalid, 1.F), "malformed capsule rejected"); check_unchanged();
+    }
+    Expect(!player.RecenterToCapsule(transported, std::numeric_limits<float>::quiet_NaN()), "invalid yaw rejected");
+    check_unchanged();
+    LocomotionState overflow;
+    head.position = {std::numeric_limits<float>::max(), 1.F, std::numeric_limits<float>::max()};
+    Expect(overflow.ObserveHead(head), "finite extreme local pose for overflow validation");
+    const auto before_overflow = overflow.translation();
+    Expect(!overflow.RecenterToCapsule(body, .785398163F) && overflow.translation() == before_overflow &&
+           overflow.yaw_radians() == 0, "computed overflow rejected before committing any transform");
+}
+
+void TestRecenterChord() {
+    using hpvr::quest::RecenterChord;
+    RecenterChord chord;
+    Expect(!chord.Update(true, true, true, true) && chord.consumed, "held startup chord cannot fire");
+    Expect(!chord.Update(true, true, false, true) && chord.consumed, "one release cannot arm startup chord");
+    Expect(!chord.Update(true, true, false, false) && !chord.consumed, "neutral arms chord");
+    Expect(!chord.Update(true, true, true, false) && !chord.consumed, "single click alone remains available");
+    Expect(chord.Update(true, true, true, true) && chord.consumed, "second click fires chord once");
+    for (unsigned held = 0; held < 5; ++held)
+        Expect(!chord.Update(true, true, true, true) && chord.consumed, "held chord never repeats");
+    Expect(!chord.Update(true, true, false, true) && chord.consumed, "right click consumed until both released");
+    Expect(!chord.Update(true, true, true, false) && chord.consumed, "alternating releases do not rearm");
+    Expect(!chord.Update(true, true, true, true) && chord.consumed, "repressing one side still cannot repeat");
+    Expect(!chord.Update(true, true, false, false) && !chord.consumed, "both released rearms exactly once");
+    Expect(chord.Update(true, true, true, true), "fresh full chord accepted");
+    for (bool lose_focus : {false, true}) {
+        Expect(!chord.Update(!lose_focus, lose_focus, false, false), "focus or tracking loss cancels armed epoch");
+        Expect(!chord.Update(true, true, true, true) && chord.consumed, "resume with held inputs cannot recenter");
+        Expect(!chord.Update(true, true, false, false), "fresh tracked focused neutral required");
+        Expect(chord.Update(true, true, true, true), "fresh chord works after focus or tracking recovery");
+    }
+    chord.Reset();
+    Expect(!chord.Update(true, true, true, true) && chord.consumed, "session reset requires neutral again");
 }
 
 }  // namespace
@@ -131,6 +253,8 @@ int main() {
     Expect(walk.Tick(input,0.05F),"walk step");input.sprint=true;
     Expect(sprint.Tick(input,0.05F),"sprint step");
     Expect(Near(sprint.translation()[2],walk.translation()[2]*1.5F),"L3 sprint is 6 m/s, walk unchanged");
+    TestCapsuleRecenter();
+    TestRecenterChord();
     std::cout << "quest view tests passed\n";
     return EXIT_SUCCESS;
 }

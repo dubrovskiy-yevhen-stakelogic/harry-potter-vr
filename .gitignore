@@ -17,6 +17,7 @@ CMakeCache.txt
 *.VC.db
 
 # Proprietary or locally imported game data
+*.hpvc
 /game-data/
 /local/
 /install-snapshot/

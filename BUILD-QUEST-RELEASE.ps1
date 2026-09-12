@@ -1,7 +1,7 @@
 [CmdletBinding()]
 param(
     [switch]$InitializeSigningKey,
-    [string]$OutputDirectory = 'artifacts\quest-release-c37',
+    [string]$OutputDirectory,
     [string]$AndroidSdk = 'C:\Dev\android-toolchain\sdk',
     [string]$JavaDirectory = 'C:\Dev\android-toolchain\jdk21',
     [string]$Gradle,
@@ -11,12 +11,38 @@ param(
 $ErrorActionPreference = 'Stop'
 $repositoryRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
 $androidRoot = Join-Path $repositoryRoot 'android'
+function Get-HpvrBuildMetadata([string]$Path) {
+    $source = Get-Content -LiteralPath $Path -Raw
+    $source = [regex]::Replace($source, '(?s)/\*.*?\*/', '')
+    $codes = [regex]::Matches($source, '(?m)^\s*versionCode\b[^\r\n]*')
+    $names = [regex]::Matches($source, '(?m)^\s*versionName\b[^\r\n]*')
+    if ($codes.Count -ne 1 -or $names.Count -ne 1 -or
+        $codes[0].Value -notmatch '^\s*versionCode\s+([0-9]+)\s*(?://[^\r\n]*)?$') {
+        throw 'build.gradle must declare exactly one literal versionCode and versionName.'
+    }
+    $code = 0
+    if (-not [int]::TryParse($Matches[1], [ref]$code) -or $code -lt 1 -or $code -gt 2100000000) {
+        throw 'Invalid Android versionCode.'
+    }
+    if ($names[0].Value -notmatch '^\s*versionName\s+([''"])([A-Za-z0-9][A-Za-z0-9._+-]{0,95})\1\s*(?://[^\r\n]*)?$') {
+        throw 'versionName must be a single literal containing filename-safe characters.'
+    }
+    return [pscustomobject]@{VersionCode=$code;VersionName=$Matches[2]}
+}
+$gradleMetadataPath = Join-Path $androidRoot 'app\build.gradle'
+$version = Get-HpvrBuildMetadata $gradleMetadataPath
+$voiceBuild = $version.VersionCode -ge 44
+$metadataHash = (Get-FileHash -LiteralPath $gradleMetadataPath -Algorithm SHA256).Hash
+$apkFileName = "HPVR-Quest-$($version.VersionName).apk"
+if ([string]::IsNullOrWhiteSpace($OutputDirectory)) {
+    $OutputDirectory = 'artifacts\quest-release-' + $version.VersionName + '-c' + $version.VersionCode + '-' + [DateTime]::UtcNow.ToString('yyyyMMdd-HHmmss')
+}
 $buildRoot = Join-Path $repositoryRoot 'build'
 $signingRoot = Join-Path $repositoryRoot 'local\signing\release'
 $keystore = Join-Path $signingRoot 'hpvr-release.p12'
 $credentialPath = Join-Path $signingRoot 'hpvr-release-password.clixml'
 $alias = 'hpvr-release'
-$OutputDirectory = [System.IO.Path]::GetFullPath((Join-Path $repositoryRoot $OutputDirectory))
+$OutputDirectory = [System.IO.Path]::GetFullPath($(if([System.IO.Path]::IsPathRooted($OutputDirectory)){$OutputDirectory}else{Join-Path $repositoryRoot $OutputDirectory}))
 $artifactRoot = [System.IO.Path]::GetFullPath((Join-Path $repositoryRoot 'artifacts'))
 if (-not $OutputDirectory.StartsWith($artifactRoot + [System.IO.Path]::DirectorySeparatorChar,
         [System.StringComparison]::OrdinalIgnoreCase)) {
@@ -108,11 +134,18 @@ try {
     # Gradle never receives signing secrets. Build the real Release variant
     # from C++/GLSL source, not an old debug APK with a replaced library.
     Remove-Item Env:HPVR_RELEASE_STORE_PASSWORD -ErrorAction SilentlyContinue
+    if ($voiceBuild) {
+        & (Join-Path $repositoryRoot 'tools/voice/FETCH-VOICE-DEPENDENCIES.ps1') -Offline:(-not $AllowDependencyDownload)
+        & (Join-Path $repositoryRoot 'tools/voice/BUILD-NEURAL-VOICE-RUNTIME.ps1') -Offline:(-not $AllowDependencyDownload)
+    }
     $gradleArguments = @('--no-daemon', '--console=plain', '--max-workers=6')
     if (-not $AllowDependencyDownload) { $gradleArguments += '--offline' }
     $gradleArguments += @('-p', $androidRoot, ':app:assembleRelease')
     & $Gradle @gradleArguments
     if ($LASTEXITCODE -ne 0) { throw "Release source build failed: $LASTEXITCODE" }
+    if ((Get-FileHash -LiteralPath $gradleMetadataPath -Algorithm SHA256).Hash -ne $metadataHash) {
+        throw 'build.gradle changed during the build; metadata must be captured from one consistent source revision.'
+    }
 
     $unsignedApk = Join-Path $androidRoot 'app\build\outputs\apk\release\app-release-unsigned.apk'
     if (-not (Test-Path -LiteralPath $unsignedApk -PathType Leaf)) { throw 'Gradle did not produce an unsigned Release APK.' }
@@ -138,14 +171,10 @@ try {
     }
 
     Add-Type -AssemblyName System.IO.Compression.FileSystem
+    . (Join-Path $repositoryRoot 'tools/voice/VOICE-APK-PAYLOAD.ps1')
     $archive = [System.IO.Compression.ZipFile]::OpenRead($unsignedApk)
     try {
-        foreach ($entry in $archive.Entries) {
-            if ($entry.FullName.EndsWith('/')) { continue }
-            if ($entry.FullName -notmatch '^(AndroidManifest\.xml|resources\.arsc|classes(?:[0-9]+)?\.dex|lib/arm64-v8a/(?:libhpvr_quest|libopenxr_loader)\.so|META-INF/[^\r\n]+|res/[^\r\n]+)$') {
-                throw "Unexpected release payload (assets are prohibited): $($entry.FullName)"
-            }
-        }
+        Assert-HpvrApkPayload $archive $voiceBuild (Join-Path $repositoryRoot 'tools/voice/VOICE-ASSETS.psd1')
         foreach ($native in @('lib/arm64-v8a/libhpvr_quest.so', 'lib/arm64-v8a/libopenxr_loader.so')) {
             if ($null -eq $archive.GetEntry($native)) { throw "Missing ARM64 native library: $native" }
         }
@@ -168,6 +197,27 @@ try {
     Copy-Item -LiteralPath (Join-Path $ndkRoot 'NOTICE') -Destination (Join-Path $notices 'NDK-27.2.12479018-NOTICE.txt')
     Copy-Item -LiteralPath (Join-Path $ndkRoot 'NOTICE.toolchain') -Destination (Join-Path $notices 'NDK-27.2.12479018-NOTICE.toolchain.txt')
     Copy-Item -LiteralPath (Join-Path $repositoryRoot 'docs\THIRD-PARTY-NOTICES.md') -Destination $notices
+    if ($voiceBuild) {
+        $voiceAssets = Join-Path $repositoryRoot 'local/neural-voice-dependencies/assets/hpvr-voice'
+        $voiceManifest = Import-PowerShellDataFile -LiteralPath (Join-Path $repositoryRoot 'tools/voice/VOICE-ASSETS.psd1')
+        $voiceNotices = @{}
+        foreach ($relative in $voiceManifest.Keys) {
+            if ($relative -match '^(LICENSE-|NOTICE-|EIGEN-|MODEL-README)') {
+                $voiceNotices[$relative] = "Voice-$relative"
+            }
+        }
+        foreach ($relative in $voiceNotices.Keys) {
+            $noticeSource = Join-Path $voiceAssets $relative
+            if ((Get-FileHash -LiteralPath $noticeSource -Algorithm SHA256).Hash -cne $voiceManifest[$relative]) {
+                throw "Pinned voice license changed: $relative"
+            }
+            $noticeOutput = Join-Path $notices $voiceNotices[$relative]
+            Copy-Item -LiteralPath $noticeSource -Destination $noticeOutput
+            if ((Get-FileHash -LiteralPath $noticeOutput -Algorithm SHA256).Hash -cne $voiceManifest[$relative]) {
+                throw "Voice license copy mismatch: $relative"
+            }
+        }
+    }
     $licensedApk = Join-Path $packageDirectory 'licensed-unsigned.apk'
     Copy-Item -LiteralPath $unsignedApk -Destination $licensedApk
     $archive = [System.IO.Compression.ZipFile]::Open($licensedApk, [System.IO.Compression.ZipArchiveMode]::Update)
@@ -178,7 +228,7 @@ try {
         }
     } finally { $archive.Dispose() }
     $alignedApk = Join-Path $packageDirectory 'aligned.apk'
-    $signedApk = Join-Path $packageDirectory 'HPVR-Quest-0.1.0-demo.apk'
+    $signedApk = Join-Path $packageDirectory $apkFileName
     & $zipalign -f -P 16 4 $licensedApk $alignedApk
     if ($LASTEXITCODE -ne 0) { throw 'Release APK alignment failed.' }
     $env:HPVR_RELEASE_STORE_PASSWORD = $credential.GetNetworkCredential().Password
@@ -196,25 +246,28 @@ try {
     $badging = @(& $aapt dump badging $signedApk)
     if ($LASTEXITCODE -ne 0) { throw 'Release APK manifest verification failed.' }
     if ($badging -match '^application-debuggable') { throw 'Refusing to publish a debuggable APK.' }
-    if (-not ($badging -match "^package: name='io.github.hpvr.quest' versionCode='37' versionName='0.1.0-demo'")) {
-        throw 'Release package id or version differs from C37 demo metadata.'
+    $expectedPackage = "^package: name='io\.github\.hpvr\.quest' versionCode='$($version.VersionCode)' versionName='" + [regex]::Escape($version.VersionName) + "'(?:\s|$)"
+    if (@($badging | Where-Object { $_ -match $expectedPackage }).Count -ne 1) {
+        throw 'Release package id or version differs from the captured build.gradle metadata.'
     }
     if (-not ($badging -match "^native-code: 'arm64-v8a'\s*$")) { throw 'Release must contain ARM64 only.' }
 
+    & (Join-Path $repositoryRoot 'VERIFY-QUEST-APK.ps1') -ApkPath $signedApk -Release -ExpectedVersionCode $version.VersionCode -ExpectedVersionName $version.VersionName -AndroidSdk $AndroidSdk
     New-Item -ItemType Directory -Path $OutputDirectory | Out-Null
-    $outputApk = Join-Path $OutputDirectory 'HPVR-Quest-0.1.0-demo.apk'
+    $outputApk = Join-Path $OutputDirectory $apkFileName
     Copy-Item -LiteralPath $signedApk -Destination $outputApk
     Copy-Item -LiteralPath $notices -Destination (Join-Path $OutputDirectory 'THIRD-PARTY') -Recurse
     $hash = (Get-FileHash -LiteralPath $outputApk -Algorithm SHA256).Hash
-    "$hash  HPVR-Quest-0.1.0-demo.apk" | Set-Content -LiteralPath (Join-Path $OutputDirectory 'SHA256SUMS.txt') -Encoding ASCII
+    "$hash  $apkFileName" | Set-Content -LiteralPath (Join-Path $OutputDirectory 'SHA256SUMS.txt') -Encoding ASCII
     [ordered]@{
-        package = 'io.github.hpvr.quest'; version = '0.1.0-demo'; versionCode = 37
+        package = 'io.github.hpvr.quest'; version = $version.VersionName; versionCode = $version.VersionCode
         buildType = 'Release'; debuggable = $false; abi = 'arm64-v8a'
         apkSha256 = $hash; certificateSha256 = $certificateHash
-        gameAssetsIncluded = $false; installed = $false; launched = $false
+        gradleMetadataSha256 = $metadataHash
+        gameAssetsIncluded = $false; voiceModelIncluded = $voiceBuild; installed = $false; launched = $false
         builtUtc = [DateTime]::UtcNow.ToString('o')
     } | ConvertTo-Json | Set-Content -LiteralPath (Join-Path $OutputDirectory 'RELEASE-METADATA.json') -Encoding UTF8
-    Write-Host '[hpvr.quest.release] status=PASS native=RELEASE debuggable=0 assets=0 install=NOT_PERFORMED launch=NOT_PERFORMED'
+    Write-Host "[hpvr.quest.release] status=PASS native=RELEASE debuggable=0 game_assets=0 voice_model=$([int]$voiceBuild) install=NOT_PERFORMED launch=NOT_PERFORMED"
     Write-Host "[hpvr.quest.release] apk=$outputApk"
     Write-Host "[hpvr.quest.release] sha256=$hash certificate_sha256=$certificateHash"
     Write-Host '[hpvr.quest.release] debug_upgrade=INCOMPATIBLE_SIGNATURE do_not_uninstall_existing_developer_build'

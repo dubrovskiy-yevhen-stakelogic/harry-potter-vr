@@ -75,6 +75,13 @@ int main(){
     {std::ofstream incomplete(dir/"slot1.0.hpvr.tmp");incomplete<<"unfinished";}
     Check(ReadProgress(dir,0,&r)&&r.page==4,"incomplete temp ignored");
     QuestFrontEnd f;f.saves=dir;f.assets.story.resize(14);f.RefreshSlots();
+    Check(f.VoiceAimQuads(0).empty(),"voice hint hidden while disabled");
+    for(unsigned voice_status:{1U,2U,3U,4U,5U,6U,7U,99U}){
+        const auto hint=f.VoiceAimQuads(voice_status);
+        Check(!hint.empty()&&hint.size()<24,"voice aim hint remains a single bounded text batch");
+        for(const auto& quad:hint)Check(quad.x>200&&quad.x+quad.w<440&&quad.y>=230&&quad.y+quad.h<250,
+            "voice hint is centered for its shared world-space transform");
+    }
     Check(f.screen==FrontScreen::Main&&f.occupied[0]&&f.occupied[1]&&!f.occupied[2],"menu and slots");
     auto click=[&](){f.Input(0,false,false);return f.Input(0,true,false);};
     Check(click()==FrontAction::None&&f.screen==FrontScreen::Slots,"start opens slots");

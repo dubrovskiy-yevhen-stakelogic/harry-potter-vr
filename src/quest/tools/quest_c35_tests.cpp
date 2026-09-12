@@ -22,7 +22,7 @@ int main(int argc,char** argv){try{
     Check(f.vr.relaxed_lesson&&!f.PausesWorld(),"difficulty selection keeps world live");
     const auto relaxed_key=f.DrawKey();f.Input(0,false,false);f.Input(0,true,false);
     Check(!f.vr.relaxed_lesson&&f.DrawKey()!=relaxed_key,"original selection has its own geometry key");
-    f.selection=5;f.Input(0,false,false);Check(f.Input(0,true,false)==FrontAction::Resume&&!f.Visible(),"sixth row closes settings");
+    f.selection=kVrMenuRowCount-1;f.Input(0,false,false);Check(f.Input(0,true,false)==FrontAction::Resume&&!f.Visible(),"last row closes settings");
     f.ShowDemoNotice(false);Check(f.FloatingPanel()&&f.WorldVisible()&&f.PausesWorld(),"welcome stays in world and holds quest until read");
     Check(f.Input(0,true,false)==FrontAction::None&&f.DemoNotice(),"held trigger cannot skip notice");
     f.Input(0,false,false);f.selection=1;

@@ -1,6 +1,7 @@
 #version 450
 #extension GL_GOOGLE_include_directive : require
 #include "reflection_hit_policy.h"
+#include "abyss_fog.h"
 
 layout(set = 0, binding = 0) uniform sampler2DArray map_texture;
 layout(set = 0, binding = 1) uniform sampler2D lightmap_texture;
@@ -108,6 +109,7 @@ void main() {
         out_color=vec4(color.rgb*in_light,1.0);
         return;
     }
+    const float fog_visibility = abyssFogVisibility();
     // UE1 applies its display brightness/gamma after texture * lightmap.
     // The Quest swapchain is sRGB, but without this pass the upper half of
     // the Great Hall histogram is substantially darker than the PC capture.
@@ -123,4 +125,5 @@ void main() {
         bool wood=(in_polygon_flags & 0x10000000u)!=0u;
         out_color=vec4(wood?woodReflection(linear_color):linear_color,wood?.25:0.0);
     }
+    out_color.rgb *= fog_visibility;
 }

@@ -1,5 +1,5 @@
 [CmdletBinding()]
-param()
+param([switch]$VoiceDiagnostics)
 
 $ErrorActionPreference = 'Stop'
 $repositoryRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
@@ -23,6 +23,10 @@ if ($null -eq $gradle) {
     throw "Cached Gradle $requiredGradleVersion was not found under $gradleRoot"
 }
 
+# APK builds remain offline. Prepare licensed native dependencies explicitly;
+# this preflight only checks their source-build identity and file hashes.
+& (Join-Path $repositoryRoot 'tools/voice/BUILD-NEURAL-VOICE-RUNTIME.ps1') -VerifyOnly
+
 $previousJavaHome = $env:JAVA_HOME
 $previousAndroidHome = $env:ANDROID_HOME
 $previousAndroidSdkRoot = $env:ANDROID_SDK_ROOT
@@ -31,7 +35,9 @@ try {
     $env:ANDROID_HOME = $sdkRoot
     $env:ANDROID_SDK_ROOT = $sdkRoot
     Write-Host "Using Gradle: $($gradle.FullName)"
-    & $gradle.FullName --offline --no-daemon -p $androidProject :app:assembleDebug
+    $diagnosticProperty = '-PhpvrVoiceDiagnostics=' + ([bool]$VoiceDiagnostics).ToString().ToLowerInvariant()
+    $buildTask = if ($VoiceDiagnostics) { ':app:assembleVoiceDiagnostic' } else { ':app:assembleDebug' }
+    & $gradle.FullName --offline --no-daemon -p $androidProject $diagnosticProperty $buildTask
     if ($LASTEXITCODE -ne 0) {
         throw "Quest debug APK build failed with exit code $LASTEXITCODE"
     }
@@ -41,11 +47,13 @@ try {
     $env:ANDROID_SDK_ROOT = $previousAndroidSdkRoot
 }
 
-$apk = Join-Path $androidProject 'app\build\outputs\apk\debug\app-debug.apk'
+$apkRelative = if ($VoiceDiagnostics) { 'app\build\outputs\apk\voiceDiagnostic\app-voiceDiagnostic.apk' }
+    else { 'app\build\outputs\apk\debug\app-debug.apk' }
+$apk = Join-Path $androidProject $apkRelative
 if (-not (Test-Path -LiteralPath $apk)) {
     throw "Gradle completed but the expected APK is missing: $apk"
 }
 
 $hash = Get-FileHash -Algorithm SHA256 -LiteralPath $apk
-Write-Host "Quest debug APK: $apk"
+Write-Host "Quest APK (local voice diagnostic=$([bool]$VoiceDiagnostics)): $apk"
 Write-Host "SHA256: $($hash.Hash)"

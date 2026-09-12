@@ -1,5 +1,6 @@
 #include "quest_audio.h"
 #include "hpvr/quest_frontend.h"
+#include "hpvr/quest_music_cache.h"
 
 #include <android/log.h>
 #include <media/NdkMediaCodec.h>
@@ -220,6 +221,8 @@ bool QuestAudio::Configure(const wand::Hp1PcmSound& ambient,
                            const std::vector<wand::Hp1MpegSound>& dialogue,
                            const std::filesystem::path& cache_directory) {
     if (stream_ != nullptr) return false;
+    bean_sound_index_=std::numeric_limits<std::size_t>::max();
+    bean_cue_.Reset();
     const auto decode = [&cache_directory](const wand::Hp1MpegSound& source) {
         // Private, owned-data PCM cache: the encoded-source checksum prevents
         // accidentally playing a clip from another language/package revision.
@@ -307,23 +310,26 @@ bool QuestAudio::ConfigureTutorialFrog(const wand::Hp1PcmSound& source){
     auto samples=ResampleMono48k(source);if(samples.empty())return false;
     dialogue_.push_back(std::move(samples));return true;
 }
+bool QuestAudio::ConfigureBeanPickup(std::size_t index){
+    if(stream_ || index>=dialogue_.size() || dialogue_[index].empty())return false;
+    bean_sound_index_=index;bean_cue_.Reset();
+    return true;
+}
 bool QuestAudio::ConfigureMusic(const std::vector<wand::Hp1MpegSound>& sources,
                                const std::filesystem::path& cache) {
     if(stream_)return false;
-    music_.clear();
-    for(const auto& source:sources){
-        std::ifstream input(cache/AudioCacheName(source,true),std::ios::binary|std::ios::ate);
-        if(!input)return false;
-        const auto bytes=input.tellg();
-        if(bytes<1920||bytes>48000*4*300||bytes%4!=0)return false;
-        std::vector<std::int16_t> samples(static_cast<std::size_t>(bytes)/2);
-        input.seekg(0);input.read(reinterpret_cast<char*>(samples.data()),bytes);
-        if(!input||std::ranges::none_of(samples,[](auto v){return v!=0;}))return false;
-        music_.push_back(std::move(samples));
+    std::string error;
+    if(!LoadQuestMusicCache(sources,cache,&music_,&error)){
+        __android_log_print(ANDROID_LOG_ERROR,kAudioLogTag,
+            "[hpvr.quest.music] status=REJECTED requested=%zu error=%s",
+            sources.size(),error.c_str());
+        return false;
     }
+    music_current_=~0U;
+    music_cursor_=0;
     __android_log_print(ANDROID_LOG_INFO,kAudioLogTag,
         "[hpvr.quest.music] status=READY tracks=%zu channels=2 rate=48000",music_.size());
-    return music_.size()==4;
+    return true;
 }
 void QuestAudio::SelectMusic(unsigned index){music_requested_.store(index,std::memory_order_release);}
 void QuestAudio::SetPresentationAudio(bool ambient,bool paused){
@@ -373,10 +379,11 @@ bool QuestAudio::Start() {
 void QuestAudio::Stop() {
     wand_drawing_.store(false, std::memory_order_release);
     dialogue_cursor_.store(kIdleCursor, std::memory_order_release);
-    if (stream_ == nullptr) return;
+    if (stream_ == nullptr) {bean_cue_.Reset();return;}
     AAudioStream_requestStop(stream_);
     AAudioStream_close(stream_);
     stream_ = nullptr;
+    bean_cue_.Reset();
 }
 
 void QuestAudio::SetWandDrawing(const bool drawing) {
@@ -404,6 +411,9 @@ bool QuestAudio::PlayWorldEffect(std::size_t index,float gain){
     effect_index_.store(static_cast<unsigned>(index),std::memory_order_relaxed);
     effect_gain_.store(std::clamp(gain,0.0F,1.0F),std::memory_order_relaxed);
     effect_cursor_.store(0,std::memory_order_release);return true;
+}
+void QuestAudio::PlayBeanPickup(){
+    bean_cue_.Request();
 }
 bool QuestAudio::PlayDialogue(const std::size_t index) {
     if (index >= dialogue_.size() || dialogue_[index].empty() ||
@@ -446,6 +456,7 @@ aaudio_data_callback_result_t QuestAudio::DataCallback(
 
 aaudio_data_callback_result_t QuestAudio::Render(
     std::int16_t* const output, const std::int32_t frame_count) {
+    bean_cue_.BeginBlock();
     for (std::int32_t frame = 0; frame < frame_count; ++frame) {
         const bool paused=narrative_paused_.load(std::memory_order_acquire);
         float mixed = ambient_enabled_.load(std::memory_order_acquire) && !paused
@@ -482,6 +493,8 @@ aaudio_data_callback_result_t QuestAudio::Render(
         const auto effect_index=effect_index_.load(std::memory_order_acquire);
         if(!paused&&ambient_enabled_.load(std::memory_order_relaxed)&&effect_index<dialogue_.size())
             mix_one_shot(dialogue_[effect_index],effect_cursor_,effect_gain_.load(std::memory_order_relaxed));
+        if(!paused&&ambient_enabled_.load(std::memory_order_relaxed)&&bean_sound_index_<dialogue_.size())
+            mixed+=static_cast<float>(bean_cue_.NextSample(dialogue_[bean_sound_index_]))*.85F;
         const auto dialogue_position =
             dialogue_cursor_.load(std::memory_order_acquire);
         if (dialogue_position != kIdleCursor && !paused) {

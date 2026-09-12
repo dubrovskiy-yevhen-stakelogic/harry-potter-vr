@@ -32,17 +32,28 @@ $required = @(
     'BUILD-QUEST-RELEASE.ps1', 'PACKAGE-QUEST-PLAYER.ps1',
     'VERIFY-QUEST-APK.ps1', 'IMPORT-QUEST-DATA.ps1', 'PREPARE-QUEST-AUDIO.ps1',
     'PREPARE-QUEST-FRONTEND.ps1', 'RUN-LATEST-VR.cmd', 'android/build.gradle',
+    'PREPARE-QUEST-CHALLENGE.ps1',
     'android/settings.gradle', 'android/gradle.properties', 'android/app/build.gradle',
     'tools/verify-baseline.ps1', 'tools/test-source-kit-export.ps1',
     'tools/release/INSTALL-HPVR.ps1', 'tools/release/INSTALL-HPVR.cmd',
     'tools/release/PLAYER-INSTALL.md', 'tools/release/TEST-PLAYER-INSTALL.ps1',
+    'tools/release/TEST-ADB-BOOTSTRAP.ps1', 'tools/release/TEST-FFMPEG-BOOTSTRAP.ps1',
+    'cmake/HPVRVoice.cmake', 'tools/voice/CMakeLists.txt',
+    'tools/voice/FETCH-VOICE-DEPENDENCIES.ps1', 'tools/voice/BUILD-VOICE-CHECKS.ps1',
+    'tools/voice/TEST-VOICE-APK-PAYLOAD.ps1', 'tools/voice/VOICE-ASSETS.psd1',
+    'tools/voice/VOICE-APK-PAYLOAD.ps1',
+    'tools/voice/BUILD-NEURAL-VOICE-RUNTIME.ps1', 'tools/voice/NEURAL-RUNTIME-NOTICES.psd1',
+    'tools/voice/TEST-NEURAL-VOICE-RUNTIME.ps1',
+    'tools/voice/flipendo.keywords', 'tools/voice/voice_keyword_probe.cpp', 'tools/voice/README.md',
     'tools/xr-runtime-probe/Cargo.toml', 'tools/xr-runtime-probe/Cargo.lock',
     'tools/xr-runtime-probe/rust-toolchain.toml', 'tools/xr-runtime-probe/build.rs',
     'src/CMakeLists.txt', 'src/test.cpp', 'src/header.h', 'src/fixture.c',
     'android/app/src/main/AndroidManifest.xml', 'android/app/src/main/cpp/test.cpp',
+    'android/app/src/main/cpp/quest_challenge_runtime.inl',
     'tools/xr-runtime-probe/src/main.rs',
     'docs/architecture.md', 'docs/wand-gesture-contract.md',
-    'docs/RELEASE-BUILD.md', 'docs/THIRD-PARTY-NOTICES.md'
+    'docs/RELEASE-BUILD.md', 'docs/THIRD-PARTY-NOTICES.md',
+    'docs/CLASSIC-CASTING-AND-CHALLENGE.md', 'docs/FLIPENDO-CHALLENGE.md', 'docs/LOADING-AND-PICKUPS.md'
 )
 foreach ($relative in $required) { Write-Fixture $relative }
 $exporter = Join-Path $fixture 'EXPORT-SOURCE-KIT.ps1'
@@ -58,6 +69,10 @@ Write-Fixture 'local/signing/release/never-export.p12'
 Write-Fixture 'local/signing/release/never-export.clixml'
 Write-Fixture 'tools/release/never-export.ps1'
 Write-Fixture 'tools/release/assets/never-export.md'
+Write-Fixture 'local/voice-dependencies/assets/hpvr-voice/en-us/never-export-model'
+Write-Fixture 'local/neural-voice-dependencies/assets/hpvr-voice/never-export-model.onnx'
+Write-Fixture 'tools/voice/never-export-model.bin'
+Write-Fixture 'tools/voice/assets/never-export-model.md'
 $excludedDocs = @('AGENTS.md', 'docs/unknown-note.md', 'docs/runtime-evidence-fixture.md')
 foreach ($relative in $excludedDocs) { Write-Fixture $relative }
 
@@ -66,8 +81,15 @@ $destination = Join-Path $runRoot 'kit'
 Expect (-not (Test-Path -LiteralPath $destination)) 'Audit-only created output.'
 & $exporter -DestinationPath $destination -CreateArchive
 Expect (Test-Path -LiteralPath (Join-Path $destination 'src/test.cpp')) 'Source did not export.'
+Expect (Test-Path -LiteralPath (Join-Path $destination 'android/app/src/main/cpp/quest_challenge_runtime.inl')) 'Inline gameplay source missing.'
 Expect (Test-Path -LiteralPath (Join-Path $destination 'SOURCE-SHA256.txt')) 'Manifest is missing.'
 Expect (@(Get-ChildItem -LiteralPath $destination -Recurse -Filter 'never-export*').Count -eq 0) 'Excluded content exported.'
+foreach ($relative in @('cmake/HPVRVoice.cmake', 'tools/voice/FETCH-VOICE-DEPENDENCIES.ps1',
+        'tools/voice/VOICE-ASSETS.psd1', 'tools/voice/flipendo.keywords', 'tools/voice/README.md',
+        'tools/voice/BUILD-NEURAL-VOICE-RUNTIME.ps1', 'tools/voice/NEURAL-RUNTIME-NOTICES.psd1',
+        'tools/voice/TEST-NEURAL-VOICE-RUNTIME.ps1')) {
+    Expect (Test-Path -LiteralPath (Join-Path $destination $relative)) "Voice build source missing: $relative"
+}
 foreach ($relative in $excludedDocs) {
     Expect (-not (Test-Path -LiteralPath (Join-Path $destination $relative))) "Non-public documentation exported: $relative"
 }

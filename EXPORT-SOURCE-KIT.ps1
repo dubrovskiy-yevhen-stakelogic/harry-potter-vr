@@ -24,19 +24,29 @@ $rootFiles = @(
     'PACKAGE-QUEST-DEBUG.ps1', 'VERIFY-QUEST-APK.ps1', 'IMPORT-QUEST-DATA.ps1',
     'BUILD-QUEST-RELEASE.ps1', 'PACKAGE-QUEST-PLAYER.ps1',
     'PREPARE-QUEST-AUDIO.ps1', 'PREPARE-QUEST-FRONTEND.ps1', 'RUN-LATEST-VR.cmd',
+    'PREPARE-QUEST-CHALLENGE.ps1',
     'android/build.gradle', 'android/settings.gradle', 'android/gradle.properties',
     'android/app/build.gradle', 'tools/verify-baseline.ps1', 'tools/test-source-kit-export.ps1',
     'tools/release/INSTALL-HPVR.ps1', 'tools/release/INSTALL-HPVR.cmd',
     'tools/release/PLAYER-INSTALL.md', 'tools/release/TEST-PLAYER-INSTALL.ps1',
+    'tools/release/TEST-ADB-BOOTSTRAP.ps1', 'tools/release/TEST-FFMPEG-BOOTSTRAP.ps1',
+    'cmake/HPVRVoice.cmake', 'tools/voice/CMakeLists.txt',
+    'tools/voice/FETCH-VOICE-DEPENDENCIES.ps1', 'tools/voice/BUILD-VOICE-CHECKS.ps1',
+    'tools/voice/TEST-VOICE-APK-PAYLOAD.ps1', 'tools/voice/VOICE-ASSETS.psd1',
+    'tools/voice/VOICE-APK-PAYLOAD.ps1',
+    'tools/voice/BUILD-NEURAL-VOICE-RUNTIME.ps1', 'tools/voice/NEURAL-RUNTIME-NOTICES.psd1',
+    'tools/voice/TEST-NEURAL-VOICE-RUNTIME.ps1',
+    'tools/voice/flipendo.keywords', 'tools/voice/voice_keyword_probe.cpp', 'tools/voice/README.md',
     'docs/architecture.md', 'docs/wand-gesture-contract.md',
     'docs/RELEASE-BUILD.md', 'docs/THIRD-PARTY-NOTICES.md',
+    'docs/CLASSIC-CASTING-AND-CHALLENGE.md', 'docs/FLIPENDO-CHALLENGE.md', 'docs/LOADING-AND-PICKUPS.md',
     'tools/xr-runtime-probe/Cargo.toml', 'tools/xr-runtime-probe/Cargo.lock',
     'tools/xr-runtime-probe/rust-toolchain.toml', 'tools/xr-runtime-probe/build.rs'
 )
 $optionalRootFiles = @('LICENSE', 'LICENSE.md', 'LICENSE.txt', 'COPYING', 'COPYING.md', 'COPYING.txt', 'NOTICE', 'NOTICE.md', 'NOTICE.txt')
 $treeRules = @(
-    @{ Path = 'src'; Extensions = @('.cpp', '.c', '.h', '.hpp', '.cmake'); Names = @('CMakeLists.txt') },
-    @{ Path = 'android/app/src/main'; Extensions = @('.cpp', '.c', '.h', '.hpp', '.cmake', '.vert', '.frag', '.xml', '.java', '.kt'); Names = @('CMakeLists.txt') },
+    @{ Path = 'src'; Extensions = @('.cpp', '.c', '.h', '.hpp', '.inl', '.cmake'); Names = @('CMakeLists.txt') },
+    @{ Path = 'android/app/src/main'; Extensions = @('.cpp', '.c', '.h', '.hpp', '.inl', '.cmake', '.vert', '.frag', '.xml', '.java', '.kt'); Names = @('CMakeLists.txt') },
     @{ Path = 'tools/xr-runtime-probe/src'; Extensions = @('.rs', '.wgsl'); Names = @() }
 )
 $excludedDirectories = @(

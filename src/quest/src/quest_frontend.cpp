@@ -28,10 +28,20 @@ std::string Text(const std::vector<std::uint8_t>& bytes,std::size_t& at) {
     std::string s(reinterpret_cast<const char*>(bytes.data()+at),n-1);at+=n;return s;
 }
 bool Valid(const ProgressSave& s) {
-    if(s.phase>2 || s.page>14 || s.quest_stage>23 || s.peeves_phase>3 || s.filch_resume_stage>23 || s.generation>1000000000ULL || s.health>100 || s.lesson_passes>4 || (s.card_taken&&!s.card_awarded))return false;
-    if(s.collected_beans.size()>128 || !std::ranges::is_sorted(s.collected_beans) ||
-       std::adjacent_find(s.collected_beans.begin(),s.collected_beans.end())!=s.collected_beans.end())return false;
-    for(auto ref:s.collected_beans)if(ref<=0||ref>100000)return false;
+    if(s.map_id>1 || s.phase>2 || s.page>14 || s.quest_stage>(s.map_id==0?23U:64U) || s.peeves_phase>3 || s.filch_resume_stage>23 || s.generation>1000000000ULL || s.health>100 || s.lesson_passes>4 || (s.card_taken&&!s.card_awarded))return false;
+    if(s.banked_beans>1000000 || s.challenge_stars>1024)return false;
+    const auto valid_state=[](const auto& state,std::size_t limit){
+        return state.size()<=limit&&std::ranges::none_of(state,
+            [](unsigned char c){return (c<32&&c!='\n'&&c!='\r'&&c!='\t')||c>=127;});
+    };
+    if(!valid_state(s.graph_state,16384)||!valid_state(s.world_state,32768))return false;
+    const auto valid_refs=[](const auto& refs,bool rewards){
+        return refs.size()<=1024 && std::ranges::is_sorted(refs) &&
+            std::adjacent_find(refs.begin(),refs.end())==refs.end() &&
+            std::ranges::all_of(refs,[&](auto ref){return (ref>0&&ref<=100000)||
+                (rewards&&ref>=0x20000000+16&&ref<0x20000000+1600016);});
+    };
+    if(!valid_refs(s.collected_beans,s.map_id==1)||!valid_refs(s.activated_events,false))return false;
     const auto finite=[](float f){return std::isfinite(f)&&std::abs(f)<2000;};
     if(!std::ranges::all_of(s.player,finite)||!finite(s.yaw))return false;
     for(const auto& a:s.cast)if(!std::ranges::all_of(a,finite))return false;
@@ -40,22 +50,25 @@ bool Valid(const ProgressSave& s) {
 }
 bool ReadBank(const std::filesystem::path& path,ProgressSave* out) {
     std::error_code ec;const auto size=std::filesystem::file_size(path,ec);
-    if(ec||size>4096||size<20)return false;
-    std::ifstream f(path,std::ios::binary);std::string all((std::istreambuf_iterator<char>(f)),{});
+    if(ec||size>131072||size<20)return false;
+    std::ifstream f(path,std::ios::binary);std::string all(static_cast<std::size_t>(size),'\0');
+    if(!f.read(all.data(),static_cast<std::streamsize>(all.size()))||f.peek()!=std::char_traits<char>::eof())return false;
     const auto end=all.rfind('#');if(end==std::string::npos)return false;
     const auto body=all.substr(0,end);
     std::uint32_t hash=0;std::istringstream check(all.substr(end+1));check>>std::hex>>hash;
     if(!check||hash!=Hash(body))return false;
+    check>>std::ws;if(!check.eof())return false;
     std::istringstream in(body);std::string magic;unsigned version=0;ProgressSave s;
+    in.imbue(std::locale::classic());
     in>>magic>>version>>s.generation>>s.phase>>s.page;
     for(auto& v:s.player)in>>v;in>>s.yaw;
-    if(version<1 || version>7)return false;
+    if(version<1 || version>8)return false;
     for(unsigned i=0;i<(version==1?2U:version==2?3U:version==3?5U:11U);++i)for(auto& v:s.cast[i])in>>v;
     for(auto& v:s.doors)in>>v;
     if(version>=2)in>>s.quest_stage;
     else s.quest_stage=s.phase==2?1U:0U;
     if(version>=3){
-        unsigned count=0;in>>count;if(count>128)return false;
+        unsigned count=0;in>>count;if(count>(version>=8?1024U:128U))return false;
         s.collected_beans.resize(count);for(auto& ref:s.collected_beans)in>>ref;
     }
     if(version>=5)in>>s.peeves_phase>>s.twins_departed>>s.filch_seen>>s.filch_resume_stage;
@@ -64,6 +77,15 @@ bool ReadBank(const std::filesystem::path& path,ProgressSave* out) {
     else if(s.quest_stage>12){s.card_awarded=s.card_taken=true;} // Do not trap existing saves behind a new gate.
     if(version>=7)in>>s.peeves_first_hit;
     else s.peeves_first_hit=s.peeves_phase>=2||s.health<100||s.frog_taken;
+    if(version>=8){
+        unsigned count=0;in>>s.map_id>>s.banked_beans>>s.challenge_stars>>count;
+        if(!in||count>1024)return false;
+        s.activated_events.resize(count);for(auto& ref:s.activated_events)in>>ref;
+        in>>std::ws;if(in.peek()!='"')return false;
+        in>>std::quoted(s.graph_state);
+        in>>std::ws;if(in.peek()!='"')return false;
+        in>>std::quoted(s.world_state);
+    }
     if(!in || magic!="HPVR_PROGRESS" || !Valid(s))return false;
     in>>std::ws;if(!in.eof())return false;*out=s;return true;
 }
@@ -77,7 +99,7 @@ std::string AudioCacheName(const wand::Hp1MpegSound& source,bool stereo){
         <<(stereo?".stereo.s16":".s16");return s.str();
 }
 bool TutorialRewardReady(const ProgressSave& p){
-    return p.quest_stage==12&&!p.card_awarded&&p.collected_beans.size()>=25;
+    return p.map_id==0&&p.quest_stage==12&&!p.card_awarded&&p.collected_beans.size()>=25;
 }
 void ApplyTutorialDamage(ProgressSave& p){
     // Tutorial contact is survivable; death/respawn is a separate gameplay system.
@@ -85,7 +107,7 @@ void ApplyTutorialDamage(ProgressSave& p){
     p.health=p.health>10?p.health-10:1;
 }
 bool ApplyFirstPeevesContact(ProgressSave& p){
-    if(p.peeves_first_hit)return false;
+    if(p.map_id!=0||p.peeves_first_hit)return false;
     p.peeves_first_hit=true;ApplyTutorialDamage(p);return true;
 }
 bool RewardApproach::Update(const ProgressSave& p,float distance,bool visible){
@@ -108,14 +130,18 @@ bool WriteProgress(const std::filesystem::path& directory,unsigned slot,Progress
     auto next=*inout;next.generation=std::max(next.generation,latest.generation)+1;
     if(!Valid(next))return false;
     std::ostringstream body;body.imbue(std::locale::classic());
-    body<<"HPVR_PROGRESS 7 "<<next.generation<<' '<<next.phase<<' '<<next.page<<' '<<std::setprecision(9);
+    body<<"HPVR_PROGRESS 8 "<<next.generation<<' '<<next.phase<<' '<<next.page<<' '<<std::setprecision(9);
     for(auto f:next.player)body<<f<<' ';body<<next.yaw<<' ';
     for(const auto& a:next.cast)for(auto f:a)body<<f<<' ';
     for(auto f:next.doors)body<<f<<' ';body<<next.quest_stage<<' '<<next.collected_beans.size()<<' ';
     for(auto ref:next.collected_beans)body<<ref<<' ';body<<next.peeves_phase<<' '<<next.twins_departed<<' '<<next.filch_seen<<' '<<next.filch_resume_stage<<' '
-        <<next.health<<' '<<next.lesson_passes<<' '<<next.frog_taken<<' '<<next.card_awarded<<' '<<next.card_taken<<' '<<next.peeves_first_hit<<'\n';
+        <<next.health<<' '<<next.lesson_passes<<' '<<next.frog_taken<<' '<<next.card_awarded<<' '<<next.card_taken<<' '<<next.peeves_first_hit<<' '
+        <<next.map_id<<' '<<next.banked_beans<<' '<<next.challenge_stars<<' '<<next.activated_events.size()<<' ';
+    for(auto ref:next.activated_events)body<<ref<<' ';
+    body<<std::quoted(next.graph_state)<<' '<<std::quoted(next.world_state)<<'\n';
     std::ostringstream complete;complete<<body.str()<<'#'<<std::hex<<Hash(body.str())<<'\n';
     const auto payload=complete.str();
+    if(payload.size()>131072)return false;
     const auto path=Bank(directory,slot,static_cast<unsigned>(next.generation%2));
     auto temp=path;temp+=".tmp";
 #ifdef _WIN32
@@ -144,10 +170,11 @@ bool WriteProgress(const std::filesystem::path& directory,unsigned slot,Progress
     ProgressSave verified;if(!ReadBank(path,&verified)||verified.generation!=next.generation)return false;
     *inout=next;return true;
 }
-bool LoadFrontAssets(const std::filesystem::path& root,FrontAssets* out){
+bool LoadFrontAssets(const std::filesystem::path& root,FrontAssets* out,unsigned map_id){
     if(!out)return false;
     try{
-        FrontAssets a;
+        if(map_id>1)throw std::runtime_error("Unsupported map ID");
+        FrontAssets a;a.map_id=map_id;
         std::map<std::string,wand::Hp1PackageLinkTable> tables;
         auto reference=[&](const std::string& package,const std::string& name,const std::string& cls){
             if(!tables.contains(package))tables[package]=wand::inspect_hp1_package_link_table(root/package);
@@ -214,7 +241,8 @@ bool LoadFrontAssets(const std::filesystem::path& root,FrontAssets* out){
             ++menu_lines;
             if(!menu_line.empty()&&menu_line.back()=='\r')menu_line.pop_back();
             if(!menu_line.empty()&&menu_line.front()=='[')menu_section=Fold(menu_line);
-            if(menu_section=="[text]"&&Fold(menu_line).starts_with("objective_01="))a.level_objective=menu_line.substr(13);
+            const std::string key=map_id==0?"objective_01=":"objective_03=";
+            if(menu_section=="[text]"&&Fold(menu_line).starts_with(key))a.level_objective=menu_line.substr(key.size());
         }
         if(a.level_objective.empty())throw std::runtime_error("Missing owned level objective: "+
             (root/"system/hpmenu.int").string()+" open="+std::to_string(menu_strings.is_open())+" lines="+std::to_string(menu_lines));
@@ -331,6 +359,69 @@ bool LoadFrontAssets(const std::filesystem::path& root,FrontAssets* out){
         a.card_pickup=wand::load_hp1_mpeg_sound(root/"system/HPSounds.u",reference("system/HPSounds.u","pickup_wizardcard2","Engine.Sound"));
         if(a.card_pickup.status!=wand::Hp1ProfileStatus::ok)throw std::runtime_error(a.card_pickup.error);
         a.gameplay_audio.push_back(a.card_pickup);
+        if(map_id==1){
+            const auto map_actors=wand::inspect_hp1_actor_visuals(root/"Maps/Lev_Tut1b.unr");
+            if(map_actors.status!=wand::Hp1ProfileStatus::ok)throw std::runtime_error(map_actors.error);
+            // Actor references belong to one package. Preserve the old audio
+            // array prefix, but never associate map-zero NPC IDs with this map.
+            a.bump_speech.clear();
+            auto append_voice=[&](const std::string& name){
+                for(const auto& voice:a.gameplay_audio)if(Fold(voice.object_name)==Fold(name))return voice.object_name;
+                auto voice=wand::load_hp1_mpeg_sound(root/"Sounds/AllDialog.uax",
+                    reference("Sounds/AllDialog.uax",name,"Engine.Sound"));
+                if(voice.status!=wand::Hp1ProfileStatus::ok)throw std::runtime_error(voice.error);
+                const auto canonical=voice.object_name;
+                a.gameplay_audio.push_back(std::move(voice));return canonical;
+            };
+            for(const auto& actor:map_actors.actors){
+                std::map<std::int64_t,std::string> bumps;
+                for(const auto& prop:actor.serialized_properties){
+                    if(!prop.text_value_serialized)continue;
+                    const auto key=Fold(prop.name);
+                    if(key=="bumplines"){
+                        const auto first=prop.text_value.find('<'),last=prop.text_value.find('>');
+                        if(first!=std::string::npos&&last!=std::string::npos&&last>first+1)
+                            bumps[std::max<std::int64_t>(0,prop.array_index)]=append_voice(prop.text_value.substr(first+1,last-first-1));
+                    }else if(key.starts_with("cast")&&key.ends_with("script")){
+                        std::istringstream command(prop.text_value);std::string op,name;
+                        command>>op>>name;op=Fold(op);
+                        if((op=="say"||op.starts_with("talk"))&&!name.empty())append_voice(name);
+                    }
+                }
+                if(!bumps.empty()){
+                    FrontAssets::BumpSpeech speech;speech.actor_reference=actor.actor_reference;
+                    for(const auto& [index,voice_line]:bumps)speech.lines.push_back(voice_line);
+                    a.bump_speech.push_back(std::move(speech));
+                }
+                if(actor.qualified_class_name!="Engine.MusicEvent")continue;
+                FrontAssets::MusicCue cue;cue.actor_reference=actor.actor_reference;cue.tag=actor.tag;
+                for(const auto& prop:actor.serialized_properties){
+                    if(prop.name=="PercentMusicVolume"&&prop.value.size()==1)
+                        cue.volume_percent=std::min(100U,static_cast<unsigned>(prop.value.front()));
+                    if(prop.name!="Song"||prop.object_path.empty())continue;
+                    const auto& name=prop.object_path.back();
+                    for(std::size_t i=0;i<a.music.size();++i)if(Fold(a.music[i].object_name)==Fold(name)){
+                        cue.music_index=static_cast<int>(i);break;
+                    }
+                    if(cue.music_index>=0)continue;
+                    const auto package="Music/"+prop.object_path.front()+".umx";
+                    auto music=wand::load_hp1_mpeg_sound(root/package,reference(package,name,"Engine.Music"));
+                    if(music.status!=wand::Hp1ProfileStatus::ok)throw std::runtime_error(music.error);
+                    cue.music_index=static_cast<int>(a.music.size());a.music.push_back(std::move(music));
+                }
+                a.music_cues.push_back(std::move(cue));
+            }
+            // The challenge's MU1 music is triggered inside its first room.
+            // Keep the inherited Hogwarts track until that authored event.
+        }
+        // Append additional object effects without changing the existing dialogue prefix.
+        for(const auto& [package,name]:std::array<std::pair<const char*,const char*>,4>{{
+            {"Sounds/Magic_sfx.uax","pickup_star"},{"Sounds/Hub1_sfx.uax","vase_breaking"},
+            {"Sounds/Hub1_sfx.uax","cauldron_flip"},{"Sounds/Menu_sfx.uax","save_game"}}}){
+            auto sound=wand::load_hp1_mpeg_sound(root/package,reference(package,name,"Engine.Sound"));
+            if(sound.status!=wand::Hp1ProfileStatus::ok)throw std::runtime_error(sound.error);
+            a.gameplay_audio.push_back(std::move(sound));
+        }
         const std::map<char,std::array<unsigned char,7>> glyphs{
             {'A',{14,17,17,31,17,17,17}},{'B',{30,17,17,30,17,17,30}},
             {'C',{14,17,16,16,16,17,14}},{'D',{30,17,17,17,17,17,30}},
@@ -407,10 +498,21 @@ FrontAction QuestFrontEnd::Input(float move_y,bool confirm,bool back,float move_
         if(cancel){screen=FrontScreen::Vr;selection=2;}
         horizontal_down_=horizontal;return FrontAction::None;
     }
+    if(screen==FrontScreen::Controls){
+        if(cancel){screen=FrontScreen::Vr;selection=kVrControlsRow;}
+        else {
+            int direction=press?1:step;
+            if(horizontal&&!horizontal_down_)direction=move_x>0?1:-1;
+            if(direction)controls_page=(controls_page+kControlsPageCount+direction)%kControlsPageCount;
+        }
+        horizontal_down_=horizontal;return FrontAction::None;
+    }
     if(screen==FrontScreen::Vr){
-        if(step)selection=(selection+6+step)%6;
-        if(cancel||(press&&selection==5)){ToggleVrMenu();return FrontAction::Resume;}
+        if(step)selection=(selection+kVrMenuRowCount+step)%kVrMenuRowCount;
+        if(cancel||(press&&selection==kVrMenuRowCount-1)){ToggleVrMenu();return FrontAction::Resume;}
         if(press&&selection==2){debug_pinned=false;screen=FrontScreen::Debug;selection=0;return FrontAction::None;}
+        if(press&&selection==kVrControlsRow){screen=FrontScreen::Controls;controls_page=0;selection=0;
+            horizontal_down_=horizontal;return FrontAction::None;}
         if(selection<2&&horizontal&&!horizontal_down_){
             auto& value=selection==0?vr.render_scale:vr.ssr;
             value=std::clamp(value+(move_x>0?5:-5),selection==0?50:0,selection==0?175:100);
@@ -424,6 +526,26 @@ FrontAction QuestFrontEnd::Input(float move_y,bool confirm,bool back,float move_
             vr.first_person_cutscenes=!vr.first_person_cutscenes;
             vr_save_failed=!WriteVrSettings(saves.parent_path(),vr);
         }
+        if(selection==5&&(press||(horizontal&&!horizontal_down_))){
+            const int direction=horizontal&&move_x<0?-1:1;
+            vr.casting_mode=static_cast<CastingMode>((static_cast<int>(vr.casting_mode)+3+direction)%3);
+            vr_save_failed=!WriteVrSettings(saves.parent_path(),vr);
+        }
+        if(selection==6&&!refresh_rates.empty()&&(press||(horizontal&&!horizontal_down_))){
+            const auto found=std::ranges::find(refresh_rates,vr.refresh_rate);
+            const auto index=found==refresh_rates.end()?0:static_cast<int>(found-refresh_rates.begin());
+            const auto count=static_cast<int>(refresh_rates.size());
+            vr.refresh_rate=refresh_rates[(index+count+(move_x<0?-1:1))%count];
+            vr_save_failed=!WriteVrSettings(saves.parent_path(),vr);
+        }
+        if(selection==7&&(press||(horizontal&&!horizontal_down_))){
+            vr.voice_cast=!vr.voice_cast;
+            vr_save_failed=!WriteVrSettings(saves.parent_path(),vr);
+        }
+        if(selection==8&&(press||(horizontal&&!horizontal_down_))){
+            vr.voice_hints=!vr.voice_hints;
+            vr_save_failed=!WriteVrSettings(saves.parent_path(),vr);
+        }
         horizontal_down_=horizontal;return FrontAction::None;
     }
     if(screen==FrontScreen::Cards&&horizontal&&!horizontal_down_)
@@ -431,7 +553,10 @@ FrontAction QuestFrontEnd::Input(float move_y,bool confirm,bool back,float move_
     horizontal_down_=horizontal;
     unsigned count=0;
     switch(screen){
-    case FrontScreen::Main:count=4;break;
+    case FrontScreen::Main:count=5;break;
+    case FrontScreen::Levels:count=3;break;
+    case FrontScreen::LevelSlots:count=4;break;
+    case FrontScreen::LevelStart:count=2;break;
     case FrontScreen::Slots:count=4;break;
     case FrontScreen::Slot:count=3;break;
     case FrontScreen::Replace:count=2;break;
@@ -453,9 +578,19 @@ FrontAction QuestFrontEnd::Input(float move_y,bool confirm,bool back,float move_
     switch(screen){
     case FrontScreen::Main:
         if(selection==0){RefreshSlots();screen=FrontScreen::Slots;}
+        else if(selection==4){screen=FrontScreen::Levels;}
         else if(selection==3){screen=FrontScreen::Stub;message="USE THE QUEST MENU TO CLOSE THE APP";}
         else{screen=FrontScreen::Stub;message="NOT AVAILABLE IN THIS BUILD";}
         selection=0;break;
+    case FrontScreen::Levels:
+        if(selection==2){screen=FrontScreen::Main;selection=4;break;}
+        selected_map=selection;RefreshSlots();screen=FrontScreen::LevelSlots;selection=0;break;
+    case FrontScreen::LevelSlots:
+        if(selection==3){screen=FrontScreen::Levels;selection=selected_map;break;}
+        slot=selection;screen=FrontScreen::LevelStart;selection=1;break;
+    case FrontScreen::LevelStart:
+        if(selection==0)return FrontAction::StartSelectedLevel;
+        screen=FrontScreen::LevelSlots;selection=slot;break;
     case FrontScreen::Slots:
         if(selection==3){screen=FrontScreen::Main;selection=0;break;}
         slot=selection;screen=FrontScreen::Slot;selection=occupied[slot]?0:1;break;
@@ -500,13 +635,15 @@ FrontAction QuestFrontEnd::TickStory(float seconds,float duration){
 std::string QuestFrontEnd::DrawKey()const{
     std::string s=std::to_string(static_cast<int>(screen));
     if(screen==FrontScreen::Story)return s+"_"+std::to_string(page);
+    if(screen==FrontScreen::Controls)return s+"_"+std::to_string(controls_page);
     s+="_"+std::to_string(selection);
     if(screen==FrontScreen::Cards)s+="_"+std::to_string(card_page)+(progress.card_awarded?"_earned":"_empty");
     if(screen==FrontScreen::Slots)for(bool b:occupied)s+=b?"1":"0";
     if(screen==FrontScreen::Slot)s+="_"+std::to_string(slot)+(occupied[slot]?"1":"0");
-    if(screen==FrontScreen::Pause)s+=(paused==FrontScreen::Story?std::string("S"):std::string("G"))+std::to_string(progress.quest_stage);
+    if(screen==FrontScreen::Pause)s+=(paused==FrontScreen::Story?std::string("S"):std::string("G"))+
+        std::to_string(assets.map_id==1?0U:progress.quest_stage);
     if(screen==FrontScreen::Stub)s+=message.starts_with("SAVE FAILED")?"F":message.starts_with("USE")?"E":"N";
-    if(screen==FrontScreen::Vr){s+=vr_save_failed?"F":"S";s+=vr.relaxed_lesson?"R":"O";s+=vr.first_person_cutscenes?"H":"T";}
+    if(screen==FrontScreen::Vr){s+=vr_save_failed?"F":"S";s+=vr.relaxed_lesson?"R":"O";s+=vr.first_person_cutscenes?"H":"T";s+=std::to_string(static_cast<int>(vr.casting_mode));s+=vr.voice_cast?"V":"N";s+=vr.voice_hints?"H":"Q";}
     if(screen==FrontScreen::Debug&&debug_pinned)s+="_pinned";
     return s;
 }
@@ -528,13 +665,24 @@ std::vector<FrontQuad> QuestFrontEnd::Quads()const{
         text("HARRY POTTER VR",194,32,3,0xcd78ff);
         if(DemoNotice()){
             const bool finished=screen==FrontScreen::DemoEnd;
-            text(finished?"THANK YOU FOR PLAYING!":"WELCOME TO THE DEMO",finished?194.0F:212.0F,78,2,0xffe164);
-            text(finished?"THIS IS THE END OF THE DEMO FOR NOW.":"A SMALL DEMO - THROUGH THE FIRST LESSON.",62,134,2,0xffffff);
-            text("DEVELOPMENT IS IN PROGRESS.",62,173,2,0xffffff);
-            text(finished?"WE WOULD LOVE TO HEAR YOUR FEEDBACK.":"FOLLOW DEVELOPMENT NEWS ON DISCORD.",62,209,2,0xffffff);
-            text("THANKS FOR TRYING HARRY POTTER VR!",62,245,2,0xffffff);
-            text("https://discord.com/channels/",62,282,1.65F,0xc7eaff);
-            text("747967102895390741/1547254536203407390",62,305,1.65F,0xc7eaff);
+            const bool challenge=assets.map_id==1;
+            const std::string heading=!finished?"0.1.1 ALPHA - WELCOME":
+                (challenge?"FLIPENDO CHALLENGE COMPLETE":"THANK YOU FOR PLAYING!");
+            text(heading,320-float(heading.size())*6,78,2,0xffe164);
+            if(finished){
+                text(challenge?"THE NEXT MAP IS NOT AVAILABLE YET.":"THIS IS THE END OF THE DEMO FOR NOW.",62,134,2,0xffffff);
+                text(challenge?"MORE STORY CONTENT IS IN DEVELOPMENT.":"DEVELOPMENT IS IN PROGRESS.",62,173,2,0xffffff);
+                text("WE WOULD LOVE TO HEAR YOUR FEEDBACK.",62,209,2,0xffffff);
+                text("THANKS FOR TRYING HARRY POTTER VR!",62,245,2,0xffffff);
+            }else{
+                const std::array lines{"VERY EARLY ALPHA - EXPECT BUGS.","PLAY THROUGH THE FLIPENDO CHALLENGE.",
+                    "VOICE CASTING IS EXPERIMENTAL.","IT HAS ONLY BEEN TESTED BY THE AUTHOR.",
+                    "IT MAY NOT RECOGNIZE EVERY PLAYER", "OR ACCENT. PLEASE SEND YOUR FEEDBACK.",
+                    "FOLLOW DEVELOPMENT NEWS ON DISCORD."};
+                for(unsigned i=0;i<lines.size();++i)text(lines[i],62,122+24*float(i),1.8F,0xffffff);
+            }
+            text("https://discord.com/channels/",62,292,1.65F,0xc7eaff);
+            text("747967102895390741/1547254536203407390",62,315,1.65F,0xc7eaff);
             for(unsigned i=0;i<2;++i){
                 const float y=354+float(i)*42;
                 if(selection==i)tile(42,y-7,556,32,assets.white,0x875f19);
@@ -543,23 +691,61 @@ std::vector<FrontQuad> QuestFrontEnd::Quads()const{
             text("STICK: SELECT   TRIGGER: CONFIRM   B: CONTINUE",64,446,1.8F,0xd2beaa);
             return out;
         }
+        if(screen==FrontScreen::Controls){
+            text("CONTROLS",272,78,2,0xffe164);
+            const unsigned help_page=std::min(controls_page,kControlsPageCount-1);
+            const std::array<std::string,kControlsPageCount> titles{"BASICS","CLASSIC CASTING","GESTURE CASTING","VOICE CASTING"};
+            text(titles[help_page],320-float(titles[help_page].size())*6,111,2,0xc7eaff);
+            const std::array<std::array<const char*,8>,kControlsPageCount> pages{{
+                {{"MOVE - LEFT STICK","TURN - RIGHT STICK","JUMP - A",
+                  "SPRINT - CLICK LEFT STICK WHILE MOVING","PAUSE / BACK - B",
+                  "VR MENU - HOLD BOTH GRIPS + LEFT MENU","RECENTER - CLICK BOTH STICKS TOGETHER",
+                  "RELEASE BOTH STICKS BEFORE RECENTERING AGAIN"}},
+                {{"SELECT CLASSIC IN VR SETTINGS.","HOLD THE RIGHT TRIGGER TO AIM.",
+                  "POINT AT AN OBJECT'S FLIPENDO SYMBOL.","THE FLIPENDO SYMBOL LIGHTS UP.",
+                  "RELEASE THE TRIGGER TO CAST FLIPENDO.","NO GESTURE IS NEEDED IN CLASSIC GAMEPLAY.",
+                  "FLIPENDO IS CHOSEN FOR ELIGIBLE OBJECTS.","LESSON GESTURES ARE STILL REQUIRED."}},
+                {{"SELECT VISIBLE GESTURE OR GESTURE.","HOLD THE RIGHT TRIGGER.",
+                  "AIM AT A FLIPENDO SYMBOL TO LOCK ON.","DRAW THE FLIPENDO GESTURE, THEN RELEASE.",
+                  "VISIBLE GESTURE SHOWS YOUR DRAWN LINE.","GESTURE HIDES THE LINE - SAME CONTROLS.",
+                  "IN GAMEPLAY, ROTATION IS FLEXIBLE.","IN LESSONS, FOLLOW THE SHOWN PATTERN."}},
+                {{"TURN ON VOICE CAST IN VR SETTINGS.","HOLD THE RIGHT TRIGGER.",
+                  "AIM AT A FLIPENDO SYMBOL TO LOCK ON.","SAY FLIPENDO TO CAST.",
+                  "KEEP HOLDING TO CAST AGAIN BY VOICE.","PAUSE BRIEFLY BETWEEN SPOKEN CASTS.",
+                  "EXPERIMENTAL - ONLY TESTED BY THE AUTHOR.","MAY NOT RECOGNIZE EVERY VOICE OR ACCENT."}}
+            }};
+            for(unsigned i=0;i<pages[help_page].size();++i)text(pages[help_page][i],62,151+28*float(i),1.8F,0xffffff);
+            text("PAGE "+std::to_string(help_page+1)+" / "+std::to_string(kControlsPageCount),260,389,2,0xffe164);
+            text("STICK: CHANGE PAGE   TRIGGER: NEXT",62,421,1.65F,0xd2beaa);
+            text("B: VR SETTINGS   BOTH GRIPS + MENU: CLOSE",62,446,1.65F,0xd2beaa);
+            return out;
+        }
         text(screen==FrontScreen::Debug?"PERFORMANCE DEBUGGER":"VR SETTINGS",screen==FrontScreen::Debug?194.0F:254.0F,78,2,0xffe164);
         if(screen==FrontScreen::Debug){
             text("LIVE FRAME TIMINGS / DEVICE COUNTERS",110,108,2,0xd2beaa);
             text(debug_pinned?"BOTH GRIPS + MENU: HIDE / SETTINGS":"TRIGGER: PIN + PLAY    B: BACK TO SETTINGS",65,438,1.8F,0xd2beaa);
         }else{
-            const std::array<std::string,6> rows{"RENDER SCALE","SSR - WOOD FLOORS","PERFORMANCE DEBUGGER","LESSON DIFFICULTY","CUTSCENE CAMERA","RETURN"};
-            for(unsigned i=0;i<6;++i){
-                const float y=132+float(i)*44;
-                if(selection==i)tile(42,y-7,556,34,assets.white,0x875f19);
+            const std::array<std::string,kVrMenuRowCount> rows{"RENDER SCALE","SSR - WOOD FLOORS","PERFORMANCE DEBUGGER","LESSON DIFFICULTY","CUTSCENE CAMERA","SPELL CASTING","REFRESH RATE","VOICE CAST","VOICE HINTS","CONTROLS","RETURN"};
+            for(unsigned i=0;i<kVrMenuRowCount;++i){
+                const float y=VrMenuRowY(i);
+                if(selection==i)tile(42,y-7,556,26,assets.white,0x875f19);
                 text(rows[i],62,y,2.1F,selection==i?0xfff5ff:0xffe164);
             }
-            text(vr.relaxed_lesson?"RELAXED":"ORIGINAL",443,264,2.1F,0xffffff);
-            text(vr.first_person_cutscenes?"HARRY 1ST PERSON":"THEATRICAL",410,310,1.65F,0xffffff);
+            text(vr.relaxed_lesson?"RELAXED":"ORIGINAL",443,VrMenuRowY(3),2.1F,0xffffff);
+            text(vr.first_person_cutscenes?"HARRY 1ST PERSON":"THEATRICAL",410,VrMenuRowY(4),1.65F,0xffffff);
+            text(vr.casting_mode==CastingMode::VisibleGesture?"VISIBLE GESTURE":vr.casting_mode==CastingMode::Gesture?"GESTURE":"CLASSIC",410,VrMenuRowY(5),1.65F,0xffffff);
+            text(vr.voice_cast?"ON":"OFF",443,VrMenuRowY(7),2.1F,0xffffff);
+            text(vr.voice_hints?"ON":"OFF",443,VrMenuRowY(8),2.1F,0xffffff);
             text("STICK: SELECT / ADJUST    TRIGGER: OPEN",72,393,1.8F,0xd2beaa);
-            text("BOTH GRIPS + MENU: CLOSE    B: BACK",82,418,1.8F,0xd2beaa);
+            text("BOTH GRIPS + MENU: CLOSE    B: BACK",82,426,1.8F,0xd2beaa);
             const char* hint=selection==3?(vr.relaxed_lesson?"RELAXED: WIDE TOLERANCE, NO TIMER":"ORIGINAL: 12S, 50 / 65 / 80 / 95%"):
                 selection==4?"SWITCHES LIVE - HEAD MOVEMENT STAYS FREE":
+                selection==5?(vr.casting_mode==CastingMode::VisibleGesture?"DRAW YOUR GESTURE - WAND TRACE VISIBLE":
+                    vr.casting_mode==CastingMode::Gesture?"DRAW YOUR GESTURE - NO TRACE OR TEMPLATE":"AIM, HOLD AND RELEASE - AUTO SPELL SELECT"):
+                selection==6?"AVAILABLE HEADSET RATES - APPLIES LIVE":
+                selection==7?"OPTIONAL VOICE INPUT WITH ANY CASTING MODE":
+                selection==8?"SHOW VOICE PROMPTS ABOVE THE AIMED TARGET":
+                selection==kVrControlsRow?"MOVEMENT, RECENTERING AND ALL CASTING MODES":
                 "LIVE SETTINGS - 175% USES 3.06X BASE PIXELS";
             text(vr_save_failed?"SAVE FAILED - SETTINGS ARE TEMPORARY":hint,65,446,1.65F,0xd2beaa);
         }
@@ -595,7 +781,7 @@ std::vector<FrontQuad> QuestFrontEnd::Quads()const{
         text("REPORT",276,32,2.2F,0x302820);
         tile(94,85,64,64,assets.bean_badge);text("BEANS",175,100,1.8F,0x302820);
         tile(330,85,64,64,assets.card_badge);text("CARDS: 0 / 25",402,107,1.6F,0x302820);
-        text("SPELLS: NOT LEARNED YET",193,364,1.8F,0xc7eaff);
+        text(assets.map_id==1?"SPELLS: FLIPENDO":"SPELLS: NOT LEARNED YET",193,364,1.8F,0xc7eaff);
         text("TRIGGER / B: BACK TO BOOK",180,418,1.8F,0xc7eaff);
         return out;
     }
@@ -625,9 +811,9 @@ std::vector<FrontQuad> QuestFrontEnd::Quads()const{
     }
     if(screen==FrontScreen::Main){
         tile(74,243,256,256,assets.logo[0]);tile(330,243,256,256,assets.logo[1]);
-        const std::array<std::string,4> labels{"START GAME","OPTIONS","QUIDDITCH","EXIT"};
-        for(unsigned i=0;i<4;++i){
-            const float x=320-static_cast<float>(labels[i].size())*6,y=360+static_cast<float>(i)*22;
+        const std::array<std::string,5> labels{"START GAME","OPTIONS","QUIDDITCH","EXIT","LEVEL SELECT"};
+        for(unsigned i=0;i<5;++i){
+            const float x=320-static_cast<float>(labels[i].size())*6,y=342+static_cast<float>(i)*22;
             text(labels[i],x+1,y+1,2,0);text(labels[i],x,y,2,i==selection?0x7373ff:0xffffff);
             if(i==selection)text(">",x-18,y,2,0x7373ff);
         }
@@ -637,6 +823,9 @@ std::vector<FrontQuad> QuestFrontEnd::Quads()const{
     std::vector<std::string> labels;std::string title;
     switch(screen){
     case FrontScreen::Main:title="MAIN MENU";labels={"START GAME","OPTIONS","QUIDDITCH","EXIT"};break;
+    case FrontScreen::Levels:title="START LEVEL FROM THE BEGINNING";labels={"HOGWARTS INTRODUCTION","FLIPENDO CHALLENGE","BACK"};break;
+    case FrontScreen::LevelSlots:title="CHOOSE SAVE SLOT FOR THIS RUN";labels={"GAME 1","GAME 2","GAME 3","BACK"};break;
+    case FrontScreen::LevelStart:title="REPLACE SELECTED SLOT WITH A NEW RUN?";labels={"YES - START LEVEL","NO - KEEP SAVE"};break;
     case FrontScreen::Slots:title="SELECT A GAME";
         for(unsigned i=0;i<3;++i)labels.push_back("GAME "+std::to_string(i+1)+(occupied[i]?" - SAVED":" - NEW"));
         labels.push_back("BACK");break;
@@ -672,7 +861,16 @@ std::vector<FrontQuad> QuestFrontEnd::Quads()const{
             "LISTEN TO HERMIONE","FOLLOW HERMIONE INTO CLASS",
             "LISTEN TO PROFESSOR QUIRRELL","FIRST LESSON - PRACTISE FLIPENDO",
             "YOUR FIRST WIZARD CARD","FOLLOW PROFESSOR QUIRRELL","FLIPENDO LEARNED - CHALLENGE NEXT"};
-        text(objectives.at(progress.quest_stage),55,306,1.65F,0x302820);
+        if(assets.map_id==0&&progress.quest_stage<objectives.size())
+            text(objectives[progress.quest_stage],55,306,1.65F,0xffffff);
+        else {
+            std::istringstream words(assets.level_objective);std::string word,line;float y=306;
+            while(words>>word){
+                if(line.size()+word.size()+1>50){text(line,55,y,1.65F,0xffffff);line.clear();y+=19;}
+                if(!line.empty())line+=' ';line+=word;
+            }
+            text(line,55,y,1.65F,0xffffff);
+        }
     }
     if(message.starts_with("SAVE FAILED"))text(message,74,426,1.5F,0x9999ff);
     return out;
@@ -686,12 +884,50 @@ std::vector<FrontQuad> QuestFrontEnd::BeanCounterQuads(unsigned count)const{
     }
     return out;
 }
+std::vector<FrontQuad> QuestFrontEnd::ChallengeStarQuads(unsigned count,bool report)const{
+    count=std::min(count,8U);
+    std::vector<FrontQuad> out;float x=report?175.0F:55.0F;
+    const float y=report?175.0F:375.0F,scale=report?1.8F:1.65F;
+    for(unsigned char ch:std::string("CHALLENGE STARS: ")+std::to_string(count)+" / 8"){
+        if(ch!=' ')out.push_back({x,y,5*scale,7*scale,float(ch%16*16+2)/256,
+            float(ch/16*16+2)/256,5.0F/256,7.0F/256,assets.font,report?0x302820U:0xffffffU});
+        x+=6*scale;
+    }
+    return out;
+}
 std::vector<FrontQuad> QuestFrontEnd::VrValueQuads(int value,bool scale)const{
     std::vector<FrontQuad> out;float x=443;
     const std::string label=value==0&&!scale?"OFF":std::to_string(value)+"%";
     for(unsigned char ch:label){
-        if(ch!=' ')out.push_back({x,scale?132.0F:176.0F,10.5F,14.7F,float(ch%16*16+2)/256,float(ch/16*16+2)/256,5.0F/256,7.0F/256,assets.font,0xffffff});
+        if(ch!=' ')out.push_back({x,VrMenuRowY(scale?0:1),10.5F,14.7F,float(ch%16*16+2)/256,float(ch/16*16+2)/256,5.0F/256,7.0F/256,assets.font,0xffffff});
         x+=12.6F;
+    }return out;
+}
+std::vector<FrontQuad> QuestFrontEnd::VrRefreshQuads(int hz)const{
+    std::vector<FrontQuad> out;float x=443;
+    for(unsigned char ch:hz?std::to_string(hz)+" HZ":std::string("RUNTIME")){
+        if(ch!=' ')out.push_back({x,VrMenuRowY(6),10.5F,14.7F,float(ch%16*16+2)/256,float(ch/16*16+2)/256,5.0F/256,7.0F/256,assets.font,0xffffff});
+        x+=12.6F;
+    }return out;
+}
+std::vector<FrontQuad> QuestFrontEnd::VrVoiceStatusQuads(unsigned status)const{
+    const char* labels[]{"VOICE OFF","MIC PERMISSION REQUIRED","LOADING VOICE MODEL","VOICE READY - AIM AND HOLD",
+        "LISTENING FOR FLIPENDO","WAITING TO LISTEN AGAIN","VOICE MODEL UNAVAILABLE","MIC RETRYING AUTOMATICALLY"};
+    std::vector<FrontQuad> out;float x=145;
+    for(unsigned char ch:std::string(labels[std::min(status,7U)])){
+        if(ch!=' ')out.push_back({x,408,7.5F,10.5F,float(ch%16*16+2)/256,float(ch/16*16+2)/256,5.0F/256,7.0F/256,assets.font,0xffffff});
+        x+=9;
+    }return out;
+}
+std::vector<FrontQuad> QuestFrontEnd::VoiceAimQuads(unsigned status)const{
+    const char* labels[]{"","ALLOW MICROPHONE","PREPARING VOICE","PLEASE WAIT",
+        "SAY FLIPENDO","WAIT...","VOICE UNAVAILABLE","MIC RETRYING"};
+    const std::string label=labels[std::min(status,7U)];
+    std::vector<FrontQuad> out;float x=320-float(label.size())*4.5F;
+    for(unsigned char ch:label){
+        if(ch!=' ')out.push_back({x,235,7.5F,10.5F,float(ch%16*16+2)/256,float(ch/16*16+2)/256,
+            5.0F/256,7.0F/256,assets.font,status>=6?0xffc080U:0xffffffU});
+        x+=9;
     }return out;
 }
 std::vector<FrontQuad> QuestFrontEnd::HudQuads(unsigned count,bool show_beans)const{

@@ -44,23 +44,26 @@ int main(){try{
     front.Input(0,false,false);front.Input(0,false,false,-1);
     Check(!front.vr.first_person_cutscenes&&!ReadVrSettings(dir).first_person_cutscenes,"horizontal stick toggles and saves camera");
     front.Input(0,false,false,-1);Check(!front.vr.first_person_cutscenes,"held stick cannot oscillate camera");
-    front.Input(0,false,false);front.selection=5;
-    Check(front.Input(0,true,false)==FrontAction::Resume&&!front.Visible(),"sixth row returns to ongoing game");
+    front.Input(0,false,false);front.selection=kVrMenuRowCount-1;
+    Check(front.Input(0,true,false)==FrontAction::Resume&&!front.Visible(),"ninth row returns to ongoing game");
     front.ToggleVrMenu();front.Input(0,false,false);front.Input(1,false,false);
-    Check(front.selection==5,"up wraps from first to sixth row");
+    Check(front.selection==kVrMenuRowCount-1,"up wraps from first to ninth row");
     front.Input(0,false,false);front.Input(-1,false,false);Check(front.selection==0,"down wraps to first row");
     front.selection=2;front.Input(0,false,false);front.Input(0,true,false);Check(front.screen==FrontScreen::Debug,"debugger stays at index two");
     front.Input(0,false,false);front.Input(0,false,true);Check(front.screen==FrontScreen::Vr&&front.selection==2,"debugger returns to index two");
     front.Input(0,false,false);front.selection=3;front.Input(0,true,false);Check(!front.vr.relaxed_lesson,"difficulty remains at index three");
     std::set<std::string> keys;
-    for(bool failed:{false,true})for(bool relaxed:{false,true})for(bool first_person:{false,true})for(unsigned row=0;row<6;++row){
+    for(const auto mode:{CastingMode::Classic,CastingMode::VisibleGesture,CastingMode::Gesture})for(bool voice:{false,true})
+    for(bool failed:{false,true})for(bool relaxed:{false,true})for(bool first_person:{false,true})for(unsigned row=0;row<kVrMenuRowCount;++row){
+        front.vr.casting_mode=mode;front.vr.voice_cast=voice;
         front.screen=FrontScreen::Vr;front.selection=row;front.vr_save_failed=failed;front.vr.relaxed_lesson=relaxed;front.vr.first_person_cutscenes=first_person;
-        Check(keys.insert(front.DrawKey()).second,"all 48 prebuilt menu variants have unique keys");
+        Check(keys.insert(front.DrawKey()).second,"all prebuilt casting and voice menu variants have unique keys");
         CheckWindow(front.Quads());
     }
-    for(int scale=50;scale<=175;scale+=5){const auto quads=front.VrValueQuads(scale,true);CheckWindow(quads);Check(quads.front().y==132,"render scale matches row baseline");}
-    for(int ssr=0;ssr<=100;ssr+=5){const auto quads=front.VrValueQuads(ssr,false);CheckWindow(quads);Check(quads.front().y==176,"SSR value matches row baseline");}
+    for(int scale=50;scale<=175;scale+=5){const auto quads=front.VrValueQuads(scale,true);CheckWindow(quads);Check(quads.front().y==VrMenuRowY(0),"render scale matches row baseline");}
+    for(int ssr=0;ssr<=100;ssr+=5){const auto quads=front.VrValueQuads(ssr,false);CheckWindow(quads);Check(quads.front().y==VrMenuRowY(1),"SSR value matches row baseline");}
+    for(int hz:{0,72,80,90,120}){const auto quads=front.VrRefreshQuads(hz);CheckWindow(quads);Check(quads.front().y==VrMenuRowY(6),"refresh rate matches row baseline");}
     std::filesystem::remove_all(dir);
-    std::cout<<"C36_FRONTEND=PASS settings=VR3_READS_VR1_VR2 camera=LIVE_PERSISTED six_rows=48_VARIANTS\n";
+    std::cout<<"C36_FRONTEND=PASS settings=LEGACY_COMPATIBLE camera=LIVE_PERSISTED nine_rows="<<keys.size()<<"_VARIANTS\n";
     return 0;
 }catch(const std::exception& e){std::cerr<<"C36_FRONTEND_FAIL="<<e.what()<<'\n';return 1;}}

@@ -38,6 +38,7 @@ function(hpvr_embed_shader source_file output_name symbol_name shader_stage)
         DEPENDS
             "${HPVR_SHADER_SOURCE_DIR}/${source_file}"
             "${HPVR_SHADER_SOURCE_DIR}/reflection_hit_policy.h"
+            "${HPVR_SHADER_SOURCE_DIR}/abyss_fog.h"
             "${CMAKE_CURRENT_SOURCE_DIR}/cmake/embed_binary.cmake"
         VERBATIM)
     set(HPVR_GENERATED_SHADER_HEADERS
@@ -65,6 +66,8 @@ target_compile_options(native_app_glue PRIVATE -Wall -Wextra -Werror
 add_library(hpvr_quest_lifecycle STATIC
     "${HPVR_ROOT}/src/quest/src/quest_gesture.cpp"
     "${HPVR_ROOT}/src/quest/src/quest_frontend.cpp"
+    "${HPVR_ROOT}/src/quest/src/quest_map_events.cpp"
+    "${HPVR_ROOT}/src/quest/src/quest_music_cache.cpp"
     "${HPVR_ROOT}/src/quest/src/quest_lighting.cpp"
     "${HPVR_ROOT}/src/quest/src/quest_lifecycle.cpp"
     "${HPVR_ROOT}/src/quest/src/quest_spell_targets.cpp"
@@ -101,3 +104,5 @@ target_link_libraries(hpvr_quest PRIVATE
     log)
 
 target_link_options(hpvr_quest PRIVATE "-u" "ANativeActivity_onCreate")
+include("${HPVR_ROOT}/cmake/HPVRVoice.cmake")
+hpvr_add_android_voice(hpvr_quest "${HPVR_ROOT}")

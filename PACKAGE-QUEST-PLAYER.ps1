@@ -1,8 +1,8 @@
 #requires -Version 5.1
 [CmdletBinding()]
 param(
-    [string]$ApkPath = 'artifacts/quest-release-c37/HPVR-Quest-0.1.0-demo.apk',
-    [string]$OutputDirectory = 'artifacts/HPVR-Quest-Demo-0.1.0',
+    [string]$ApkPath = 'artifacts/quest-release-0.1.1-alpha-c54/HPVR-Quest-0.1.1-alpha.apk',
+    [string]$OutputDirectory = 'artifacts/HPVR-Quest-Demo-0.1.1-alpha',
     [string]$HostBuildDirectory = 'build/quest-host-tests'
 )
 
@@ -36,6 +36,46 @@ function Assert-PlayerText([string]$Path) {
     $utf8 = New-Object Text.UTF8Encoding($false, $true)
     $null = $utf8.GetString($bytes)
 }
+function Assert-PlayerNoVoiceDiagnostics($Archive, [string]$Version) {
+    # Release metadata and an APK filename are not proof that recording code is
+    # absent. Inspect the exact payload even for an explicitly supplied APK.
+    if ([string]::IsNullOrWhiteSpace($Version) -or $Version -match '(?i)voice[-_]?diag') {
+        throw 'Voice recording diagnostic APKs must never be packaged for players.'
+    }
+    foreach ($name in @('AndroidManifest.xml', 'lib/arm64-v8a/libhpvr_quest.so')) {
+        $entry = $Archive.GetEntry($name)
+        $limit = $(if ($name -eq 'AndroidManifest.xml') { 8388608L } else { 536870912L })
+        if ($null -eq $entry -or $entry.Length -le 0 -or $entry.Length -gt $limit) {
+            throw "Cannot verify recording-code absence in APK component: $name"
+        }
+        $needles = @('HPVR_LOCAL_VOICE_RECORDING_DIAGNOSTIC', 'HPVR_LOCAL_VOICE_RECORDING_30S')
+        if ($name -eq 'AndroidManifest.xml') {
+            # Android binary XML string pools may use UTF-8 or UTF-16LE.
+            $needles += @('-voice-diag', 'voiceDiagnostic',
+                [Text.Encoding]::ASCII.GetString([Text.Encoding]::Unicode.GetBytes('-voice-diag')),
+                [Text.Encoding]::ASCII.GetString([Text.Encoding]::Unicode.GetBytes('voiceDiagnostic')))
+        }
+        $overlap = ($needles | ForEach-Object { $_.Length } | Measure-Object -Maximum).Maximum - 1
+        $buffer = New-Object byte[] 65536
+        $tail = ''
+        $total = 0L
+        $stream = $entry.Open()
+        try {
+            while (($count = $stream.Read($buffer, 0, $buffer.Length)) -gt 0) {
+                $total += $count
+                if ($total -gt $entry.Length -or $total -gt $limit) { throw "Unbounded APK component: $name" }
+                $window = $tail + [Text.Encoding]::ASCII.GetString($buffer, 0, $count)
+                foreach ($needle in $needles) {
+                    if ($window.IndexOf($needle, [StringComparison]::OrdinalIgnoreCase) -ge 0) {
+                        throw "Voice recording diagnostic payload is forbidden in player packages: $name"
+                    }
+                }
+                $tail = $window.Substring([Math]::Max(0, $window.Length - $overlap))
+            }
+            if ($total -ne $entry.Length) { throw "Incomplete APK component verification: $name" }
+        } finally { $stream.Dispose() }
+    }
+}
 
 $hpvrApk = Resolve-PlayerPath $ApkPath
 $hpvrOutput = Resolve-PlayerPath $OutputDirectory
@@ -63,15 +103,17 @@ if ($hpvrMetadata.package -ne 'io.github.hpvr.quest' -or $hpvrMetadata.buildType
 }
 
 Add-Type -AssemblyName System.IO.Compression.FileSystem
+. (Join-Path $hpvrRepository 'tools/voice/VOICE-APK-PAYLOAD.ps1')
 $hpvrApkArchive = [IO.Compression.ZipFile]::OpenRead($hpvrApk)
 try {
+    Assert-PlayerNoVoiceDiagnostics $hpvrApkArchive $hpvrMetadata.version
+    Assert-HpvrApkPayload $hpvrApkArchive ($hpvrMetadata.versionCode -ge 44) (Join-Path $hpvrRepository 'tools/voice/VOICE-ASSETS.psd1')
     $seenApkNames = @{}
     foreach ($entry in $hpvrApkArchive.Entries) {
         $name = $entry.FullName
         if ($seenApkNames.ContainsKey($name)) { throw "Duplicate APK entry: $name" }
         $seenApkNames[$name] = $true
-        if ($name.StartsWith('assets/', [StringComparison]::OrdinalIgnoreCase) -or
-            $name -match '(?i)\.(unr|utx|uax|umx|u|s16|mp2|wav|mp3|ogg|jks|keystore|pem|p12)$' -or
+        if ($name -match '(?i)\.(unr|utx|uax|umx|u|s16|hpvc|mp2|wav|mp3|ogg|jks|keystore|pem|p12)$' -or
             $name -match '(^|/)\.\.(/|$)' -or $name.Contains('\')) {
             throw "Game data, secret, or unsafe path found in APK: $name"
         }
@@ -99,7 +141,11 @@ function Add-PlayerInput([string]$Source, [string]$Destination, [string]$Kind) {
         try { if ($stream.ReadByte() -ne 77 -or $stream.ReadByte() -ne 90) { throw "Expected our built Windows executable: $sourcePath" } }
         finally { $stream.Dispose() }
     }
-    $hpvrCopies.Add([pscustomobject]@{ source = $sourcePath; path = $Destination; kind = $Kind; sha256 = (Get-FileHash -LiteralPath $sourcePath -Algorithm SHA256).Hash })
+    $inputHash = (Get-FileHash -LiteralPath $sourcePath -Algorithm SHA256).Hash
+    if ($Kind -eq 'apk' -and $inputHash -ne $hpvrApkHash) {
+        throw 'APK changed after metadata/payload verification. Refusing to package an unverified replacement.'
+    }
+    $hpvrCopies.Add([pscustomobject]@{ source = $sourcePath; path = $Destination; kind = $Kind; sha256 = $inputHash })
 }
 Add-PlayerInput $hpvrApk 'HPVR-Quest-Demo.apk' 'apk'
 foreach ($name in @('INSTALL-HPVR.ps1', 'INSTALL-HPVR.cmd', 'PLAYER-INSTALL.md')) {
@@ -114,11 +160,26 @@ foreach ($name in @('hpvr_hp1_package_graph.exe', 'hpvr_hp1_sound_probe.exe')) {
 foreach ($name in @('hpvr_quest_frontend_probe.exe', 'hpvr_quest_intro_probe.exe')) {
     Add-PlayerInput (Join-Path $hpvrHostBuild ('src/quest/Release/' + $name)) ('tools/' + $name) 'tool'
 }
+$hpvrPreparedSceneVersion = 0
+if ($hpvrMetadata.versionCode -ge 43) {
+    Add-PlayerInput (Join-Path $hpvrHostBuild 'src/quest/Release/hpvr_quest_prepare_assets.exe') 'tools/hpvr_quest_prepare_assets.exe' 'tool'
+    $hpvrPreparedSceneVersion = 1
+} else {
+    Write-Warning 'This APK predates prepared-scene support. Packaging the compatible packages/audio-only installer path; no scene preparation tool is included.'
+}
 
 # These are the exact audited notices emitted by BUILD-QUEST-RELEASE.ps1. A new
 # dependency requires an explicit audit/allowlist update, not a broad recursive copy.
 $hpvrNoticeNames = @('NDK-27.2.12479018-NOTICE.toolchain.txt', 'NDK-27.2.12479018-NOTICE.txt',
     'OpenXR-1.1.43-LICENSE.txt', 'THIRD-PARTY-NOTICES.md')
+if ($hpvrMetadata.versionCode -ge 47) {
+    $hpvrVoiceManifest = Import-PowerShellDataFile -LiteralPath (Join-Path $hpvrRepository 'tools/voice/VOICE-ASSETS.psd1')
+    if ($hpvrVoiceManifest.Count -ne 24) { throw 'Unexpected neural voice asset inventory.' }
+    $hpvrNoticeNames += @($hpvrVoiceManifest.Keys | Where-Object { $_ -match '^(LICENSE-|NOTICE-|EIGEN-|MODEL-README)' } |
+        ForEach-Object { "Voice-$_" })
+} elseif ($hpvrMetadata.versionCode -ge 44) {
+    $hpvrNoticeNames += @('PocketSphinx-5.0.4-LICENSE.txt', 'PocketSphinx-en-us-model-README.txt')
+}
 $hpvrNoticeRoot = Join-Path $hpvrReleaseRoot 'THIRD-PARTY'
 Assert-PlayerNoLinks $hpvrNoticeRoot
 $hpvrNoticeFiles = @(Get-ChildItem -LiteralPath $hpvrNoticeRoot -Force)
@@ -163,8 +224,12 @@ $hpvrManifest = [ordered]@{
     versionCode = $hpvrMetadata.versionCode
     certificateSha256 = $hpvrMetadata.certificateSha256
     gameAssetsIncluded = $false
+    # Explicit release scope: installers do not guess from files beside them.
+    # Keep rebuilding historical one-map APKs possible with explicit paths.
+    mapIds = @(if ($hpvrMetadata.versionCode -ge 38) { 0; 1 } else { 0 })
     files = @($hpvrFiles.ToArray())
 }
+if ($hpvrPreparedSceneVersion -gt 0) { $hpvrManifest.preparedSceneVersion = $hpvrPreparedSceneVersion }
 $hpvrManifestPath = Join-Path $hpvrOutput 'release-manifest.json'
 $hpvrManifest | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $hpvrManifestPath -Encoding UTF8
 
@@ -218,7 +283,7 @@ try {
 # File.Move never overwrites an existing final archive, even after a concurrent creation.
 [IO.File]::Move($hpvrTemporaryZip, $hpvrZip)
 $hpvrZipHash = (Get-FileHash -LiteralPath $hpvrZip -Algorithm SHA256).Hash
-Write-Output "PLAYER_PACKAGE=PASS files=$($hpvrAllowed.Count) game_assets=0 extra_third_party_tools=0 keys=0"
+Write-Output "PLAYER_PACKAGE=PASS files=$($hpvrAllowed.Count) game_assets=0 voice_model=$([int]($hpvrMetadata.versionCode -ge 44)) extra_third_party_tools=0 keys=0"
 Write-Output "DIRECTORY=$hpvrOutput"
 Write-Output "ZIP=$hpvrZip"
 Write-Output "ZIP_SHA256=$hpvrZipHash"

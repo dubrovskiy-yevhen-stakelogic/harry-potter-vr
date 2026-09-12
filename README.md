@@ -1,86 +1,101 @@
-# Harry Potter VR
+# Harry Potter VR — 0.1.1 Alpha
 
 An unofficial native VR port of *Harry Potter and the Sorcerer's Stone*
 (PC, 2001) for **Meta Quest 3**. Runs standalone, without a PC or Quest Link.
 
-The demo covers the opening story and tutorials **through the first Flipendo
-lesson**. A user-owned US PC copy is required. Original maps, textures, models,
-music, and dialogue are not included in the APK or source code.
+This early alpha includes the opening Hogwarts tutorials, the first Flipendo
+lesson and the **Flipendo Challenge**. A user-owned US PC copy is required.
+Original maps, textures, models, music and dialogue are not included in the
+download.
 
 ## Features
 
-- **Full 6DOF VR:** stereoscopic rendering, tracked head rotation and position,
-  room-scale leaning, and independent wand aiming.
-- **Screen-space reflections (SSR):** adjustable reflection strength in the VR menu.
-- **First-person cutscenes:** watch through Harry's eyes or use the theatrical
-  camera. Both support 6DOF, with instant switching even during a cutscene.
-- **Tracked wand and gesture casting:** a right-hand wand, free-aim basic casts,
-  and Flipendo drawn with physical gestures. Choose Original or Relaxed difficulty.
-- **In-world VR menu:** available during gameplay and cutscenes without pausing
-  the game. Settings persist between sessions.
-- **Render Scale from 50% to 175%** and an optional performance overlay with FPS,
-  frame time, resolution, per-eye CPU/GPU render timing, and available device metrics.
-- **VR locomotion:** smooth movement, toggle sprint, 30-degree snap turns,
-  jumping, stairs, climbing, and world/NPC collisions.
-- Original Hogwarts geometry, textures, lighting, fire, lamp glows, animated
-  characters, and moving suits of armour.
-- Main menu, story opening, level objectives, tutorial quests with Ron, Fred
-  and George, Peeves, and the first spell lesson, with original dialogue,
-  music, and sound effects.
-- Lightning-bolt health HUD, beans, a chocolate frog, the tutorial wizard card,
-  card collection viewer, and original pickup audio.
-- Three save slots, checkpoint autosaves, and the ability to continue without
-  replaying the introduction.
-- Welcome and demo-completion messages with a community feedback link.
+- **Full 6DOF VR:** stereoscopic rendering, tracked head position and rotation,
+  room-scale leaning and an independently aimed, tracked wand.
+- **First-person cutscenes:** watch through Harry's eyes or choose the theatrical
+  camera. Both support 6DOF; switch instantly, including during a cutscene.
+- **Screen-space reflections (SSR)** with adjustable strength.
+- **Three casting modes:** CLASSIC, VISIBLE GESTURE and GESTURE. Gameplay gestures
+  accept rotated and reversed strokes without requiring precise tracing.
+- **Optional offline voice casting:** aim at a Flipendo target and say
+  “Flipendo”; repeat while holding the trigger. Voice hints are optional.
+- **Two playable maps:** the opening tutorials and Flipendo Challenge, including
+  spell-operated doors and blocks, moving platforms, gnomes and eight challenge stars.
+- **VR movement:** smooth locomotion, toggle sprint, snap turning, jumping,
+  automatic ledge climbing and L3 + R3 height recentering.
+- **Live VR menu**, accessible during gameplay and cutscenes, with saved settings.
+- **Graphics controls:** render scale, reflection strength, supported headset
+  refresh rates and an optional performance overlay.
+- Original character animations, dialogue and music; animated fireplaces,
+  candle flames and glows, dark abyss fog and pickup effects.
+- Animated tipping pots, persistent broken vases, collectible beans, wizard
+  cards and levitating save books.
+- Three save slots, level selection and challenge checkpoints at the level
+  entrance and original save books.
 
 ## Installation
 
-1. Extract the release ZIP on a Windows PC.
+1. Extract the complete release ZIP on a Windows PC.
 2. Connect your Quest 3 with developer mode enabled and USB debugging authorised.
-3. Run `INSTALL-HPVR.cmd` from the release package and select your original game
-   folder. ADB and FFmpeg are required to prepare and import the data.
-4. Once installation finishes, open **Harry Potter VR Demo** from Unknown Sources
-   on your headset.
+3. Run `INSTALL-HPVR.cmd` and select your original US PC game folder.
+4. After installation completes, open Harry Potter VR from **Unknown Sources**
+   on the headset.
 
-The installer imports data from your copy without modifying the original game.
-See the [installation guide](tools/release/PLAYER-INSTALL.md) for requirements
-and command-line options.
+The installer downloads and caches FFmpeg and Android Platform Tools when
+missing; the first ADB download asks you to accept the Android SDK terms.
+It prepares both maps and their audio on the PC for faster headset loading.
+It does not modify or launch the original game.
 
-A release signed with a different key cannot update an existing development
-build. Do not uninstall the old build to bypass this error: you could lose your
-saves. Contact the author first to arrange a data migration.
+See the [installation guide](tools/release/PLAYER-INSTALL.md) for requirements,
+offline options and troubleshooting. Do not uninstall an existing build to
+bypass a signing-key mismatch: that can erase saves and imported data.
 
-## Touch / Touch Plus Controls
+## Touch / Touch Plus controls
 
 | Action | Control |
 | --- | --- |
 | Move | Left stick |
 | Toggle sprint | Click left stick (L3) |
+| Recenter height at the current body position | Click both sticks together (L3 + R3), then release |
 | Snap turn 30 degrees | Right stick left / right |
 | Jump | A |
-| Cast, draw a gesture, confirm | Right trigger |
-| Game pause / back | B or left Menu button without both grips held |
+| Aim, cast, draw a gesture or confirm | Right trigger |
+| Game pause / back | B, or left Menu without both grips held |
 | VR menu, including during cutscenes | Hold both grips and press left Menu |
-| Select menu item | Left stick up / down |
+| Select VR menu item | Left stick up / down |
 | Adjust value | Left stick left / right |
 
-Difficulty and camera mode can also be toggled with the trigger.
-`CUTSCENE CAMERA` applies immediately: `HARRY 1ST PERSON` follows Harry,
-while `THEATRICAL` uses the scripted camera with free head movement.
+**CLASSIC:** hold the trigger to aim, then release. An eligible target displays
+the Flipendo symbol and selects that spell automatically.
 
-## Settings and Limitations
+**VISIBLE GESTURE / GESTURE:** hold to aim, acquire a target, draw the curl, then
+release. VISIBLE GESTURE shows your stroke; GESTURE hides it. The classroom
+lesson keeps its guided exercise.
 
-Defaults: Render Scale **100%**, SSR **30**, difficulty **RELAXED**, and
-cutscenes **HARRY 1ST PERSON**. Changes are saved between sessions; updates
-preserve existing preferences. Select **ORIGINAL** for the original lesson difficulty.
+**VOICE CASTING:** enable it in the VR menu, grant microphone permission, then
+hold the trigger on a Flipendo target and say the spell. Keep holding to cast
+again after the projectile and Harry's incantation finish. Release to change
+targets. It works with voice hints hidden and is available in the challenge.
 
-SSR is experimental. Missing reflections and a strip between a bean and its
-reflection are known issues. Higher render scales and reflections increase GPU
-load. Unavailable performance metrics display `N/A`; per-eye render times are
-not percentages of total CPU/GPU utilisation.
+## Settings and limitations
 
-Quidditch, the full original options menu, and progression beyond the first
-lesson are not included. Original PC save files cannot be imported.
+Defaults: render scale **100%**, SSR **30**, refresh rate **90 Hz**, difficulty
+**RELAXED**, cutscenes **HARRY 1ST PERSON**, casting **CLASSIC**. Voice casting
+and voice hints are off. Settings persist between sessions. Refresh-rate choices
+depend on headset support; ORIGINAL restores the original lesson difficulty.
+
+This is an early alpha, not the complete game. It ends after the Flipendo
+Challenge; later levels, Quidditch and the full original options menu are not
+implemented. Original PC saves cannot be imported.
+
+**Voice casting is experimental and has only been tested by the author.**
+Some pronunciations may be missed; similar-sounding phrases can trigger a spell
+while aiming. Recognition runs locally, without uploading or saving your voice.
+No internet connection or personal voice training is needed.
+
+SSR can miss reflections or show gaps around objects. Higher render scales,
+refresh rates and reflection settings increase rendering load. Unavailable
+performance metrics display `N/A`; per-eye timings are not total CPU/GPU usage.
 
 News and feedback: [Discord](https://discord.com/channels/747967102895390741/1547254536203407390).
 
@@ -90,8 +105,15 @@ News and feedback: [Discord](https://discord.com/channels/747967102895390741/154
 
 - [Source layout and build instructions](SOURCE-KIT-README.md)
 - [Release APK builds](docs/RELEASE-BUILD.md)
-- [Architecture](docs/architecture.md)
-- [Gesture recognition](docs/wand-gesture-contract.md)
+- [Runtime architecture](docs/architecture.md)
+- [Casting and challenge interactions](docs/CLASSIC-CASTING-AND-CHALLENGE.md)
+- [Flipendo Challenge](docs/FLIPENDO-CHALLENGE.md)
+- [Scene preparation and loading](docs/LOADING-AND-PICKUPS.md)
+- [Gesture processing](docs/wand-gesture-contract.md)
+- [Offline voice build guide](tools/voice/README.md)
 - [Third-party components and licences](docs/THIRD-PARTY-NOTICES.md)
+
+The source kit contains no game data, speech-model binaries, bundled build
+dependencies or signing keys. Build dependencies are prepared separately.
 
 This project is not affiliated with Warner Bros. or the Harry Potter rights holders.

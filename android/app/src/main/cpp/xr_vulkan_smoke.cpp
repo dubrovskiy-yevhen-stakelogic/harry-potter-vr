@@ -2,10 +2,16 @@
 #include "hpvr/quest_reflection_math.h"
 
 #include "quest_scene.h"
+#include "quest_load_trace.h"
+#include "quest_voice_cast_android.h"
+#include <android/native_activity.h>
 
 #include "hpvr/quest_view.h"
+#include "hpvr/quest_recenter.h"
 #include "hpvr/quest_gesture.h"
+#include "hpvr/quest_frontend.h"
 #include "hpvr/quest_startup.h"
+#include "hpvr/quest_loading_indicator.h"
 
 #include <android/log.h>
 #include <jni.h>
@@ -15,12 +21,13 @@
 
 #include <algorithm>
 #include <array>
-#include <atomic>
 #include <chrono>
 #include <cmath>
 #include <cstdint>
 #include <cstring>
 #include <future>
+#include <iomanip>
+#include <sstream>
 #include <string>
 #include <ctime>
 #include <vector>
@@ -108,8 +115,17 @@ bool FindDeviceMemoryType(const VkPhysicalDevice physical_device,
 }  // namespace
 
 struct XrVulkanSmoke::State {
+    QuestVoiceCast voice;
+    bool voice_permission=false,voice_configured=false,voice_was_enabled=false;
+    double voice_platform_poll=0;
+    double voice_diagnostic_poll=0;
+    std::uint64_t voice_generation=0;
+    std::int32_t voice_target=0;
+    int voice_last_error=0;
+    std::array<float,3> voice_target_point{};
     std::vector<std::uint8_t> startup_pixels;
     XrSwapchain startup_swapchain=XR_NULL_HANDLE;
+    XrSwapchain loading_icon_swapchain=XR_NULL_HANDLE;
     XrSpace startup_space=XR_NULL_HANDLE;
     ViewPose startup_pose{};
     bool startup_anchor_valid=false;
@@ -132,11 +148,15 @@ struct XrVulkanSmoke::State {
     XrAction cast_action = XR_NULL_HANDLE;
     XrAction back_action = XR_NULL_HANDLE;
     XrAction jump_action = XR_NULL_HANDLE, menu_action=XR_NULL_HANDLE, sprint_action=XR_NULL_HANDLE;
+    XrAction right_stick_click_action = XR_NULL_HANDLE;
+    RecenterChord recenter_chord;
+    bool recenter_requested=false;
     bool sprint_enabled=false,sprint_button_held=false;
     XrAction left_squeeze=XR_NULL_HANDLE,right_squeeze=XR_NULL_HANDLE;
     VrMenuChord vr_chord;
     bool vr_menu_requested=false;
     bool ui_trigger_consumed=false;
+    bool input_release_pending=false;
     XrAction move_action = XR_NULL_HANDLE;
     XrAction turn_action = XR_NULL_HANDLE;
     XrPath left_hand = XR_NULL_PATH;
@@ -171,6 +191,9 @@ struct XrVulkanSmoke::State {
     std::array<XrPath,4> metric_paths{};
     bool metrics_enabled=false;
     bool metrics_extension=false;
+    PFN_xrRequestDisplayRefreshRateFB request_refresh=nullptr;
+    std::vector<int> refresh_rates;
+    int requested_refresh=-1;
 
     std::uint64_t submitted_frames = 0;
     std::uint64_t input_syncs = 0;
@@ -184,40 +207,94 @@ struct XrVulkanSmoke::State {
     bool cinematic_reference_valid=false;
     bool cinematic_first_person=false;
     ViewPose cinematic_reference{},last_world_head{};
+    std::array<float,3> last_world_capsule{};
     bool have_world_head=false,rebase_head=false;
     LocomotionState locomotion{};
-    QuestGesture gesture{};
+    std::unique_ptr<QuestGesture> gesture=std::make_unique<QuestGesture>();
     GestureGuide gesture_guide{};
+    std::uint64_t gesture_diagnostic_serial=0;
     QuestScene scene{};
+    std::filesystem::path data_root,save_root;
+    std::unique_ptr<QuestScene> loading_scene;
+    std::unique_ptr<QuestGesture> loading_gesture;
     std::future<bool> scene_load_future{};
-    std::atomic<bool> scene_load_pending{false};
+    ProgressSave transferred_progress{};
+    unsigned transferred_slot=0,loading_map_id=0;
+    bool map_transfer=false;
     bool scene_load_failed = false;
     bool scene_load_adopted = false;
 };
 
 namespace {
 
-bool CreateStartupLayer(auto& s){
-    if(s.startup_pixels.size()!=640*480*4)return false;
+void ResetSceneInput(auto& state,bool reset_placement){
+    state.voice.SetListening({});state.voice_target=0;++state.voice_generation;
+    state.last_predicted_time=0;
+    state.gesture->Reset();state.gesture_guide={};
+    state.gesture_diagnostic_serial=0;
+    state.trigger_value=0;state.cast_held=state.back_held=state.jump_held=false;
+    state.sprint_enabled=state.sprint_button_held=false;
+    state.vr_menu_requested=false;state.vr_chord={};
+    state.recenter_requested=false;state.recenter_chord.Reset();
+    state.ui_trigger_consumed=true;
+    state.input_release_pending=true;
+    state.cinematic_reference_valid=false;state.cinematic_first_person=false;
+    state.startup_anchor_valid=false;
+    if(reset_placement){
+        state.locomotion.Reset();state.have_world_head=false;state.rebase_head=false;
+        state.cinematic_reference={};state.last_world_head={};state.last_world_capsule={};
+        state.performance={};state.perf_start=0;state.perf_frames=0;
+    }
+}
+
+bool QueueSceneLoad(auto& state,unsigned map_id,bool transfer){
+    if(state.scene_load_future.valid())return false;
+    try{
+        state.loading_scene=std::make_unique<QuestScene>();
+        if(!transfer)state.loading_gesture=std::make_unique<QuestGesture>();
+        QuestScene* const pending=state.loading_scene.get();
+        QuestGesture* const profile=state.loading_gesture.get();
+        // Capture no live scene or input state: only the pending objects belong
+        // to the worker until future::get establishes the ownership hand-off.
+        state.scene_load_future=std::async(std::launch::async,
+            [pending,profile,root=state.data_root,saves=state.save_root,map_id](){
+                HPVR_LOGI("[hpvr.quest.scene.async] status=STARTED map=%u mode=CPU_ONLY",map_id);
+                return pending->LoadFromOwnedData(root,saves,map_id)&&
+                    (!profile||profile->LoadFlipendoProfile(root));
+            });
+        state.loading_map_id=map_id;state.map_transfer=transfer;
+        state.scene_load_failed=false;
+        state.scene.SetTrackingActive(false);state.scene.SetWandDrawing(false);
+        state.scene.PrepareReflections(Matrix4{},state.width,state.height,false);
+        ResetSceneInput(state,false);
+        HPVR_LOGI("[hpvr.quest.scene.async] status=QUEUED map=%u transfer=%u startup=NON_BLOCKING",map_id,transfer?1U:0U);
+        return true;
+    }catch(const std::exception& error){
+        HPVR_LOGE("[hpvr.quest.scene.async] status=QUEUE_FAILED map=%u reason=%s",map_id,error.what());
+        state.loading_scene.reset();state.loading_gesture.reset();
+        return false;
+    }
+}
+
+bool UploadStaticLayer(auto& s,const std::vector<std::uint8_t>& pixels,
+                       unsigned width,unsigned height,XrSwapchain* swapchain){
+    if(!swapchain||pixels.size()!=static_cast<std::size_t>(width)*height*4)return false;
     XrSwapchainCreateInfo info{};info.type=XR_TYPE_SWAPCHAIN_CREATE_INFO;
     info.createFlags=XR_SWAPCHAIN_CREATE_STATIC_IMAGE_BIT;
     info.usageFlags=XR_SWAPCHAIN_USAGE_TRANSFER_DST_BIT|XR_SWAPCHAIN_USAGE_SAMPLED_BIT|XR_SWAPCHAIN_USAGE_COLOR_ATTACHMENT_BIT;
-    info.format=s.color_format;info.sampleCount=1;info.width=640;info.height=480;
+    info.format=s.color_format;info.sampleCount=1;info.width=width;info.height=height;
     info.faceCount=1;info.arraySize=1;info.mipCount=1;
-    if(!CheckXr(xrCreateSwapchain(s.session,&info,&s.startup_swapchain),"startup swapchain"))return false;
-    XrReferenceSpaceCreateInfo space{};space.type=XR_TYPE_REFERENCE_SPACE_CREATE_INFO;
-    space.referenceSpaceType=XR_REFERENCE_SPACE_TYPE_LOCAL;space.poseInReferenceSpace.orientation.w=1;
-    if(!CheckXr(xrCreateReferenceSpace(s.session,&space,&s.startup_space),"startup space"))return false;
+    if(!CheckXr(xrCreateSwapchain(s.session,&info,swapchain),"startup swapchain"))return false;
     std::uint32_t count=0;
-    if(!CheckXr(xrEnumerateSwapchainImages(s.startup_swapchain,0,&count,nullptr),"startup images")||!count)return false;
+    if(!CheckXr(xrEnumerateSwapchainImages(*swapchain,0,&count,nullptr),"startup images")||!count)return false;
     std::vector<XrSwapchainImageVulkanKHR> images(count);
     for(auto& image:images)image.type=XR_TYPE_SWAPCHAIN_IMAGE_VULKAN_KHR;
-    if(!CheckXr(xrEnumerateSwapchainImages(s.startup_swapchain,count,&count,
+    if(!CheckXr(xrEnumerateSwapchainImages(*swapchain,count,&count,
         reinterpret_cast<XrSwapchainImageBaseHeader*>(images.data())),"startup images"))return false;
     VkBuffer buffer=VK_NULL_HANDLE;VkDeviceMemory memory=VK_NULL_HANDLE;VkCommandBuffer command=VK_NULL_HANDLE;
     bool acquired=false;
     const bool ok=[&](){
-        VkBufferCreateInfo b{};b.sType=VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;b.size=s.startup_pixels.size();
+        VkBufferCreateInfo b{};b.sType=VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;b.size=pixels.size();
         b.usage=VK_BUFFER_USAGE_TRANSFER_SRC_BIT;b.sharingMode=VK_SHARING_MODE_EXCLUSIVE;
         if(!CheckVk(vkCreateBuffer(s.device,&b,nullptr,&buffer),"startup staging"))return false;
         VkMemoryRequirements req;vkGetBufferMemoryRequirements(s.device,buffer,&req);
@@ -228,17 +305,17 @@ bool CreateStartupLayer(auto& s){
            !CheckVk(vkBindBufferMemory(s.device,buffer,memory,0),"startup binding"))return false;
         void* mapped=nullptr;
         if(!CheckVk(vkMapMemory(s.device,memory,0,b.size,0,&mapped),"startup map"))return false;
-        std::memcpy(mapped,s.startup_pixels.data(),s.startup_pixels.size());
+        std::memcpy(mapped,pixels.data(),pixels.size());
         if(s.color_format==VK_FORMAT_B8G8R8A8_SRGB||s.color_format==VK_FORMAT_B8G8R8A8_UNORM){
             auto* bytes=static_cast<std::uint8_t*>(mapped);
-            for(std::size_t i=0;i<s.startup_pixels.size();i+=4)std::swap(bytes[i],bytes[i+2]);
+            for(std::size_t i=0;i<pixels.size();i+=4)std::swap(bytes[i],bytes[i+2]);
         }
         vkUnmapMemory(s.device,memory);
         std::uint32_t index=0;XrSwapchainImageAcquireInfo acquire{};acquire.type=XR_TYPE_SWAPCHAIN_IMAGE_ACQUIRE_INFO;
-        if(!CheckXr(xrAcquireSwapchainImage(s.startup_swapchain,&acquire,&index),"startup acquire"))return false;
+        if(!CheckXr(xrAcquireSwapchainImage(*swapchain,&acquire,&index),"startup acquire"))return false;
         acquired=true;
         XrSwapchainImageWaitInfo wait{};wait.type=XR_TYPE_SWAPCHAIN_IMAGE_WAIT_INFO;wait.timeout=XR_INFINITE_DURATION;
-        if(!CheckXr(xrWaitSwapchainImage(s.startup_swapchain,&wait),"startup wait"))return false;
+        if(!CheckXr(xrWaitSwapchainImage(*swapchain,&wait),"startup wait"))return false;
         VkCommandBufferAllocateInfo alloc{};alloc.sType=VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
         alloc.commandPool=s.command_pool;alloc.level=VK_COMMAND_BUFFER_LEVEL_PRIMARY;alloc.commandBufferCount=1;
         if(!CheckVk(vkAllocateCommandBuffers(s.device,&alloc,&command),"startup command"))return false;
@@ -250,7 +327,7 @@ bool CreateStartupLayer(auto& s){
         barrier.image=images[index].image;barrier.subresourceRange={VK_IMAGE_ASPECT_COLOR_BIT,0,1,0,1};
         barrier.dstAccessMask=VK_ACCESS_TRANSFER_WRITE_BIT;
         vkCmdPipelineBarrier(command,VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,VK_PIPELINE_STAGE_TRANSFER_BIT,0,0,nullptr,0,nullptr,1,&barrier);
-        VkBufferImageCopy copy{};copy.imageSubresource={VK_IMAGE_ASPECT_COLOR_BIT,0,0,1};copy.imageExtent={640,480,1};
+        VkBufferImageCopy copy{};copy.imageSubresource={VK_IMAGE_ASPECT_COLOR_BIT,0,0,1};copy.imageExtent={width,height,1};
         vkCmdCopyBufferToImage(command,buffer,images[index].image,VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,1,&copy);
         barrier.oldLayout=VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;barrier.newLayout=VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
         barrier.srcAccessMask=VK_ACCESS_TRANSFER_WRITE_BIT;barrier.dstAccessMask=VK_ACCESS_COLOR_ATTACHMENT_READ_BIT;
@@ -259,12 +336,22 @@ bool CreateStartupLayer(auto& s){
         VkSubmitInfo submit{};submit.sType=VK_STRUCTURE_TYPE_SUBMIT_INFO;submit.commandBufferCount=1;submit.pCommandBuffers=&command;
         return CheckVk(vkQueueSubmit(s.queue,1,&submit,VK_NULL_HANDLE),"startup upload")&&CheckVk(vkQueueWaitIdle(s.queue),"startup ready");
     }();
-    if(acquired){XrSwapchainImageReleaseInfo release{};release.type=XR_TYPE_SWAPCHAIN_IMAGE_RELEASE_INFO;xrReleaseSwapchainImage(s.startup_swapchain,&release);}
+    if(acquired){XrSwapchainImageReleaseInfo release{};release.type=XR_TYPE_SWAPCHAIN_IMAGE_RELEASE_INFO;xrReleaseSwapchainImage(*swapchain,&release);}
     if(command)vkFreeCommandBuffers(s.device,s.command_pool,1,&command);
     if(buffer)vkDestroyBuffer(s.device,buffer,nullptr);
     if(memory)vkFreeMemory(s.device,memory,nullptr);
-    if(ok)HPVR_LOGI("[hpvr.quest.startup] status=READY content=WARNER_OWNED size=640x480");
     return ok;
+}
+
+bool CreateStartupLayer(auto& s){
+    XrReferenceSpaceCreateInfo space{};space.type=XR_TYPE_REFERENCE_SPACE_CREATE_INFO;
+    space.referenceSpaceType=XR_REFERENCE_SPACE_TYPE_LOCAL;space.poseInReferenceSpace.orientation.w=1;
+    if(!CheckXr(xrCreateReferenceSpace(s.session,&space,&s.startup_space),"startup space"))return false;
+    if(!UploadStaticLayer(s,s.startup_pixels,640,480,&s.startup_swapchain))return false;
+    const auto icon=BuildLoadingIconAtlas();
+    if(!UploadStaticLayer(s,icon,kLoadingAtlasWidth,kLoadingIconSize,&s.loading_icon_swapchain))return false;
+    HPVR_LOGI("[hpvr.quest.startup] status=READY content=WARNER_OWNED size=640x480 indicator=HOURGLASS_ATLAS frames=%u",kLoadingIconFrames);
+    return true;
 }
 
 bool ResolveSceneLocomotion(
@@ -330,6 +417,7 @@ bool CreateInput(auto& state) {
         !CreateAction(state.action_set,XR_ACTION_TYPE_BOOLEAN_INPUT,"jump","Jump",state.right_hand,&state.jump_action) ||
         !CreateAction(state.action_set,XR_ACTION_TYPE_BOOLEAN_INPUT,"game_menu","Game Menu",state.left_hand,&state.menu_action) ||
         !CreateAction(state.action_set,XR_ACTION_TYPE_BOOLEAN_INPUT,"sprint","Sprint Toggle",state.left_hand,&state.sprint_action) ||
+        !CreateAction(state.action_set,XR_ACTION_TYPE_BOOLEAN_INPUT,"right_stick_click","Recenter With L3",state.right_hand,&state.right_stick_click_action) ||
         !CreateAction(state.action_set,XR_ACTION_TYPE_FLOAT_INPUT,"left_squeeze","Left Grip",state.left_hand,&state.left_squeeze) ||
         !CreateAction(state.action_set,XR_ACTION_TYPE_FLOAT_INPUT,"right_squeeze","Right Grip",state.right_hand,&state.right_squeeze) ||
         !CreateAction(state.action_set, XR_ACTION_TYPE_VECTOR2F_INPUT,
@@ -342,7 +430,7 @@ bool CreateInput(auto& state) {
     }
 
     XrPath profile = XR_NULL_PATH;
-    std::array<XrPath, 11> source_paths{};
+    std::array<XrPath, 12> source_paths{};
     if (!StringToPath(state.xr_instance,
                       "/interaction_profiles/oculus/touch_controller",
                       &profile) ||
@@ -363,10 +451,11 @@ bool CreateInput(auto& state) {
         !StringToPath(state.xr_instance,"/user/hand/left/input/menu/click",&source_paths[7]) ||
         !StringToPath(state.xr_instance,"/user/hand/left/input/thumbstick/click",&source_paths[8]) ||
         !StringToPath(state.xr_instance,"/user/hand/left/input/squeeze/value",&source_paths[9]) ||
-        !StringToPath(state.xr_instance,"/user/hand/right/input/squeeze/value",&source_paths[10])) {
+        !StringToPath(state.xr_instance,"/user/hand/right/input/squeeze/value",&source_paths[10]) ||
+        !StringToPath(state.xr_instance,"/user/hand/right/input/thumbstick/click",&source_paths[11])) {
         return false;
     }
-    const std::array<XrActionSuggestedBinding, 12> bindings{{
+    const std::array<XrActionSuggestedBinding, 13> bindings{{
         {state.grip_action, source_paths[0]},
         {state.aim_action, source_paths[1]},
         {state.trigger_action, source_paths[2]},
@@ -377,6 +466,7 @@ bool CreateInput(auto& state) {
         {state.jump_action,source_paths[6]}, {state.menu_action,source_paths[7]},
         {state.sprint_action,source_paths[8]},
         {state.left_squeeze,source_paths[9]},{state.right_squeeze,source_paths[10]},
+        {state.right_stick_click_action,source_paths[11]},
     }};
     XrInteractionProfileSuggestedBinding suggested{};
     suggested.type = XR_TYPE_INTERACTION_PROFILE_SUGGESTED_BINDING;
@@ -440,6 +530,9 @@ void DestroyInputActions(auto& state) {
     state.trigger_action = XR_NULL_HANDLE;
     state.cast_action = XR_NULL_HANDLE;
     state.back_action = XR_NULL_HANDLE;
+    state.jump_action=state.menu_action=state.sprint_action=state.right_stick_click_action=XR_NULL_HANDLE;
+    state.left_squeeze=state.right_squeeze=XR_NULL_HANDLE;
+    state.recenter_chord.Reset();state.recenter_requested=false;
     state.move_action = XR_NULL_HANDLE;
     state.turn_action = XR_NULL_HANDLE;
     state.left_hand = XR_NULL_PATH;
@@ -457,13 +550,14 @@ bool GetVectorAction(const XrSession session, const XrAction action,
                    "xrGetActionStateVector2f");
 }
 
-bool SyncInput(auto& state, const XrTime predicted_time,
+bool SyncInput(auto& state, const XrTime predicted_time, const bool tracking_active,
                LocomotionInput* const locomotion_input,
                ViewPose* const wand_local, bool* const wand_tracked,
                bool* const cast_held) {
     *locomotion_input = {};
     *wand_tracked = false;
     *cast_held = false;
+    state.recenter_requested=false;
     XrActiveActionSet active{};
     active.actionSet = state.action_set;
     XrActionsSyncInfo sync{};
@@ -542,10 +636,34 @@ bool SyncInput(auto& state, const XrTime predicted_time,
     XrActionStateBoolean sprint{};sprint.type=XR_TYPE_ACTION_STATE_BOOLEAN;
     if(!CheckXr(xrGetActionStateBoolean(state.session,&get_info,&sprint),"xrGetActionStateBoolean(sprint)"))return false;
     const bool sprint_held=focused&&sprint.isActive&&sprint.currentState;
+    get_info.subactionPath=state.right_hand;get_info.action=state.right_stick_click_action;
+    XrActionStateBoolean right_click{};right_click.type=XR_TYPE_ACTION_STATE_BOOLEAN;
+    if(!CheckXr(xrGetActionStateBoolean(state.session,&get_info,&right_click),"xrGetActionStateBoolean(recenter)"))return false;
+    const bool right_held=focused&&right_click.isActive&&right_click.currentState;
+    state.recenter_requested=state.recenter_chord.Update(focused,tracking_active,sprint_held,right_held);
+    // Recovery must remain accessible even if the ordinary neutral-input latch
+    // is waiting for a held stick. The chord never fires sprint or a spell.
+    if(state.recenter_requested||state.recenter_chord.consumed){
+        state.input_release_pending=true;
+        *locomotion_input={};*cast_held=false;
+        state.cast_held=state.back_held=state.jump_held=state.vr_menu_requested=false;
+        state.sprint_enabled=false;state.sprint_button_held=sprint_held;state.trigger_value=0;
+        return true;
+    }
     if(sprint_held&&!state.sprint_button_held)state.sprint_enabled=!state.sprint_enabled;
     if(!focused||!locomotion_input->move_active||std::hypot(locomotion_input->move_x,locomotion_input->move_y)<0.18F||
        state.scene.IsFrontEndVisible()||state.scene.IsCutscenePlaying())state.sprint_enabled=false;
     state.sprint_button_held=sprint_held;locomotion_input->sprint=state.sprint_enabled;
+    if(state.input_release_pending){
+        const bool neutral=!state.cast_held&&!state.back_held&&!state.jump_held&&!menu_pressed&&!sprint_held&&!right_held&&
+            state.trigger_value<.15F&&std::hypot(locomotion_input->move_x,locomotion_input->move_y)<.18F&&
+            std::abs(locomotion_input->turn_x)<.18F;
+        state.input_release_pending=!neutral;
+        *locomotion_input={};*cast_held=false;
+        state.cast_held=state.back_held=state.jump_held=state.vr_menu_requested=false;
+        state.sprint_enabled=false;state.trigger_value=0;
+        return true;
+    }
     get_info.subactionPath=state.right_hand;
 
     get_info.action = state.grip_action;
@@ -613,64 +731,92 @@ XrVulkanSmoke::~XrVulkanSmoke() {
 
 bool XrVulkanSmoke::LoadHogwarts(const std::filesystem::path& data_root,const std::filesystem::path& save_root) {
     State& state = *state_;
-    state.startup_pixels=LoadWarnerStartup(data_root);
-    if(state.startup_pixels.empty()){HPVR_LOGE("[hpvr.quest.startup] status=ART_MISSING");return false;}
-    if (state.scene_load_pending.load(std::memory_order_acquire) ||
-        state.scene_load_future.valid() || state.scene_load_adopted) {
+    if (state.scene_load_future.valid() || state.scene_load_adopted) {
         return false;
     }
-    state.scene_load_pending.store(true, std::memory_order_release);
-    State* const worker_state = &state;
-    state.scene_load_future = std::async(
-        std::launch::async, [worker_state, data_root, save_root]() {
-            HPVR_LOGI(
-                "[hpvr.quest.scene.async] status=STARTED mode=CPU_ONLY");
-            const bool loaded =
-                worker_state->scene.LoadFromOwnedData(data_root,save_root) &&
-                worker_state->gesture.LoadFlipendoProfile(data_root);
-            if (loaded) {
-                HPVR_LOGI(
-                    "[hpvr.quest.gesture.profile] status=READY "
-                    "gesture=FlipPattern threshold=%.6f authored_accuracy=%.6f "
-                    "effective_accuracy=%.6f assist=1.75 plane=AIM_FACING "
-                    "normalization=POSITION_SCALE",
-                    worker_state->gesture.threshold(),
-                    worker_state->gesture.authored_accuracy(),
-                    worker_state->gesture.effective_accuracy());
-            }
-            worker_state->scene_load_pending.store(false,
-                                                   std::memory_order_release);
-            return loaded;
-        });
-    HPVR_LOGI(
-        "[hpvr.quest.scene.async] status=QUEUED startup=NON_BLOCKING");
-    return true;
+    state.startup_pixels=LoadWarnerStartup(data_root);
+    if(state.startup_pixels.empty()){HPVR_LOGE("[hpvr.quest.startup] status=ART_MISSING");return false;}
+    state.data_root=data_root;state.save_root=save_root;
+    return QueueSceneLoad(state,0,false);
 }
 
 bool XrVulkanSmoke::PumpHogwartsLoad() {
     State& state = *state_;
-    if (state.scene_load_adopted) return true;
-    if (!state.scene_load_future.valid() ||
-        state.scene_load_pending.load(std::memory_order_acquire)) return true;
+    if(!state.scene_load_future.valid()){
+        if(state.scene_load_adopted){
+            unsigned map_id=0;
+            if(state.scene.ConsumeMapTransition(&map_id,&state.transferred_progress,&state.transferred_slot)&&
+               !QueueSceneLoad(state,map_id,true))
+                state.scene.AbortMapTransition("Could not start loading this level.");
+        }
+        return true;
+    }
     if (state.scene_load_future.wait_for(std::chrono::seconds(0)) !=
         std::future_status::ready) return true;
-    const bool loaded = state.scene_load_future.get();
+    // Adoption only happens between XR frames, with a valid render pass. If
+    // Android suspended the session, keep the finished CPU scene pending.
+    if(state.device==VK_NULL_HANDLE||state.render_pass==VK_NULL_HANDLE)return true;
+    bool loaded=false;
+    try{
+        loaded=state.scene_load_future.get();
+        if(loaded&&state.map_transfer)
+            state.loading_scene->RestoreTransferredProgress(state.transferred_progress,state.transferred_slot);
+    }catch(const std::exception& error){
+        HPVR_LOGE("[hpvr.quest.scene.async] status=LOAD_EXCEPTION map=%u reason=%s",state.loading_map_id,error.what());
+        loaded=false;
+    }catch(...){
+        HPVR_LOGE("[hpvr.quest.scene.async] status=LOAD_EXCEPTION map=%u",state.loading_map_id);
+        loaded=false;
+    }
     if (!loaded) {
+        SceneLoadTrace::Append(state.save_root,state.loading_map_id,"TRANSFER_CPU_FAILED");
         state.scene_load_failed = true;
-        HPVR_LOGE("[hpvr.quest.scene.async] status=LOAD_FAILED");
+        state.loading_scene.reset();state.loading_gesture.reset();
+        HPVR_LOGE("[hpvr.quest.scene.async] status=LOAD_FAILED map=%u retained=%u",state.loading_map_id,state.map_transfer?1U:0U);
+        if(state.map_transfer){
+            state.scene.AbortMapTransition("Could not load this level. Check your installed game data.");
+            ResetSceneInput(state,false);state.map_transfer=false;
+            return true;
+        }
         return false;
     }
-    if (state.device != VK_NULL_HANDLE && state.render_pass != VK_NULL_HANDLE &&
-        !state.scene.CreateGpu(state.physical_device, state.device, state.queue,
-                               state.queue_family, state.render_pass,state.width,state.height,state.color_format,state.depth_format)) {
+    if(!CheckVk(vkDeviceWaitIdle(state.device),"map transfer idle"))return false;
+    // Retain the old CPU scene through GPU upload so a failed map can roll back
+    // without touching saves. Old GPU allocations are freed first for Quest RAM.
+    state.scene.DestroyGpu();
+    state.scene.Swap(*state.loading_scene);
+    SceneLoadTrace::Append(state.save_root,state.loading_map_id,"GPU_UPLOAD_BEGIN");
+    const auto upload=[&](){return state.scene.CreateGpu(state.physical_device,state.device,state.queue,
+        state.queue_family,state.render_pass,state.width,state.height,state.color_format,state.depth_format,
+        static_cast<unsigned>(state.swapchain_images.size()));};
+    bool uploaded=false;
+    try{uploaded=upload();}catch(const std::exception& error){
+        HPVR_LOGE("[hpvr.quest.scene.async] status=GPU_EXCEPTION reason=%s",error.what());
+    }catch(...){HPVR_LOGE("[hpvr.quest.scene.async] status=GPU_EXCEPTION");}
+    if(!uploaded){
+        SceneLoadTrace::Append(state.save_root,state.loading_map_id,"GPU_UPLOAD_FAILED");
         state.scene_load_failed = true;
-        HPVR_LOGE("[hpvr.quest.scene.async] status=GPU_UPLOAD_FAILED");
-        return false;
+        if(!CheckVk(vkDeviceWaitIdle(state.device),"map rollback idle"))return false;
+        state.scene.DestroyGpu();state.scene.Swap(*state.loading_scene);
+        state.loading_scene.reset();state.loading_gesture.reset();
+        bool recovered=false;
+        if(state.map_transfer){try{recovered=upload();}catch(...){recovered=false;}}
+        HPVR_LOGE("[hpvr.quest.scene.async] status=GPU_UPLOAD_FAILED map=%u rollback=%u",state.loading_map_id,recovered?1U:0U);
+        if(recovered){
+            state.scene.AbortMapTransition("Could not prepare this level. Your previous level is still available.");
+            ResetSceneInput(state,false);state.map_transfer=false;
+        }
+        return recovered;
     }
+    if(state.loading_gesture)state.gesture.swap(state.loading_gesture);
+    state.loading_scene.reset();state.loading_gesture.reset();
+    ResetSceneInput(state,true);state.map_transfer=false;
     state.scene_load_adopted = true;
+    SceneLoadTrace::Append(state.save_root,state.loading_map_id,"ADOPTED");
     HPVR_LOGI(
-        "[hpvr.quest.scene.async] status=ADOPTED content=HOGWARTS "
+        "[hpvr.quest.scene.async] status=ADOPTED map=%u content=HOGWARTS "
         "vertices=%u layers=%u characters=%u animation_frames=%u",
+        state.loading_map_id,
         state.scene.VertexCount(), state.scene.TextureLayerCount(),
         state.scene.CharacterCount(), state.scene.AnimationFrameCount());
     return true;
@@ -860,6 +1006,25 @@ bool XrVulkanSmoke::CreateSession() {
         return false;
     }
 
+    PFN_xrEnumerateDisplayRefreshRatesFB enumerate_refresh=nullptr;
+    xrGetInstanceProcAddr(state.xr_instance,"xrEnumerateDisplayRefreshRatesFB",reinterpret_cast<PFN_xrVoidFunction*>(&enumerate_refresh));
+    xrGetInstanceProcAddr(state.xr_instance,"xrRequestDisplayRefreshRateFB",reinterpret_cast<PFN_xrVoidFunction*>(&state.request_refresh));
+    state.refresh_rates.clear();state.requested_refresh=-1;
+    if(enumerate_refresh&&state.request_refresh){
+        unsigned count=0;
+        if(XR_SUCCEEDED(enumerate_refresh(state.session,0,&count,nullptr))&&count>0&&count<32){
+            std::vector<float> rates(count);
+            if(XR_SUCCEEDED(enumerate_refresh(state.session,count,&count,rates.data()))){
+                state.refresh_rates.push_back(0);
+                for(float hz:rates)if(std::isfinite(hz)&&hz>=60&&hz<=144){
+                    const int value=static_cast<int>(std::lround(hz));
+                    if(ValidRefreshRate(value))state.refresh_rates.push_back(value);
+                }
+                std::sort(state.refresh_rates.begin(),state.refresh_rates.end());
+                state.refresh_rates.erase(std::unique(state.refresh_rates.begin(),state.refresh_rates.end()),state.refresh_rates.end());
+            }
+        }
+    }
     XrReferenceSpaceCreateInfo space_info{};
     PFN_xrEnumeratePerformanceMetricsCounterPathsMETA enumerate_metrics=nullptr;
     state.query_metric=nullptr;state.set_metrics=nullptr;
@@ -1235,9 +1400,10 @@ bool XrVulkanSmoke::CreateSession() {
         }
     }
 
-    if (!state.scene_load_pending.load(std::memory_order_acquire) &&
+    if (!state.scene_load_future.valid() &&
         !state.scene.CreateGpu(state.physical_device, state.device, state.queue,
-                               state.queue_family, state.render_pass,state.width,state.height,state.color_format,state.depth_format)) {
+                               state.queue_family, state.render_pass,state.width,state.height,state.color_format,state.depth_format,
+                               static_cast<unsigned>(state.swapchain_images.size()))) {
         HPVR_LOGE("[hpvr.quest.session] status=SCENE_GPU_FAILED");
         DestroySession();
         return false;
@@ -1253,7 +1419,9 @@ bool XrVulkanSmoke::CreateSession() {
     state.running = false;
     state.last_predicted_time = 0;
     state.locomotion.Reset();
-    state.gesture.Reset();
+    state.rebase_head=state.have_world_head;
+    state.recenter_chord.Reset();state.input_release_pending=true;
+    state.gesture->Reset();
     state.scene.SetWandDrawing(false);
     HPVR_LOGI(
         "[hpvr.quest.session] status=CREATED width=%u height=%u images=%u "
@@ -1263,10 +1431,10 @@ bool XrVulkanSmoke::CreateSession() {
         static_cast<int>(state.color_format),
         static_cast<int>(state.depth_format),
         state.scene.IsGpuReady() ? "HOGWARTS" : "WARNER_LOADING",
-        state.scene_load_pending.load(std::memory_order_acquire)
+        state.scene_load_future.valid()
             ? 0U
             : state.scene.CharacterCount(),
-        state.scene_load_pending.load(std::memory_order_acquire)
+        state.scene_load_future.valid()
             ? 0U
             : state.scene.AnimationFrameCount());
     return true;
@@ -1274,6 +1442,7 @@ bool XrVulkanSmoke::CreateSession() {
 
 void XrVulkanSmoke::DestroySession() {
     State& state = *state_;
+    state.voice.SetListening({});state.voice_target=0;++state.voice_generation;
     state.running = false;
     state.session_state = XR_SESSION_STATE_UNKNOWN;
     if (state.device != VK_NULL_HANDLE) {
@@ -1339,6 +1508,7 @@ void XrVulkanSmoke::DestroySession() {
     state.overlay_pass = VK_NULL_HANDLE;
 
     if(state.startup_swapchain){xrDestroySwapchain(state.startup_swapchain);state.startup_swapchain=XR_NULL_HANDLE;}
+    if(state.loading_icon_swapchain){xrDestroySwapchain(state.loading_icon_swapchain);state.loading_icon_swapchain=XR_NULL_HANDLE;}
     if(state.startup_space){xrDestroySpace(state.startup_space);state.startup_space=XR_NULL_HANDLE;}
     if (state.swapchain != XR_NULL_HANDLE) {
         xrDestroySwapchain(state.swapchain);
@@ -1362,6 +1532,12 @@ void XrVulkanSmoke::DestroySession() {
 
 void XrVulkanSmoke::Destroy() {
     State& state = *state_;
+    // A CPU loader never owns Vulkan handles; join it before pending objects
+    // are released, including Activity destruction during a map transition.
+    if(state.scene_load_future.valid()){
+        try{(void)state.scene_load_future.get();}catch(...){}
+    }
+    state.loading_scene.reset();state.loading_gesture.reset();
     DestroySession();
     if (state.device != VK_NULL_HANDLE) {
         vkDestroyDevice(state.device, nullptr);
@@ -1405,7 +1581,8 @@ bool XrVulkanSmoke::PollEvents(bool* exit_requested) {
             }
             if(changed.state!=XR_SESSION_STATE_FOCUSED){
                 state.last_predicted_time=0;state.rebase_head=state.have_world_head;
-                state.gesture.Reset();state.scene.SetWandDrawing(false);
+                state.recenter_chord.Reset();
+                state.gesture->Reset();state.scene.SetWandDrawing(false);
             }
             state.session_state = changed.state;
             HPVR_LOGI("[hpvr.quest.session] state=%d",
@@ -1450,7 +1627,7 @@ bool XrVulkanSmoke::PollEvents(bool* exit_requested) {
             }
         } else if (event.type ==
                    XR_TYPE_EVENT_DATA_INTERACTION_PROFILE_CHANGED) {
-            state.gesture.Reset();
+            state.gesture->Reset();
             state.scene.SetWandDrawing(false);
             HPVR_LOGI("[hpvr.quest.input] status=PROFILE_CHANGED");
         }
@@ -1462,6 +1639,7 @@ bool XrVulkanSmoke::RenderFrame() {
     if (!state.running || state.session == XR_NULL_HANDLE) {
         return true;
     }
+    const bool scene_visible=!state.scene_load_future.valid()&&state.scene.IsGpuReady();
 
     XrFrameWaitInfo wait_info{};
     wait_info.type = XR_TYPE_FRAME_WAIT_INFO;
@@ -1508,12 +1686,12 @@ bool XrVulkanSmoke::RenderFrame() {
     if(state.local_space_change_time!=0&&frame_state.predictedDisplayTime>=state.local_space_change_time){
         state.local_space_change_time=0;state.rebase_head=state.have_world_head;
         state.cinematic_reference_valid=false;state.startup_anchor_valid=false;
-        state.sprint_enabled=false;state.gesture.Reset();state.scene.SetWandDrawing(false);
+        state.sprint_enabled=false;state.gesture->Reset();state.scene.SetWandDrawing(false);
         state.last_predicted_time=0;
         HPVR_LOGI("[hpvr.quest.locomotion] status=PRESERVE_WORLD reason=LOCAL_CHANGE");
     }
-    if(!tracking_active){state.last_predicted_time=0;state.rebase_head=state.have_world_head;}
-    state.scene.SetTrackingActive(tracking_active);
+    if(!tracking_active){state.last_predicted_time=0;state.rebase_head=state.have_world_head;state.recenter_chord.Reset();}
+    state.scene.SetTrackingActive(tracking_active&&scene_visible);
     bool frame_error = false;
     // Loading art needs its anchor before the scene becomes GPU-ready.
     if(submit_projection&&!state.startup_anchor_valid){
@@ -1527,7 +1705,7 @@ bool XrVulkanSmoke::RenderFrame() {
     std::array<Matrix4, kViewCount> wand_mvps{};
     std::array<float, 4> wand_color{1.0F, 1.0F, 1.0F, 1.0F};
     bool wand_tracked = false;
-    if (submit_projection && state.scene.IsGpuReady()) {
+    if (submit_projection && scene_visible) {
         ViewPose head_pose{
             {(views[0].pose.position.x + views[1].pose.position.x) * 0.5F,
              (views[0].pose.position.y + views[1].pose.position.y) * 0.5F,
@@ -1537,7 +1715,7 @@ bool XrVulkanSmoke::RenderFrame() {
         LocomotionInput locomotion_input{};
         ViewPose wand_local{};
         bool cast_held = false;
-        const float delta_seconds =
+        float delta_seconds =
             !tracking_active || state.last_predicted_time == 0
                 ? 0.0F
                 : std::clamp(
@@ -1546,26 +1724,42 @@ bool XrVulkanSmoke::RenderFrame() {
                           1.0e-9F,
                       0.0F, 0.05F);
         state.last_predicted_time = tracking_active?frame_state.predictedDisplayTime:0;
-        bool input_ok = state.locomotion.ObserveHead(head_pose) &&
-            SyncInput(state, frame_state.predictedDisplayTime,
+        // Recovery uses the separately retained body, never a pose observed
+        // while tracking was invalid or the headset was off.
+        bool input_ok = (!tracking_active||state.locomotion.ObserveHead(head_pose)) &&
+            SyncInput(state, frame_state.predictedDisplayTime, tracking_active,
                       &locomotion_input, &wand_local, &wand_tracked,
                       &cast_held);
-        if(tracking_active&&state.rebase_head&&state.have_world_head){
-            Matrix4 local{},world{};
-            input_ok=input_ok&&BuildRigidTransform(head_pose,&local)&&BuildRigidTransform(state.last_world_head,&world);
-            const float yaw=std::atan2(world[8],world[10])-std::atan2(local[8],local[10]);
-            input_ok=input_ok&&state.locomotion.RestoreHead(state.last_world_head.position,yaw);
-            state.rebase_head=false;state.cinematic_reference_valid=false;
+        bool recentered=false;
+        if(tracking_active&&input_ok&&(state.recenter_requested||(state.rebase_head&&state.have_world_head))){
+            const bool recovering=state.rebase_head&&state.have_world_head;
+            const auto capsule=recovering?state.last_world_capsule:state.locomotion.CapsuleCenter();
+            float yaw=state.locomotion.yaw_radians();
+            if(recovering){
+                Matrix4 local{},world{};
+                input_ok=BuildRigidTransform(head_pose,&local)&&BuildRigidTransform(state.last_world_head,&world);
+                if(input_ok)yaw=std::atan2(world[8],world[10])-std::atan2(local[8],local[10]);
+            }
+            if(input_ok&&state.locomotion.RecenterToCapsule(capsule,yaw)){
+                state.rebase_head=false;recentered=true;
+                state.cinematic_reference_valid=false;state.startup_anchor_valid=false;
+                state.gesture->Reset();state.scene.SetWandDrawing(false);
+                state.sprint_enabled=false;state.input_release_pending=true;
+                locomotion_input={};cast_held=false;wand_tracked=false;state.jump_held=false;
+                delta_seconds=0;state.last_predicted_time=0;
+                HPVR_LOGI("[hpvr.quest.recenter] reason=%s body=(%.3f,%.3f,%.3f) height=CALIBRATED progress=UNCHANGED",
+                    state.recenter_requested?"L3_R3":"TRACKING_RETURN",capsule[0],capsule[1],capsule[2]);
+            }else{input_ok=false;}
         }
         if(!tracking_active){locomotion_input={};cast_held=false;wand_tracked=false;}
         ViewPose menu_head{};
         if(tracking_active&&input_ok && state.locomotion.MapPose(head_pose,&menu_head)){
             if(state.vr_menu_requested)state.scene.ToggleVrMenu();
             const bool was_menu=state.scene.IsFrontEndVisible();
-            state.scene.UpdateFrontEnd(locomotion_input,cast_held,state.back_held,menu_head,
-                state.locomotion.yaw_radians());
             if(!cast_held)state.ui_trigger_consumed=false;
-            else if(was_menu&&!state.scene.IsFrontEndVisible())state.ui_trigger_consumed=true;
+            state.scene.UpdateFrontEnd(locomotion_input,cast_held&&!state.ui_trigger_consumed,state.back_held,menu_head,
+                state.locomotion.yaw_radians());
+            if(cast_held&&was_menu&&!state.scene.IsFrontEndVisible())state.ui_trigger_consumed=true;
             if(state.ui_trigger_consumed)cast_held=false;
             std::array<float,3> restored{};float restored_yaw=0;
             if(state.scene.ConsumePlayerPlacement(&restored,&restored_yaw))
@@ -1578,11 +1772,12 @@ bool XrVulkanSmoke::RenderFrame() {
         }
         const bool basic_held=cast_held;
         state.scene.UpdateJumpInput(tracking_active&&state.jump_held,delta_seconds);
-        locomotion_input.physics_active=tracking_active&&input_ok&&state.scene.NeedsPhysicsTick()&&
+        locomotion_input.physics_active=tracking_active&&input_ok&&!recentered&&state.scene.NeedsPhysicsTick()&&
             !state.scene.IsCutscenePlaying()&&!state.scene.IsWorldPaused();
-        if(!state.scene.CanCast()){cast_held=false;state.gesture.Reset();}
-        state.gesture.SetLessonDifficulty(state.scene.GetVrSettings().relaxed_lesson);
-        state.gesture.SetLessonRound(state.scene.LessonRound());
+        if(!state.scene.WantsGesture())state.gesture->Reset();
+        state.gesture->SetGameplayMode(!state.scene.IsGestureLesson());
+        state.gesture->SetLessonDifficulty(state.scene.GetVrSettings().relaxed_lesson);
+        state.gesture->SetLessonRound(state.scene.LessonRound());
         if (!input_ok || !state.locomotion.Tick(
                 locomotion_input, delta_seconds,
                 ResolveSceneLocomotion, &state.scene)) {
@@ -1591,8 +1786,10 @@ bool XrVulkanSmoke::RenderFrame() {
             frame_error = true;
         }
         ViewPose hud_head{};
-        if(tracking_active&&state.locomotion.MapPose(head_pose,&hud_head)){
+        if(tracking_active&&input_ok&&state.locomotion.MapPose(head_pose,&hud_head)){
+            state.scene.UpdatePlayerPose(hud_head,state.locomotion.yaw_radians(),state.locomotion.CapsuleCenter());
             state.scene.UpdateHudPose(hud_head);state.last_world_head=hud_head;state.have_world_head=true;
+            state.last_world_capsule=state.locomotion.CapsuleCenter();
         }
         ViewPose wand_world{};
         Matrix4 wand_model{};
@@ -1602,11 +1799,37 @@ bool XrVulkanSmoke::RenderFrame() {
             wand_tracked = false;
         }
         state.scene.UpdateBasicCast(wand_world,submit_projection&&wand_tracked,basic_held,delta_seconds);
+        std::array<float,3> voice_point{};
+        const bool voice_allowed=submit_projection&&tracking_active&&wand_tracked&&
+            state.scene.VoiceCaptureAllowed();
+        const auto target=voice_allowed?state.scene.VoiceTarget(&voice_point):0;
+        if(target!=state.voice_target){
+            state.voice_target=target;state.voice_target_point=voice_point;
+            if(++state.voice_generation>kVoiceMaxGeneration)state.voice_generation=1;
+        }
+        const VoiceCastArm voice_arm{state.voice_generation,state.scene.GetVrSettings().voice_cast,
+            state.voice_permission,tracking_active,voice_allowed,target>0};
+        state.voice.SetListening(voice_arm);
+        VoiceCastEvent voice_event{};
+        if(state.voice.PollEvent(voice_arm,&voice_event)){
+            if(state.scene.DispatchVoiceCast(target,state.voice_target_point,wand_world)){
+                state.gesture->Reset();
+            }else{
+                // The worker has consumed this generation. A transient game
+                // rejection must not leave the same held target unusable.
+                if(++state.voice_generation>kVoiceMaxGeneration)state.voice_generation=1;
+                HPVR_LOGI("[hpvr.quest.voice] status=GAMEPLAY_RETRY target=%d",target);
+            }
+            // Disarm this result without closing the warm microphone between
+            // consecutive casts. The next frame chooses the fresh target.
+            auto disarmed=voice_arm;disarmed.generation=state.voice_generation;disarmed.target_locked=false;
+            state.voice.SetListening(disarmed);
+        }
         GestureSample gesture_sample{};
         gesture_sample.predicted_display_time_ns =
             frame_state.predictedDisplayTime;
-        gesture_sample.tracked = wand_tracked && state.scene.CanCast();
-        gesture_sample.cast_held = cast_held;
+        gesture_sample.tracked = wand_tracked && state.scene.WantsGesture();
+        gesture_sample.cast_held = cast_held && state.scene.GestureTargetLocked();
         if (wand_tracked) {
             gesture_sample.aim_direction = {
                 -wand_model[8], -wand_model[9], -wand_model[10]};
@@ -1615,7 +1838,7 @@ bool XrVulkanSmoke::RenderFrame() {
                 wand_model[13] + gesture_sample.aim_direction[1] * 0.34F,
                 wand_model[14] + gesture_sample.aim_direction[2] * 0.34F};
         }
-        state.gesture.Advance(delta_seconds);
+        state.gesture->Advance(delta_seconds);
         ViewPose before_camera;bool before_first_person=false;
         (void)state.scene.GetCinematicCameraPose(&before_camera,&before_first_person);
         if(before_first_person!=state.cinematic_first_person)state.cinematic_reference_valid=false;
@@ -1623,12 +1846,21 @@ bool XrVulkanSmoke::RenderFrame() {
         state.scene.Advance(delta_seconds);
         // Apply the actor's final position on this same frame, avoiding a flash
         // back to the old seated VR body when the exit camera is released.
-        std::array<float,3> final_position{};float final_yaw=0;
-        if(tracking_active&&state.scene.ConsumePlayerPlacement(&final_position,&final_yaw)){
-            if(!state.locomotion.RestoreHead(final_position,final_yaw))frame_error=true;
+        std::array<float,3> final_position{},transport{};float final_yaw=0;
+        const bool placed=tracking_active&&state.scene.ConsumePlayerPlacement(&final_position,&final_yaw);
+        const bool carried=state.scene.ConsumePlayerTransport(&transport);
+        if(tracking_active&&(placed||carried)){
+            if(placed?!state.locomotion.RestoreHead(final_position,final_yaw):
+                !state.locomotion.TranslateWorld(transport))frame_error=true;
             if(state.locomotion.MapPose(head_pose,&hud_head)){
+                state.scene.UpdatePlayerPose(hud_head,state.locomotion.yaw_radians(),state.locomotion.CapsuleCenter());
                 state.scene.UpdateHudPose(hud_head);state.last_world_head=hud_head;
+                state.last_world_capsule=state.locomotion.CapsuleCenter();
             }
+            // Update rendering only; this frame's input/voice events have
+            // already been consumed. The held wand travels with the platform.
+            if(wand_tracked&&(!state.locomotion.MapPose(wand_local,&wand_world)||!BuildRigidTransform(wand_world,&wand_model)))
+                wand_tracked=false;
         }
         ViewPose cinematic_camera{};
         bool cinematic_first_person=false;
@@ -1648,39 +1880,56 @@ bool XrVulkanSmoke::RenderFrame() {
             state.locomotion.MapPose(head_pose,&presentation_head);
         if(tracking_active&&presentation_ok)
             state.scene.UpdateFrontPresentation(presentation_head,cinematic_camera_active?&cinematic_camera:nullptr,
-                cinematic_first_person,reanchor);
-        const std::uint32_t accepted_before = state.gesture.accepted_count();
-        const std::uint32_t rejected_before = state.gesture.rejected_count();
-        if (submit_projection && !state.gesture.Observe(gesture_sample)) {
+                cinematic_first_person,reanchor||recentered);
+        const std::uint32_t accepted_before = state.gesture->accepted_count();
+        const std::uint32_t rejected_before = state.gesture->rejected_count();
+        if (submit_projection && !state.gesture->Observe(gesture_sample)) {
             HPVR_LOGE("[hpvr.quest.gesture] status=FRAME_REJECTED");
             submit_projection = false;
             frame_error = true;
         }
         if (submit_projection &&
-            !state.gesture.BuildGuide(&state.gesture_guide)) {
+            !state.gesture->BuildGuide(&state.gesture_guide)) {
             HPVR_LOGE("[hpvr.quest.gesture.guide] status=FRAME_REJECTED");
             submit_projection = false;
             frame_error = true;
         }
         state.scene.SetWandDrawing(
             submit_projection &&
-            state.gesture.visual_state() == GestureVisualState::Recording);
-        if(!state.scene.CanCast())state.gesture_guide.visible=false;
-        if (state.gesture.accepted_count() != accepted_before ||
-            state.gesture.rejected_count() != rejected_before) {
+            state.gesture->visual_state() == GestureVisualState::Recording);
+        if(!state.scene.WantsGesture())state.gesture_guide.visible=false;
+        if(!state.scene.IsGestureLesson()){
+            state.gesture_guide.template_points.clear();
+            if(!ShowsGestureTrace(state.scene.GetVrSettings().casting_mode))state.gesture_guide.visible=false;
+        }
+        if (state.gesture->accepted_count() != accepted_before ||
+            state.gesture->rejected_count() != rejected_before) {
             HPVR_LOGI(
                 "[hpvr.quest.gesture.result] attempt=%u outcome=%s "
                 "score=%.6f threshold=%.6f plane=AIM_FACING "
                 "policy=SELECTED_VR_DIFFICULTY",
-                state.gesture.attempt_count(),
-                state.gesture.accepted_count() != accepted_before
+                state.gesture->attempt_count(),
+                state.gesture->accepted_count() != accepted_before
                     ? "ACCEPTED"
                     : "REJECTED",
-                state.gesture.last_score(), state.gesture.threshold());
-            if(state.gesture.rejected_count()!=rejected_before)state.scene.RejectLessonGesture();
+                state.gesture->last_score(), state.gesture->threshold());
+            if(state.gesture->rejected_count()!=rejected_before)state.scene.RejectLessonGesture();
         }
         FlipendoEvent spell_event{};
-        if (state.gesture.ConsumeEvent(&spell_event)) {
+        const auto diagnostic=state.gesture->diagnostics();
+        if(diagnostic.serial&&diagnostic.serial!=state.gesture_diagnostic_serial){
+            state.gesture_diagnostic_serial=diagnostic.serial;
+            std::ostringstream points;
+            points<<std::fixed<<std::setprecision(3);
+            for(std::size_t i=0;i<diagnostic.projected_point_count;++i)
+                points<<diagnostic.projected_points[i][0]<<','<<diagnostic.projected_points[i][1]<<';';
+            HPVR_LOGI("[hpvr.quest.gesture.shape] attempt=%u reason=%s samples=%u seconds=%.3f "
+                "extent=(%.3f,%.3f) depth=%.3f length=%.3f score=%.3f threshold=%.3f points=%s",
+                diagnostic.attempt,diagnostic.reason,diagnostic.sample_count,diagnostic.duration_seconds,
+                diagnostic.projected_extent[0],diagnostic.projected_extent[1],diagnostic.depth_span_meters,
+                diagnostic.path_length,diagnostic.score,diagnostic.threshold,points.str().c_str());
+        }
+        if (state.gesture->ConsumeEvent(&spell_event)) {
             HPVR_LOGI(
                 "[hpvr.quest.spell] status=FLIPENDO_ACCEPTED serial=%llu "
                 "score=%.6f threshold=%.6f target_lock=PRESS "
@@ -1698,7 +1947,7 @@ bool XrVulkanSmoke::RenderFrame() {
                 frame_error = true;
             }
         }
-        switch (state.gesture.visual_state()) {
+        switch (state.gesture->visual_state()) {
             case GestureVisualState::Recording:
                 wand_color = {2.6F, 1.2F, 0.25F, 1.0F};
                 break;
@@ -1779,6 +2028,15 @@ bool XrVulkanSmoke::RenderFrame() {
     }
 
     const auto vr=state.scene.IsGpuReady()?state.scene.GetVrSettings():VrSettings{};
+    if(state.scene.IsGpuReady())state.scene.SetSupportedRefreshRates(state.refresh_rates);
+    if(state.scene.IsGpuReady()&&state.request_refresh&&vr.refresh_rate!=state.requested_refresh&&
+       (state.session_state==XR_SESSION_STATE_FOCUSED||state.session_state==XR_SESSION_STATE_VISIBLE)){
+        state.requested_refresh=vr.refresh_rate;
+        if(std::ranges::find(state.refresh_rates,vr.refresh_rate)!=state.refresh_rates.end()){
+            const auto result=state.request_refresh(state.session,static_cast<float>(vr.refresh_rate));
+            HPVR_LOGI("[hpvr.quest.refresh] requested=%d result=%d",vr.refresh_rate,static_cast<int>(result));
+        }else HPVR_LOGI("[hpvr.quest.refresh] requested=%d status=UNSUPPORTED_KEEP_RUNTIME",vr.refresh_rate);
+    }
     const unsigned render_width=VrRenderExtent(state.recommended_width,vr.render_scale,state.width);
     const unsigned render_height=VrRenderExtent(state.recommended_height,vr.render_scale,state.height);
     if (submit_projection && image_index >= state.command_buffers.size()) {
@@ -1798,7 +2056,7 @@ bool XrVulkanSmoke::RenderFrame() {
     }
     if (submit_projection) {
         VkCommandBuffer command_buffer = state.command_buffers[image_index];
-        state.scene.PrepareReflections(view_projections[0],render_width,render_height,tracking_active);
+        if(scene_visible)state.scene.PrepareReflections(view_projections[0],render_width,render_height,tracking_active);
         VkCommandBufferBeginInfo command_begin{};
         command_begin.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
         command_begin.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
@@ -1809,12 +2067,14 @@ bool XrVulkanSmoke::RenderFrame() {
 
         VkClearColorValue clear_color{};
         if(submit_projection&&state.timing_pool)vkCmdResetQueryPool(command_buffer,state.timing_pool,0,8);
-        const bool clean_history=state.scene.ReflectionCaptureEnabled();
+        const bool clean_history=scene_visible&&state.scene.ReflectionCaptureEnabled();
         std::array<double,2> eye_cpu_ms{};
         const auto draw_overlay=[&](unsigned eye){
+            if(!scene_visible)return;
             state.scene.RecordGestureGuideDraw(command_buffer,render_width,render_height,view_projections[eye],state.gesture_guide);
             if(wand_tracked)state.scene.RecordWandDraw(command_buffer,render_width,render_height,wand_mvps[eye],wand_color);
             state.scene.RecordHudDraw(command_buffer,view_projections[eye]);
+            state.scene.RecordDeathFade(command_buffer);
             state.scene.RecordFrontDraw(command_buffer,view_projections[eye]);
         };
         clear_color.float32[3] = 1.0F;
@@ -1824,7 +2084,7 @@ bool XrVulkanSmoke::RenderFrame() {
             if(state.timing_pool)vkCmdWriteTimestamp(command_buffer,VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,state.timing_pool,eye*2);
             std::array<VkClearValue, 2> clear_values{};
             clear_values[0].color = clear_color;
-            if (state.scene.IsGpuReady()) {
+            if (scene_visible) {
                 clear_values[0].color.float32[0] = 0.008F;
                 clear_values[0].color.float32[1] = 0.012F;
                 clear_values[0].color.float32[2] = 0.025F;
@@ -1840,11 +2100,10 @@ bool XrVulkanSmoke::RenderFrame() {
             render_begin.pClearValues = clear_values.data();
             vkCmdBeginRenderPass(command_buffer, &render_begin,
                                  VK_SUBPASS_CONTENTS_INLINE);
-            state.scene.RecordDraw(command_buffer, render_width, render_height,
-                                   view_projections[eye]);
-            state.scene.RecordSpellDraw(
-                command_buffer, render_width, render_height,
-                view_projections[eye]);
+            if(scene_visible){
+                state.scene.RecordDraw(command_buffer,render_width,render_height,view_projections[eye],image_index*2U+eye);
+                state.scene.RecordSpellDraw(command_buffer,render_width,render_height,view_projections[eye]);
+            }
             if(!DelayReflectionOverlay(clean_history,eye))draw_overlay(eye);
             vkCmdEndRenderPass(command_buffer);
             if(state.timing_pool)vkCmdWriteTimestamp(command_buffer,VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,state.timing_pool,eye*2+1);
@@ -1852,7 +2111,7 @@ bool XrVulkanSmoke::RenderFrame() {
         }
         if (submit_projection) {
             if(state.timing_pool)vkCmdWriteTimestamp(command_buffer,VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,state.timing_pool,4);
-            state.scene.CaptureReflections(command_buffer,state.swapchain_images[image_index].image,state.depth_images[image_index],view_projections[0],render_width,render_height);
+            if(scene_visible)state.scene.CaptureReflections(command_buffer,state.swapchain_images[image_index].image,state.depth_images[image_index],view_projections[0],render_width,render_height);
             if(state.timing_pool)vkCmdWriteTimestamp(command_buffer,VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,state.timing_pool,5);
             // Both eyes finished sampling OLD history. Capture before drawing
             // left-eye UI; no feedback hole and no same-frame matrix mismatch.
@@ -1939,16 +2198,28 @@ bool XrVulkanSmoke::RenderFrame() {
     const auto& anchor=state.startup_pose;
     startup.pose.orientation={anchor.orientation[0],anchor.orientation[1],anchor.orientation[2],anchor.orientation[3]};
     startup.pose.position={anchor.position[0],anchor.position[1],anchor.position[2]};startup.size={2.8F,2.1F};
-    const bool show_startup=!state.scene.IsGpuReady()&&state.startup_anchor_valid&&state.startup_swapchain!=XR_NULL_HANDLE;
+    const bool show_startup=!scene_visible&&state.startup_anchor_valid&&state.startup_swapchain!=XR_NULL_HANDLE;
+    ViewPose icon_pose{};
+    const bool show_loading_icon=show_startup&&state.loading_icon_swapchain!=XR_NULL_HANDLE&&
+        BuildLoadingIconPose(anchor,&icon_pose);
+    XrCompositionLayerQuad loading_icon{};loading_icon.type=XR_TYPE_COMPOSITION_LAYER_QUAD;
+    loading_icon.layerFlags=XR_COMPOSITION_LAYER_BLEND_TEXTURE_SOURCE_ALPHA_BIT|XR_COMPOSITION_LAYER_UNPREMULTIPLIED_ALPHA_BIT;
+    loading_icon.space=state.startup_space;loading_icon.eyeVisibility=XR_EYE_VISIBILITY_BOTH;
+    loading_icon.subImage.swapchain=state.loading_icon_swapchain;
+    loading_icon.subImage.imageRect.offset={static_cast<std::int32_t>(LoadingIconFrame(frame_state.predictedDisplayTime)*kLoadingIconSize),0};
+    loading_icon.subImage.imageRect.extent={kLoadingIconSize,kLoadingIconSize};
+    loading_icon.pose.orientation={icon_pose.orientation[0],icon_pose.orientation[1],icon_pose.orientation[2],icon_pose.orientation[3]};
+    loading_icon.pose.position={icon_pose.position[0],icon_pose.position[1],icon_pose.position[2]};loading_icon.size={.24F,.24F};
     const XrCompositionLayerBaseHeader* layers[] = {
         reinterpret_cast<const XrCompositionLayerBaseHeader*>(&projection),
-        reinterpret_cast<const XrCompositionLayerBaseHeader*>(&startup)};
+        reinterpret_cast<const XrCompositionLayerBaseHeader*>(&startup),
+        reinterpret_cast<const XrCompositionLayerBaseHeader*>(&loading_icon)};
 
     XrFrameEndInfo end_info{};
     end_info.type = XR_TYPE_FRAME_END_INFO;
     end_info.displayTime = frame_state.predictedDisplayTime;
     end_info.environmentBlendMode = XR_ENVIRONMENT_BLEND_MODE_OPAQUE;
-    end_info.layerCount = submit_projection ? (show_startup?2U:1U) : 0U;
+    end_info.layerCount = submit_projection ? (show_loading_icon?3U:show_startup?2U:1U) : 0U;
     end_info.layers = submit_projection ? layers : nullptr;
     if (!CheckXr(xrEndFrame(state.session, &end_info), "xrEndFrame")) {
         return false;
@@ -2007,9 +2278,9 @@ bool XrVulkanSmoke::RenderFrame() {
                 state.locomotion.vertical_adjustment_m(),
                 state.scene.CurrentAnimationFrame(),
                 state.scene.AnimationFrameCount(), state.trigger_value,
-                state.gesture.attempt_count(),
-                state.gesture.accepted_count(),
-                state.gesture.rejected_count(),
+                state.gesture->attempt_count(),
+                state.gesture->accepted_count(),
+                state.gesture->rejected_count(),
                 state.gesture_guide.visible ? "VISIBLE" : "HIDDEN",
                 state.gesture_guide.template_points.size(),
                 state.gesture_guide.trail_points.size(),
@@ -2021,6 +2292,60 @@ bool XrVulkanSmoke::RenderFrame() {
 
 bool XrVulkanSmoke::IsRunning() const {
     return state_->running;
+}
+void XrVulkanSmoke::UpdateVoicePlatform(ANativeActivity* activity){
+    auto& s=*state_;
+    if(s.session_state!=XR_SESSION_STATE_FOCUSED||!IsRunning())s.voice.SetListening({});
+    const bool enabled=s.scene.GetVrSettings().voice_cast;
+    const bool request=enabled&&!s.voice_was_enabled;
+    s.voice_was_enabled=enabled;
+    const double now=WallMs();
+    if(!request&&now-s.voice_platform_poll<500)return;
+    s.voice_platform_poll=now;
+    if(!activity||!activity->vm||!activity->clazz)return;
+    JNIEnv* env=nullptr;bool attached=false;
+    jint status=activity->vm->GetEnv(reinterpret_cast<void**>(&env),JNI_VERSION_1_6);
+    if(status==JNI_EDETACHED){status=activity->vm->AttachCurrentThread(&env,nullptr);attached=status==JNI_OK;}
+    if(status!=JNI_OK||!env)return;
+    if(env->PushLocalFrame(8)!=JNI_OK){env->ExceptionClear();if(attached)activity->vm->DetachCurrentThread();return;}
+    const auto cls=env->GetObjectClass(activity->clazz);
+    const auto permission=cls?env->GetMethodID(cls,"isVoicePermissionGranted","()Z"):nullptr;
+    if(permission&&!env->ExceptionCheck())s.voice_permission=env->CallBooleanMethod(activity->clazz,permission)==JNI_TRUE;
+    if(env->ExceptionCheck()){env->ExceptionClear();s.voice_permission=false;}
+    if(cls&&request&&!s.voice_permission){
+        const auto ask=env->GetMethodID(cls,"requestVoicePermission","()V");
+        if(ask&&!env->ExceptionCheck())env->CallVoidMethod(activity->clazz,ask);
+        if(env->ExceptionCheck())env->ExceptionClear();
+    }
+    if(cls&&!s.voice_configured&&enabled){
+        const auto path_method=env->GetMethodID(cls,"getVoiceModelPath","()Ljava/lang/String;");
+        auto path=path_method&&!env->ExceptionCheck()?static_cast<jstring>(env->CallObjectMethod(activity->clazz,path_method)):nullptr;
+        if(path&&!env->ExceptionCheck()){
+            const char* utf=env->GetStringUTFChars(path,nullptr);
+            if(utf){if(*utf)s.voice_configured=s.voice.Configure(std::filesystem::path(utf));env->ReleaseStringUTFChars(path,utf);}
+        }
+        if(env->ExceptionCheck())env->ExceptionClear();
+    }
+    env->PopLocalFrame(nullptr);if(attached)activity->vm->DetachCurrentThread();
+    s.scene.SetVoiceStatus(enabled&&!s.voice_permission?1U:static_cast<unsigned>(s.voice.status()));
+    const auto microphone_error=s.voice.microphone_error();
+    if(microphone_error!=s.voice_last_error){
+        s.voice_last_error=microphone_error;
+        HPVR_LOGI("[hpvr.quest.voice] status=MICROPHONE_STATE error=%d",microphone_error);
+    }
+    if(enabled&&s.voice_configured&&(s.voice_target>0||microphone_error!=0)&&now-s.voice_diagnostic_poll>=1000){
+        s.voice_diagnostic_poll=now;
+        const auto d=s.voice.Stats();
+        HPVR_LOGI("[hpvr.quest.voice.input] target=%d generation=%llu status=%u attempts=%llu samples=%llu decoder_steps=%llu stream_renewals=%llu window=%u nonzero=%u peak=%u rms=%.1f clipped=%u keywords=%llu duration_rejects=%llu keyword_s=%.3f accepted=%llu stale=%llu retries=%llu read_zeroes=%llu errors=%llu decoder_errors=%llu error=%d waveform_log=NONE",
+            s.voice_target,static_cast<unsigned long long>(d.generation),static_cast<unsigned>(s.voice.status()),
+            static_cast<unsigned long long>(d.capture_attempts),static_cast<unsigned long long>(d.total_samples),
+            static_cast<unsigned long long>(d.decoder_steps),static_cast<unsigned long long>(d.stream_renewals),d.input_window_samples,d.input_nonzero,d.input_peak,
+            static_cast<double>(d.input_rms),d.input_clipped,static_cast<unsigned long long>(d.keyword_hits),
+            static_cast<unsigned long long>(d.duration_rejects),static_cast<double>(d.last_keyword_seconds),
+            static_cast<unsigned long long>(d.accepted_events),static_cast<unsigned long long>(d.stale_discards),
+            static_cast<unsigned long long>(d.retries),static_cast<unsigned long long>(d.read_zeroes),
+            static_cast<unsigned long long>(d.errors),static_cast<unsigned long long>(d.decoder_errors),d.last_error);
+    }
 }
 bool XrVulkanSmoke::ConsumeCommunityRequest(){return state_->scene.ConsumeCommunityRequest();}
 

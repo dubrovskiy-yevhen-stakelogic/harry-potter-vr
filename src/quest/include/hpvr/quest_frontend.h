@@ -16,6 +16,14 @@ struct StoryPage {
 };
 struct FrontAssets {
     struct BumpSpeech { std::int32_t actor_reference{}; std::vector<std::string> lines; };
+    struct MusicCue {
+        std::int32_t actor_reference{};
+        std::string tag;
+        int music_index=-1;
+        unsigned volume_percent=100;
+    };
+    unsigned map_id=0,level_music_index=3;
+    std::vector<MusicCue> music_cues;
     std::vector<BumpSpeech> bump_speech;
     std::vector<FrontTexture> textures;
     std::array<std::uint32_t,6> menu{}, paper{};
@@ -35,7 +43,7 @@ struct FrontAssets {
     std::string level_objective;
     std::string error;
 };
-bool LoadFrontAssets(const std::filesystem::path& root, FrontAssets* out);
+bool LoadFrontAssets(const std::filesystem::path& root, FrontAssets* out,unsigned map_id=0);
 std::string AudioCacheName(const wand::Hp1MpegSound& source, bool stereo=false);
 struct ProgressSave {
     unsigned health=100,lesson_passes=0;
@@ -53,6 +61,12 @@ struct ProgressSave {
     std::array<std::array<float,4>,11> cast{}; // Opening cast, then Filch, Draco, Crabbe, Goyle, Hermione, Quirrell.
     std::vector<std::int32_t> collected_beans; // Stable owned actor references, sorted.
     std::array<float,2> doors{};
+    unsigned map_id=0; // 0: Lev_Tut1; 1: Lev_Tut1b. Actor references are map-local.
+    unsigned banked_beans=0; // Beans collected on completed maps.
+    std::vector<std::int32_t> activated_events; // Sorted unique map-local one-shot references.
+    unsigned challenge_stars=0;
+    std::string graph_state; // Up to 16 KiB of event-reducer state, never executable script.
+    std::string world_state; // Up to 32 KiB of map-local actor and mover state.
 };
 bool TutorialRewardReady(const ProgressSave& progress);
 void ApplyTutorialDamage(ProgressSave& progress);
@@ -63,8 +77,12 @@ struct RewardApproach {
 };
 bool ReadProgress(const std::filesystem::path& directory,unsigned slot,ProgressSave* out);
 bool WriteProgress(const std::filesystem::path& directory,unsigned slot,ProgressSave* inout);
-enum class FrontScreen { Main, Slots, Slot, Replace, Story, Game, Pause, Stub, Cards, Report, Objective, Vr, Debug, Welcome, DemoEnd };
-enum class FrontAction { None, NewGame, Continue, StoryDone, SaveMenu, SkipScene, Resume, BeginLevel, OpenCommunity };
+enum class FrontScreen { Main, Slots, Slot, Replace, Story, Game, Pause, Stub, Cards, Report, Objective, Vr, Debug, Welcome, DemoEnd, Levels, LevelSlots, LevelStart, Controls };
+enum class FrontAction { None, NewGame, Continue, StoryDone, SaveMenu, SkipScene, Resume, BeginLevel, OpenCommunity, StartSelectedLevel };
+inline constexpr unsigned kVrControlsRow=9;
+inline constexpr unsigned kVrMenuRowCount=11;
+inline constexpr unsigned kControlsPageCount=4;
+inline constexpr float VrMenuRowY(unsigned row){return 120.0F+24.0F*float(row);}
 struct FrontQuad {
     float x=0,y=0,w=0,h=0,u=0,v=0,uw=1,vh=1;
     std::uint32_t texture=0, tint=0xffffff;
@@ -76,7 +94,10 @@ public:
     FrontScreen screen=FrontScreen::Main;
     FrontScreen paused=FrontScreen::Game;
     unsigned selection=0, slot=0, page=0;
+    unsigned selected_map=0;
+    std::vector<int> refresh_rates;
     unsigned card_page=0;
+    unsigned controls_page=0; // Help navigation must not change the story page.
     float page_time=0;
     bool page_voice_started=false;
     std::array<bool,3> occupied{};
@@ -89,6 +110,9 @@ public:
     void ToggleVrMenu();
     void ShowDemoNotice(bool finished);
     std::vector<FrontQuad> VrValueQuads(int value,bool scale) const;
+    std::vector<FrontQuad> VrRefreshQuads(int hz) const;
+    std::vector<FrontQuad> VrVoiceStatusQuads(unsigned status) const;
+    std::vector<FrontQuad> VoiceAimQuads(unsigned status) const;
     std::string message;
     void RefreshSlots();
     FrontAction Input(float move_y,bool confirm,bool back,float move_x=0);
@@ -97,7 +121,7 @@ public:
     void BeginGame();
     bool Save();
     bool Visible() const {return screen!=FrontScreen::Game;}
-    bool VrPanel() const {return screen==FrontScreen::Vr||screen==FrontScreen::Debug;}
+    bool VrPanel() const {return screen==FrontScreen::Vr||screen==FrontScreen::Debug||screen==FrontScreen::Controls;}
     bool DemoNotice() const {return screen==FrontScreen::Welcome||screen==FrontScreen::DemoEnd;}
     bool FloatingPanel() const {return VrPanel()||DemoNotice();}
     bool WorldVisible() const {return screen==FrontScreen::Game||DemoNotice()||(VrPanel()&&(vr_return==FrontScreen::Game||vr_return==FrontScreen::Welcome||vr_return==FrontScreen::DemoEnd));}
@@ -108,6 +132,7 @@ public:
     }
     std::vector<FrontQuad> Quads() const;
     std::vector<FrontQuad> BeanCounterQuads(unsigned count) const;
+    std::vector<FrontQuad> ChallengeStarQuads(unsigned count,bool report=false) const;
     std::vector<FrontQuad> HudQuads(unsigned count,bool show_beans) const;
     std::vector<FrontQuad> LessonQuads(unsigned passes,bool ready) const;
     std::string DrawKey() const;

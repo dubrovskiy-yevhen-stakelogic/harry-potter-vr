@@ -3,3 +3,6 @@
 *.bat text eol=crlf
 *.cmd text eol=crlf
 *.ps1 text eol=crlf
+
+# This UTF-8 configuration is SHA-256 pinned in the voice APK manifest.
+tools/voice/flipendo.keywords text eol=lf

@@ -1,7 +1,7 @@
 [CmdletBinding()]
 param(
     [string]$InstallRoot = 'C:\Program Files\HP',
-    [string]$UserDataRoot = 'C:\Users\user\Documents\Harry Potter',
+    [string]$UserDataRoot = (Join-Path ([Environment]::GetFolderPath('MyDocuments')) 'Harry Potter'),
     [switch]$StrictHashes
 )
 

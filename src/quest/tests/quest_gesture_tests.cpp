@@ -2,8 +2,17 @@
 #include "hpvr/hp1_gesture_c.h"
 
 #include <cstdlib>
+#include <algorithm>
+#include <array>
+#include <chrono>
+#include <cmath>
 #include <filesystem>
+#include <fstream>
 #include <iostream>
+#include <limits>
+#include <numbers>
+#include <string_view>
+#include <sstream>
 #include <vector>
 
 namespace {
@@ -13,9 +22,253 @@ void Expect(bool condition, const char* message) {
         std::exit(EXIT_FAILURE);
     }
 }
+
+using Point = std::array<float, 2>;
+void ReplayHeadsetTraces(const std::vector<Point>& pattern,float radius) {
+    const char* path=std::getenv("HPVR_TEST_GESTURE_TRACE_LOG");
+    if(path==nullptr||path[0]=='\0')return;
+    std::ifstream stream(path);Expect(stream.good(),"headset numeric trace file opens");
+    const char* expected=std::getenv("HPVR_TEST_GESTURE_EXPECT_GAMEPLAY_MATCHES");
+    const bool require_matches=expected!=nullptr&&std::string_view(expected)=="1";
+    unsigned count=0,lesson_passes=0,gameplay_passes=0;
+    std::string line;
+    while(std::getline(stream,line)){
+        const auto marker=line.find("points=");if(marker==std::string::npos)continue;
+        std::vector<Point> points;std::istringstream input(line.substr(marker+7));std::string field;
+        while(std::getline(input,field,';')){std::replace(field.begin(),field.end(),',',' ');std::istringstream pair(field);Point p{};if(pair>>p[0]>>p[1])points.push_back(p);}
+        if(points.size()<3)continue;
+        const auto score=hpvr::quest::CompareGestureShape(points,pattern,radius,true);
+        ++count;lesson_passes+=score.valid&&score.score>=.5F;
+        const auto gameplay=hpvr::quest::CompareGameplayGestureShape(points,pattern);
+        gameplay_passes+=gameplay.valid&&gameplay.score>=.5F;
+        if(require_matches)Expect(gameplay.valid&&gameplay.score>=.5F,
+            "a completed headset coil rejected by lesson tracing must pass gameplay structure");
+    }
+    Expect(count>0,"headset replay contains numeric paths");
+    std::cout<<"headset replay: "<<count<<" strokes, lesson passes="<<lesson_passes
+             <<", gameplay passes="<<gameplay_passes<<'\n';
+}
+std::vector<Point> Transform(const std::vector<Point>& points, float angle,
+                             float scale = 1.0F, bool reverse = false) {
+    std::vector<Point> result;
+    for (const auto& point : points) result.push_back({
+        2.0F + scale * (point[0] * std::cos(angle) - point[1] * std::sin(angle)),
+        -3.0F + scale * (point[0] * std::sin(angle) + point[1] * std::cos(angle))});
+    if (reverse) std::reverse(result.begin(), result.end());
+    return result;
+}
+
+std::vector<Point> MakeCoil(float turns,float inner_radius=.08F) {
+    std::vector<Point> points;
+    for(unsigned i=0;i<128;++i){
+        const float t=float(i)/127,angle=t*turns*2*std::numbers::pi_v<float>;
+        const float radius=inner_radius+(.5F-inner_radius)*t;
+        points.push_back({radius*std::cos(angle),radius*std::sin(angle)});
+    }
+    return points;
+}
+
+void TestGameplayStructure(const std::vector<Point>& reference) {
+    unsigned cases=0;
+    const auto started=std::chrono::steady_clock::now();
+    for(float turns:{1.F,1.15F,1.3F,1.5F})
+        for(float aspect:{.55F,1.F,1.8F})
+            for(unsigned degrees=0;degrees<360;degrees+=15)
+                for(bool backwards:{false,true})for(bool mirrored:{false,true}){
+                    auto points=MakeCoil(turns);
+                    for(auto& p:points)p[0]*=aspect*(mirrored?-1.F:1.F);
+                    const auto drawn=Transform(points,float(degrees)*std::numbers::pi_v<float>/180,.4F,backwards);
+                    const auto result=hpvr::quest::CompareGameplayGestureShape(drawn,reference);
+                    if(!result.valid||result.score<.5F)std::cerr<<"gameplay failure turns="<<turns<<" aspect="<<aspect<<" angle="<<degrees<<'\n';
+                    Expect(result.valid&&result.score>=.5F,
+                        "a broad single curl passes gameplay at any angle direction or handedness");
+                    ++cases;
+                }
+    std::vector<Point> line,circle,ellipse,figure_eight,zigzag,arc;
+    for(unsigned i=0;i<128;++i){
+        const float t=float(i)/127,angle=t*2*std::numbers::pi_v<float>;
+        line.push_back({t,t});
+        circle.push_back({.5F*std::cos(angle),.5F*std::sin(angle)});
+        ellipse.push_back({.2F*std::cos(angle),.5F*std::sin(angle)});
+        figure_eight.push_back({.5F*std::cos(angle),.5F*std::sin(2*angle)});
+        zigzag.push_back({t,(i%16<8)?.4F:-.4F});
+        arc.push_back({.5F*std::cos(angle*.65F),.5F*std::sin(angle*.65F)});
+    }
+    auto repeated=MakeCoil(3.F),tiny=Transform(MakeCoil(1.3F),0,.01F);
+    for(const auto* wrong:{&line,&circle,&ellipse,&figure_eight,&zigzag,&arc,&repeated,&tiny})
+        for(unsigned degrees=0;degrees<360;degrees+=15){
+            const auto drawn=Transform(*wrong,float(degrees)*std::numbers::pi_v<float>/180);
+            const auto result=hpvr::quest::CompareGameplayGestureShape(drawn,reference);
+            Expect(!result.valid||result.score<.5F,
+                "gameplay assistance rejects lines circles arcs scribbles repeated loops and tiny jitter");
+        }
+    std::uint32_t seed=0x9765211;
+    for(unsigned trial=0;trial<512;++trial){
+        std::vector<Point> wrong;
+        for(unsigned i=0;i<16;++i){
+            seed=seed*1664525U+1013904223U;const float x=float(seed>>16)/65535;
+            seed=seed*1664525U+1013904223U;wrong.push_back({x,float(seed>>16)/65535});
+        }
+        const auto result=hpvr::quest::CompareGameplayGestureShape(wrong,reference);
+        Expect(!result.valid||result.score<.5F,"unrelated random strokes cannot pass gameplay structure");
+    }
+    auto invalid=MakeCoil(1.3F);invalid[2][0]=std::numeric_limits<float>::quiet_NaN();
+    Expect(!hpvr::quest::CompareGameplayGestureShape(invalid,reference).valid&&
+           !hpvr::quest::CompareGameplayGestureShape({},reference).valid,
+           "gameplay recognition still rejects nonfinite and absent tracking");
+    invalid.assign(16385,{0,0});
+    Expect(!hpvr::quest::CompareGameplayGestureShape(invalid,reference).valid,
+           "gameplay recognition keeps the bounded input limit");
+    std::cout<<"gameplay structure: "<<cases<<" coil variations plus 704 negatives in "
+        <<std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-started).count()<<" ms host\n";
+}
+
+void TestShapeMatcher() {
+    // An invented asymmetric rune, not coordinates copied from game assets.
+    const std::vector<Point> pattern{{.10F,.90F},{.28F,.35F},{.65F,.10F},
+        {.43F,.58F},{.80F,.35F},{.64F,.88F}};
+    std::vector<Point> dense{pattern.front()};
+    for (std::size_t i = 1; i < pattern.size(); ++i) {
+        const auto parts = i * 7 + 3;
+        for (std::size_t part = 1; part <= parts; ++part) {
+            const float t = static_cast<float>(part) / static_cast<float>(parts);
+            dense.push_back({pattern[i-1][0] + (pattern[i][0]-pattern[i-1][0])*t,
+                             pattern[i-1][1] + (pattern[i][1]-pattern[i-1][1])*t});
+        }
+    }
+    std::vector<Point> line, circle, scribble, spiral;
+    std::uint32_t random = 0x1d8a9223;
+    for (int i = 0; i <= 128; ++i) {
+        const float t = static_cast<float>(i) / 128.0F;
+        line.push_back({t, t});
+        circle.push_back({.5F + .4F*std::cos(2*std::numbers::pi_v<float>*t),
+                          .5F + .4F*std::sin(2*std::numbers::pi_v<float>*t)});
+        spiral.push_back({.5F + .4F*t*std::cos(8*std::numbers::pi_v<float>*t),
+                          .5F + .4F*t*std::sin(8*std::numbers::pi_v<float>*t)});
+        random = random * 1664525U + 1013904223U;
+        const float x = static_cast<float>(random >> 16) / 65535.0F;
+        random = random * 1664525U + 1013904223U;
+        scribble.push_back({x,static_cast<float>(random >> 16)/65535.0F});
+    }
+    const auto started = std::chrono::steady_clock::now();
+    unsigned rotation_checks = 0;
+    for (int degrees = 0; degrees < 360; degrees += 5) {
+        const float angle = static_cast<float>(degrees)*std::numbers::pi_v<float>/180.0F;
+        for (bool relaxed : {false, true}) for (bool reverse : {false, true}) {
+            const auto transformed = Transform(dense,angle,relaxed ? .25F : 1.0F,reverse);
+            const auto score = hpvr::quest::CompareGestureShape(transformed,pattern,.04F,relaxed);
+            Expect(score.valid && score.score > .999F,
+                   "all rotations and stroke directions preserve the resampled shape");
+            ++rotation_checks;
+        }
+        for (const auto* negative : {&line,&circle,&spiral,&scribble}) {
+            const auto transformed = Transform(*negative,angle);
+            const auto score = hpvr::quest::CompareGestureShape(transformed,pattern,.07F,true);
+            Expect(!score.valid || score.score < .5F,
+                   "rotation/scale assistance must reject lines circles spirals and scribbles");
+        }
+    }
+    const auto small = Transform(pattern,1.234F,.25F);
+    Expect(hpvr::quest::CompareGestureShape(small,pattern,.04F,false).score < .5F,
+           "original difficulty retains physical drawing size after rotation alignment");
+    Expect(hpvr::quest::CompareGestureShape(small,pattern,.07F,true).score > .999F,
+           "relaxed difficulty keeps uniform scale assistance");
+    auto bent = pattern;
+    bent[2][0] += .16F;
+    const auto strict = hpvr::quest::CompareGestureShape(bent,pattern,.04F,false);
+    const auto relaxed = hpvr::quest::CompareGestureShape(bent,pattern,.07F,true);
+    Expect(strict.valid && relaxed.valid && relaxed.score > strict.score + .10F,
+           "wider relaxed radius must remain observably more forgiving");
+    auto invalid = pattern; invalid[2][0] = std::numeric_limits<float>::quiet_NaN();
+    Expect(!hpvr::quest::CompareGestureShape(invalid,pattern,.04F,true).valid,
+           "nonfinite points fail closed");
+    invalid[2][0] = std::numeric_limits<float>::infinity();
+    Expect(!hpvr::quest::CompareGestureShape(invalid,pattern,.04F,true).valid,
+           "infinite points fail closed");
+    invalid.assign(16385,Point{0,0});
+    Expect(!hpvr::quest::CompareGestureShape(invalid,pattern,.04F,true).valid,
+           "oversized sample arrays are rejected before traversal");
+    Expect(!hpvr::quest::CompareGestureShape({},pattern,.04F,true).valid &&
+           !hpvr::quest::CompareGestureShape(pattern,pattern,-1.0F,true).valid &&
+           !hpvr::quest::CompareGestureShape(line,pattern,.04F,true).valid,
+           "empty strokes invalid accuracy and degenerate geometry fail closed");
+    std::cout << "rotation matcher: " << rotation_checks << " positive angle/direction cases, "
+              << std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-started).count()
+              << " ms host verification\n";
+}
+
+void TestNaturalStrokeVariants(const std::vector<Point>& pattern,float radius) {
+    std::vector<Point> dense;
+    for(std::size_t i=1;i<pattern.size();++i)for(unsigned part=0;part<8;++part){
+        const float t=static_cast<float>(part)/8;
+        dense.push_back({pattern[i-1][0]+(pattern[i][0]-pattern[i-1][0])*t,
+                         pattern[i-1][1]+(pattern[i][1]-pattern[i-1][1])*t});
+    }
+    dense.push_back(pattern.back());
+    unsigned cases=0;
+    for(float aspect:{.4F,.55F,.75F,1.F,1.4F,2.F,2.5F})
+        for(unsigned degrees=0;degrees<360;degrees+=30)for(bool reverse:{false,true}) {
+            std::vector<Point> distorted=dense;
+            for(auto& p:distorted)p[0]*=aspect;
+            auto input=Transform(distorted,float(degrees)*std::numbers::pi_v<float>/180,.75F,reverse);
+            const auto exact=hpvr::quest::CompareGestureShape(input,pattern,radius,true);
+            if(!exact.valid||exact.score<.5F)
+                std::cerr<<"aspect failure "<<aspect<<" angle "<<degrees<<" reverse "<<reverse<<" score "<<exact.score<<'\n';
+            Expect(exact.valid&&exact.score>=.5F,"bounded aspect distortion keeps a recognizable rune at any angle");
+            ++cases;
+        }
+    // Tiny wrist tremor is not an intentional second stroke. This deliberately
+    // is not the exact resampled template used by the C48 rotation tests.
+    auto noisy=dense;
+    for(std::size_t i=1;i+1<noisy.size();++i){
+        noisy[i][0]+=.008F*std::sin(float(i)*1.7F);
+        noisy[i][1]+=.008F*std::cos(float(i)*2.3F);
+    }
+    for(unsigned degrees=0;degrees<360;degrees+=30){
+        const auto input=Transform(noisy,float(degrees)*std::numbers::pi_v<float>/180);
+        const auto match=hpvr::quest::CompareGestureShape(input,pattern,radius,true);
+        Expect(match.valid&&match.score>=.5F,"millimeter wrist tremor does not destroy a complete rune");
+    }
+    auto tails=dense;
+    tails.insert(tails.begin(),{dense.front()[0]-.025F,dense.front()[1]+.025F});
+    tails.push_back({dense.back()[0]+.035F,dense.back()[1]-.035F});
+    Expect(hpvr::quest::CompareGestureShape(tails,pattern,radius,true).score>=.5F,
+           "short lead-in and overshoot retain the rune");
+    // A wrong stroke must not become valid merely because aspect fit is allowed.
+    std::vector<Point> circle,ellipse,line,scribble;
+    std::uint32_t seed=0x944589;
+    for(unsigned i=0;i<128;++i){
+        const float angle=float(i)*2*std::numbers::pi_v<float>/127;
+        circle.push_back({.5F+.4F*std::cos(angle),.5F+.4F*std::sin(angle)});
+        ellipse.push_back({.5F+.16F*std::cos(angle),.5F+.4F*std::sin(angle)});
+        line.push_back({float(i)/127,float(i)/127+.001F*std::sin(angle*3)});
+        seed=seed*1664525U+1013904223U;const float x=float(seed>>16)/65535;
+        seed=seed*1664525U+1013904223U;scribble.push_back({x,float(seed>>16)/65535});
+    }
+    for(const auto* negative:{&circle,&ellipse,&line,&scribble})
+        for(unsigned degrees=0;degrees<360;degrees+=30){
+            const auto input=Transform(*negative,float(degrees)*std::numbers::pi_v<float>/180);
+            const auto match=hpvr::quest::CompareGestureShape(input,pattern,radius,true);
+            Expect(!match.valid||match.score<.5F,"aspect assistance still rejects unrelated strokes");
+        }
+    // Independent random paths, not just one conveniently chosen scribble.
+    for(unsigned trial=0;trial<64;++trial){
+        std::vector<Point> wrong;
+        for(unsigned i=0;i<16;++i){
+            seed=seed*1664525U+1013904223U;const float x=float(seed>>16)/65535;
+            seed=seed*1664525U+1013904223U;wrong.push_back({x,float(seed>>16)/65535});
+        }
+        const auto match=hpvr::quest::CompareGestureShape(wrong,pattern,radius,true);
+        Expect(!match.valid||match.score<.5F,"random multi-turn strokes cannot pass through coverage alone");
+    }
+    std::cout<<"natural stroke variants: "<<cases<<" aspect/rotation/direction cases plus jitter/tails/negatives\n";
+}
 }  // namespace
 
 int main() {
+    TestShapeMatcher();
+    TestGameplayStructure(MakeCoil(1.3F));
+    TestNaturalStrokeVariants({{.10F,.90F},{.28F,.35F},{.65F,.10F},{.43F,.58F},{.80F,.35F},{.64F,.88F}},.0525F);
     hpvr::quest::QuestGesture gesture;
     Expect(!gesture.IsLoaded(), "fresh gesture must not claim a profile");
     hpvr::quest::GestureSample sample{};
@@ -167,27 +420,34 @@ int main() {
         // authored segment densely enough for the shipped coverage scorer. No
         // proprietary coordinates are baked into these regression tests.
         const auto trace = [&](hpvr::quest::QuestGesture& candidate,
-                               const float extent_m) {
+                               const float extent_m, const float angle = 0.0F,
+                               const bool backwards = false, const bool fast = false) {
             candidate.Reset();
             auto point = arm;
             Expect(candidate.Observe(point), "exact trace neutral must arm");
             point.cast_held = true;
             point.predicted_display_time_ns += period;
             Expect(candidate.Observe(point), "exact trace press must start");
+            const auto first_point = backwards ? template_points.back() : anchor;
+            const int partitions = fast ? 2 : 8;
             for (std::size_t index = 1; index < template_points.size(); ++index) {
-                for (int part = 1; part <= 8; ++part) {
-                    const float blend = static_cast<float>(part) / 8.0F;
-                    const auto& previous = template_points[index - 1];
-                    const auto& next = template_points[index];
+                for (int part = 1; part <= partitions; ++part) {
+                    const float blend = static_cast<float>(part) / static_cast<float>(partitions);
+                    const auto& previous = template_points[backwards ? template_points.size()-index : index-1];
+                    const auto& next = template_points[backwards ? template_points.size()-1-index : index];
                     const float x = previous.x + (next.x - previous.x) * blend;
                     const float y = previous.y + (next.y - previous.y) * blend;
-                    point.tip = {arm.tip[0], arm.tip[1] + (anchor.y - y) * extent_m,
-                                 arm.tip[2] + (x - anchor.x) * extent_m};
-                    point.predicted_display_time_ns += period;
-                    point.cast_held = index + 1 != template_points.size() || part != 8;
+                    const float dx = x-first_point.x, dy = y-first_point.y;
+                    const float rotated_x = dx*std::cos(angle)-dy*std::sin(angle);
+                    const float rotated_y = dx*std::sin(angle)+dy*std::cos(angle);
+                    point.tip = {arm.tip[0], arm.tip[1]-rotated_y*extent_m,
+                                 arm.tip[2]+rotated_x*extent_m};
+                    point.predicted_display_time_ns += fast ? period/2 : period;
+                    point.cast_held = index + 1 != template_points.size() || part != partitions;
                     Expect(candidate.Observe(point), "exact trace sample must score safely");
                 }
             }
+            return point.tip;
         };
         hpvr::quest::QuestGesture original;
         Expect(original.LoadFlipendoProfile(root), "original recognizer must load");
@@ -210,6 +470,119 @@ int main() {
         trace(original, 0.42F * 0.25F);
         Expect(original.visual_state() == hpvr::quest::GestureVisualState::Accepted,
                "the difficulty option must restore the same compressed-trace assist");
+        const auto completed=original.diagnostics();
+        Expect(completed.serial>0 && completed.attempt==original.attempt_count() &&
+                   std::string_view(completed.reason)=="MATCHED" && completed.sample_count>32 &&
+                   completed.projected_point_count==32 && completed.duration_seconds>0 &&
+                   completed.projected_extent[0]>0 && completed.projected_extent[1]>0 &&
+                   std::isfinite(completed.depth_span_meters) && completed.path_length>0 &&
+                   completed.score>=completed.threshold,
+               "completed diagnostics retain bounded projected shape and actual score");
+        original.Reset();
+        Expect(original.diagnostics().serial==completed.serial,
+               "idle reset never repeats an old diagnostic event");
+
+        hpvr::quest::QuestGesture cancellation;
+        Expect(cancellation.LoadFlipendoProfile(root),"diagnostic recognizer loads");
+        cancellation.SetLessonDifficulty(true);
+        auto canceled_sample=arm;
+        Expect(cancellation.Observe(canceled_sample),"neutral input arms diagnostics");
+        canceled_sample.cast_held=true;canceled_sample.predicted_display_time_ns+=period;
+        Expect(cancellation.Observe(canceled_sample),"diagnostic attempt begins");
+        canceled_sample.predicted_display_time_ns+=100'000'001;
+        Expect(cancellation.Observe(canceled_sample),"gap cancellation is safe");
+        Expect(std::string_view(cancellation.diagnostics().reason)=="TIMING_GAP" &&
+                   cancellation.diagnostics().serial==1 && cancellation.rejected_count()==0,
+               "unscored gap cancellation is distinguishable from shape rejection");
+        canceled_sample.cast_held=false;canceled_sample.predicted_display_time_ns+=period;
+        Expect(cancellation.Observe(canceled_sample),"release rearms after gap");
+        canceled_sample.cast_held=true;canceled_sample.predicted_display_time_ns+=period;
+        Expect(cancellation.Observe(canceled_sample),"new attempt after cancellation starts");
+        cancellation.Reset();
+        Expect(cancellation.diagnostics().serial==2 &&
+                   std::string_view(cancellation.diagnostics().reason)=="EXTERNAL_RESET",
+               "external target/menu reset reports one cancellation rather than disappearing");
+
+        unsigned owned_rotation_checks = 0;
+        for (bool relaxed_mode : {false,true}) {
+            original.SetLessonDifficulty(relaxed_mode);
+            for (int degrees = 0; degrees < 360; degrees += 15) for (bool backwards : {false,true}) {
+                const float angle = static_cast<float>(degrees)*std::numbers::pi_v<float>/180.0F;
+                const auto last_tip = trace(original,relaxed_mode ? .105F : .42F,angle,backwards,true);
+                Expect(original.visual_state() == hpvr::quest::GestureVisualState::Accepted &&
+                           original.ConsumeEvent(&event),
+                       "fast owned rune passes arbitrary in-plane angles and either direction");
+                hpvr::quest::GestureGuide feedback;
+                Expect(original.BuildGuide(&feedback) && !feedback.trail_points.empty(),
+                       "rotated stroke retains visual feedback");
+                const auto& end = feedback.trail_points.back();
+                Expect(std::abs(end[0]-last_tip[0])<1.0e-5F && std::abs(end[1]-last_tip[1])<1.0e-5F &&
+                           std::abs(end[2]-last_tip[2])<1.0e-5F,
+                       "recognition alignment does not rotate or rescale the real visible trail");
+                ++owned_rotation_checks;
+            }
+        }
+        std::cout << "owned Flipendo: " << owned_rotation_checks << " fast rotation/direction cases\n";
+        std::vector<Point> owned_pattern, owned_line, owned_circle, owned_scribble;
+        for (const auto& vertex : template_points) owned_pattern.push_back({vertex.x,vertex.y});
+        TestGameplayStructure(owned_pattern);
+        ReplayHeadsetTraces(owned_pattern,profile.accuracy_radius*1.75F);
+        hpvr::quest::QuestGesture gameplay;
+        Expect(gameplay.LoadFlipendoProfile(root),"gameplay recognizer loads the owned spell identity");
+        gameplay.SetLessonDifficulty(false);
+        gameplay.SetLessonRound(3);
+        gameplay.SetGameplayMode(true);
+        Expect(!gameplay.relaxed_difficulty()&&gameplay.threshold()==profile.pass_marks[0]&&
+                   gameplay.time_limit_seconds()==0,
+               "gameplay policy is independent of the selected lesson difficulty and round");
+        auto gameplay_point=arm;
+        gameplay_point.aim_direction={0,0,-1};
+        Expect(gameplay.Observe(gameplay_point),"fresh gameplay context arms on release");
+        gameplay_point.cast_held=true;gameplay_point.predicted_display_time_ns+=10'000'000;
+        Expect(gameplay.Observe(gameplay_point),"gameplay press locks target and begins capture");
+        const auto coil=Transform(MakeCoil(1.1F),1.123F,.4F,true);
+        for(std::size_t i=1;i<coil.size();++i){
+            gameplay_point.tip={arm.tip[0]+(coil[i][0]-coil.front()[0])*.42F,
+                arm.tip[1]-(coil[i][1]-coil.front()[1])*.42F,arm.tip[2]};
+            gameplay_point.predicted_display_time_ns+=8'000'000;
+            gameplay_point.cast_held=i+1<coil.size();
+            Expect(gameplay.Observe(gameplay_point),"fast natural gameplay stroke captures without canceling");
+        }
+        Expect(gameplay.ConsumeEvent(&event)&&event.locked_origin==arm.tip&&
+                   event.locked_direction==std::array<float,3>{0,0,-1}&&
+                   !gameplay.ConsumeEvent(&event),
+               "a fast gameplay coil casts exactly once at the press-time target");
+        gameplay.SetGameplayMode(false);
+        Expect(!gameplay.relaxed_difficulty()&&gameplay.lesson_round()==3&&
+                   gameplay.effective_accuracy()==profile.accuracy_radius&&
+                   gameplay.threshold()==profile.pass_marks[3]&&
+                   gameplay.time_limit_seconds()==profile.draw_time_seconds,
+               "returning to class restores exact strict lesson size accuracy tier and deadline");
+        gameplay.SetLessonDifficulty(true);gameplay.SetGameplayMode(true);gameplay.Reset();gameplay.SetGameplayMode(false);
+        Expect(gameplay.relaxed_difficulty()&&gameplay.threshold()==profile.pass_marks[0]&&
+                   gameplay.effective_accuracy()==profile.accuracy_radius*1.75F&&
+                   gameplay.time_limit_seconds()==0,
+               "gameplay transitions also preserve the separately selected relaxed lesson policy");
+        TestNaturalStrokeVariants(owned_pattern,profile.accuracy_radius*1.75F);
+        std::uint32_t seed = 0x5177219;
+        for (int i = 0; i <= 128; ++i) {
+            const float t = static_cast<float>(i)/128.0F;
+            owned_line.push_back({t,t});
+            owned_circle.push_back({.5F+.4F*std::cos(t*2*std::numbers::pi_v<float>),
+                                    .5F+.4F*std::sin(t*2*std::numbers::pi_v<float>)});
+            seed=seed*1664525U+1013904223U;
+            const float x=static_cast<float>(seed>>16)/65535.0F;
+            seed=seed*1664525U+1013904223U;
+            owned_scribble.push_back({x,static_cast<float>(seed>>16)/65535.0F});
+        }
+        for (const auto* negative : {&owned_line,&owned_circle,&owned_scribble}) {
+            for (int degrees=0; degrees<360; degrees+=15) {
+                const auto input=Transform(*negative,static_cast<float>(degrees)*std::numbers::pi_v<float>/180.0F);
+                const auto result=hpvr::quest::CompareGestureShape(input,owned_pattern,profile.accuracy_radius*1.75F,true);
+                Expect(!result.valid || result.score<profile.pass_marks[0],
+                       "even relaxed owned Flipendo rejects rotated line circle and scribble shapes");
+            }
+        }
 
         hpvr::quest::QuestGesture deadline;
         Expect(deadline.LoadFlipendoProfile(root), "deadline recognizer must load");

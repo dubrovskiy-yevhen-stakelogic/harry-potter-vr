@@ -1,4 +1,6 @@
 #include "hpvr/hp1_package_linker.h"
+#include "hp1_lightmap_baker.h"
+#include "hp1_lightmap_repair.h"
 
 #include <algorithm>
 #include <cctype>
@@ -15,59 +17,6 @@ namespace hpvr::wand {
 namespace {
 
 constexpr std::size_t kMaximumResolvedImports{1'000'000};
-constexpr std::uint32_t kLightmapGutter{1};
-
-[[nodiscard]] float dot(Hp1BspVector a, Hp1BspVector b) noexcept {
-    return a.x * b.x + a.y * b.y + a.z * b.z;
-}
-
-[[nodiscard]] Hp1BspVector cross(Hp1BspVector a, Hp1BspVector b) noexcept {
-    return {a.y * b.z - a.z * b.y,
-            a.z * b.x - a.x * b.z,
-            a.x * b.y - a.y * b.x};
-}
-
-[[nodiscard]] std::optional<Hp1BspVector> solve_plane_coordinates(
-    Hp1BspVector u, Hp1BspVector v, Hp1BspVector n,
-    float u_value, float v_value, float n_value) {
-    const auto vx_n = cross(v, n);
-    const auto nx_u = cross(n, u);
-    const auto ux_v = cross(u, v);
-    const float determinant = dot(u, vx_n);
-    if (!std::isfinite(determinant) || std::abs(determinant) < 1.0e-10F) {
-        return std::nullopt;
-    }
-    const float inverse = 1.0F / determinant;
-    return Hp1BspVector{
-        (u_value * vx_n.x + v_value * nx_u.x + n_value * ux_v.x) * inverse,
-        (u_value * vx_n.y + v_value * nx_u.y + n_value * ux_v.y) * inverse,
-        (u_value * vx_n.z + v_value * nx_u.z + n_value * ux_v.z) * inverse};
-}
-
-[[nodiscard]] std::array<float, 3> hsb_light_color(
-    std::uint8_t hue, std::uint8_t saturation) {
-    const float h = static_cast<float>(hue) * 6.0F / 255.0F;
-    const float s = 1.0F - static_cast<float>(saturation) / 255.0F;
-    const float x = s * (1.0F - std::abs(std::fmod(h, 2.0F) - 1.0F));
-    std::array<float, 3> rgb{};
-    if (h < 1.0F) rgb = {s, x, 0.0F};
-    else if (h < 2.0F) rgb = {x, s, 0.0F};
-    else if (h < 3.0F) rgb = {0.0F, s, x};
-    else if (h < 4.0F) rgb = {0.0F, x, s};
-    else if (h < 5.0F) rgb = {x, 0.0F, s};
-    else rgb = {s, 0.0F, x};
-    for (float& channel : rgb) channel += 1.0F - s;
-    return rgb;
-}
-
-[[nodiscard]] std::uint8_t encode_linear(float value) noexcept {
-    value = std::clamp(value, 0.0F, 1.0F);
-    const float srgb = value <= 0.0031308F
-                           ? value * 12.92F
-                           : 1.055F * std::pow(value, 1.0F / 2.4F) - 0.055F;
-    return static_cast<std::uint8_t>(std::lround(srgb * 255.0F));
-}
-
 class LinkException final : public std::runtime_error {
 public:
     LinkException(Hp1PackageLinkStatus status, std::string message)
@@ -449,7 +398,8 @@ Hp1CharacterManifest build_hp1_character_manifest(
     const std::filesystem::path& data_root,
     const std::filesystem::path& map_package,
     std::int32_t excluded_actor_reference,
-    const std::vector<Hp1ActorVisual>& additional_actors) {
+    const std::vector<Hp1ActorVisual>& additional_actors,
+    bool include_decorations) {
     Hp1CharacterManifest result;
     try {
         auto census = inspect_hp1_actor_visuals(map_package);
@@ -578,6 +528,11 @@ Hp1CharacterManifest build_hp1_character_manifest(
                    (ascii_equal_fold(object_path.back(), "baseChar") ||
                     ascii_equal_fold(object_path.back(), "baseHarry"));
         };
+        const auto is_decoration_base = [](std::string_view package_name,
+                                           const auto& object_path) {
+            return ascii_equal_fold(package_name,"HPBase")&&!object_path.empty()&&
+                ascii_equal_fold(object_path.back(),"baseProps");
+        };
 
         const auto map_source = map_package.stem().string();
         result.inspected_actor_count = census.actors.size();
@@ -605,6 +560,7 @@ Hp1CharacterManifest build_hp1_character_manifest(
                                                 actor.mesh_reference)
                             : std::optional<ResolvedReference>{};
             bool character = false;
+            bool decoration = false;
             std::map<std::size_t, Hp1CharacterSkinOverride> skins;
             const auto collect_skins = [&](const auto& properties, const std::string& source) {
                 for (const auto& property : properties) {
@@ -631,6 +587,8 @@ Hp1CharacterManifest build_hp1_character_manifest(
                 character = character || is_character_base(
                                              current_class->package_name,
                                              current_class->object_path);
+                decoration = decoration || is_decoration_base(
+                    current_class->package_name,current_class->object_path);
                 const auto defaults = inspect_hp1_class_visual_defaults(
                     current_class->package_path,
                     current_class->reference);
@@ -657,7 +615,11 @@ Hp1CharacterManifest build_hp1_character_manifest(
                     defaults.draw_type_serialized) {
                     draw_type = defaults.draw_type;
                 }
-                if (character && mesh.has_value()) {
+                // HPBase.baseProps is the owned visual boundary for HProps.
+                // Continuing into its native Engine.Decoration parent cannot
+                // resolve a UClass export and previously rejected every prop.
+                // Character-only callers retain their original admission rule.
+                if ((character || (include_decorations&&decoration)) && mesh.has_value()) {
                     break;
                 }
                 if (defaults.super_reference == 0) {
@@ -677,7 +639,7 @@ Hp1CharacterManifest build_hp1_character_manifest(
                 ++result.unresolved_class_count;
                 continue;
             }
-            if (!character) {
+            if (!character && !include_decorations) {
                 ++result.non_character_actor_count;
                 continue;
             }
@@ -723,20 +685,136 @@ Hp1CharacterManifest build_hp1_character_manifest(
     return result;
 }
 
+struct Hp1BspBuildContext::Data {
+    struct Stamp {
+        std::filesystem::path path;
+        std::uintmax_t size{};
+        std::filesystem::file_time_type modified{};
+    };
+    Hp1ProfileStatus status{Hp1ProfileStatus::invalid_profile};
+    std::string error;
+    std::filesystem::path root, map;
+    std::vector<Stamp> stamps;
+    Hp1PackageLinkResult linked;
+    Hp1ActorVisualCensus actors;
+    std::map<std::string,std::filesystem::path> package_paths;
+    std::map<std::int32_t,const Hp1ResolvedImport*> imports;
+    std::map<std::int32_t,const Hp1ActorVisual*> light_actors;
+};
+
+Hp1ProfileStatus Hp1BspBuildContext::status() const noexcept {
+    return data_ ? data_->status : Hp1ProfileStatus::invalid_profile;
+}
+std::string_view Hp1BspBuildContext::error() const noexcept {
+    return data_ ? std::string_view(data_->error) : "BSP build context is empty";
+}
+
+Hp1BspBuildContext prepare_hp1_bsp_build_context(
+    const std::filesystem::path& data_root,
+    const std::filesystem::path& map_package) {
+    Hp1BspBuildContext result;
+    auto data=std::make_shared<Hp1BspBuildContext::Data>();
+    try {
+        data->root=std::filesystem::weakly_canonical(data_root);
+        data->map=std::filesystem::weakly_canonical(map_package);
+        data->linked=link_hp1_package_graph(data_root,map_package);
+        if(data->linked.status!=Hp1PackageLinkStatus::ok){
+            data->error="package link failed: "+data->linked.error;
+        }else{
+            data->actors=inspect_hp1_actor_visuals(map_package);
+            if(data->actors.status!=Hp1ProfileStatus::ok){
+                data->status=data->actors.status;
+                data->error="light actor census failed: "+data->actors.error;
+            }else{
+                for(const auto& package:data->linked.graph.packages){
+                    if(package.kind!=Hp1ResolvedPackageKind::data_package)continue;
+                    data->package_paths.emplace(ascii_fold(package.package_name),package.path);
+                    data->stamps.push_back({package.path,std::filesystem::file_size(package.path),
+                        std::filesystem::last_write_time(package.path)});
+                }
+                const auto source_name=ascii_fold(map_package.stem().string());
+                for(const auto& imported:data->linked.imports)
+                    if(ascii_fold(imported.source_package)==source_name)
+                        data->imports.emplace(imported.source_reference,&imported);
+                for(const auto& actor:data->actors.actors)
+                    if(actor.location_serialized&&actor.light_brightness>0&&actor.light_radius>0)
+                        data->light_actors.emplace(actor.actor_reference,&actor);
+                data->status=Hp1ProfileStatus::ok;
+            }
+        }
+    }catch(const std::exception& exception){
+        data->status=Hp1ProfileStatus::invalid_profile;
+        data->error=exception.what();
+    }
+    result.data_=std::move(data);
+    return result;
+}
+
+Hp1LightmapRepair repair_hp1_bsp_dark_lightmaps(
+    const std::filesystem::path& map_package, std::uint32_t maximum_triangle_count,
+    std::size_t expected_decoded_lightmaps, std::uint32_t atlas_width,
+    std::uint32_t atlas_height, std::vector<std::uint8_t>& atlas_rgba8) {
+    Hp1LightmapRepair result;
+    try {
+        if(ascii_fold(map_package.stem().string())!="lev_tut1b") {
+            result.status=Hp1ProfileStatus::ok;
+            return result;
+        }
+        if(!maximum_triangle_count) throw std::runtime_error("lightmap repair triangle limit is zero");
+        Hp1PackageReadScope reads;
+        const auto topology=load_hp1_bsp_topology(map_package);
+        const auto actors=inspect_hp1_actor_visuals(map_package);
+        const auto mesh=build_hp1_bsp_triangle_mesh(topology,0.02F);
+        return detail::RepairDarkLightmapAtlas(topology,mesh,actors,
+            std::min<std::size_t>(mesh.triangles.size(),maximum_triangle_count),
+            expected_decoded_lightmaps,atlas_width,atlas_height,atlas_rgba8);
+    } catch(const std::exception& exception) {
+        result.error=exception.what();
+        return result;
+    }
+}
+
 Hp1TexturedBspScene build_hp1_textured_bsp_scene(
     const std::filesystem::path& data_root,
     const std::filesystem::path& map_package,
     float meters_per_unreal_unit,
     std::uint32_t maximum_triangle_count,
-    std::int32_t brush_model_reference) {
+    std::int32_t brush_model_reference,
+    const Hp1BspBuildContext* context,
+    bool authored_brush_polygons) {
     Hp1TexturedBspScene result;
     try {
         if (maximum_triangle_count == 0) {
             result.error = "textured BSP triangle limit is zero";
             return result;
         }
+        Hp1BspBuildContext local_context;
+        if(!context){
+            local_context=prepare_hp1_bsp_build_context(data_root,map_package);
+            context=&local_context;
+        }
+        if(context->status()!=Hp1ProfileStatus::ok){
+            result.status=context->status();
+            result.error=std::string(context->error());
+            return result;
+        }
+        const auto& prepared=*context->data_;
+        if(prepared.root!=std::filesystem::weakly_canonical(data_root)||
+           prepared.map!=std::filesystem::weakly_canonical(map_package)){
+            result.error="BSP build context belongs to a different data root or map";
+            return result;
+        }
+        for(const auto& stamp:prepared.stamps){
+            if(std::filesystem::file_size(stamp.path)!=stamp.size||
+               std::filesystem::last_write_time(stamp.path)!=stamp.modified){
+                result.error="BSP dependency changed during scene preparation: "+stamp.path.string();
+                return result;
+            }
+        }
         const auto topology = brush_model_reference > 0
-            ? load_hp1_brush_topology(map_package, brush_model_reference)
+            ? (authored_brush_polygons
+                ? load_hp1_brush_polygon_topology(map_package, brush_model_reference)
+                : load_hp1_brush_topology(map_package, brush_model_reference))
             : load_hp1_bsp_topology(map_package);
         if (topology.status != Hp1ProfileStatus::ok) {
             result.status = topology.status;
@@ -750,98 +828,21 @@ Hp1TexturedBspScene build_hp1_textured_bsp_scene(
             result.error = mesh.error;
             return result;
         }
-        const auto linked = link_hp1_package_graph(data_root, map_package);
-        if (linked.status != Hp1PackageLinkStatus::ok) {
-            result.error = "package link failed: " + linked.error;
-            return result;
-        }
-
         const auto selected_count = std::min<std::size_t>(
             mesh.triangles.size(), maximum_triangle_count);
         result.available_triangle_count = mesh.triangles.size();
         result.selected_triangle_count = selected_count;
         result.omitted_triangle_count = mesh.triangles.size() - selected_count;
 
-        std::map<std::string, std::filesystem::path> package_paths;
-        for (const auto& package : linked.graph.packages) {
-            if (package.kind == Hp1ResolvedPackageKind::data_package) {
-                package_paths.emplace(
-                    ascii_fold(package.package_name), package.path);
-            }
-        }
-        const auto source_name = ascii_fold(map_package.stem().string());
-        std::map<std::int32_t, const Hp1ResolvedImport*> imports;
-        for (const auto& imported : linked.imports) {
-            if (ascii_fold(imported.source_package) == source_name) {
-                imports.emplace(imported.source_reference, &imported);
-            }
-        }
+        const auto& package_paths=prepared.package_paths;
+        const auto& imports=prepared.imports;
+        const auto light_actors=detail::GatherLightSources(prepared.actors);
+        const detail::DarkZoneAmbient dark_zone_ambient(topology, prepared.actors,
+            brush_model_reference == 0 && ascii_fold(map_package.stem().string()) == "lev_tut1b");
 
-        const auto actors = inspect_hp1_actor_visuals(map_package);
-        if (actors.status != Hp1ProfileStatus::ok) {
-            result.status = actors.status;
-            result.error = "light actor census failed: " + actors.error;
-            return result;
-        }
-        std::map<std::int32_t, const Hp1ActorVisual*> light_actors;
-        for (const auto& actor : actors.actors) {
-            if (actor.location_serialized && actor.light_brightness > 0 &&
-                actor.light_radius > 0) {
-                light_actors.emplace(actor.actor_reference, &actor);
-            }
-        }
-
-        struct LightmapPlacement {
-            std::uint32_t x{};
-            std::uint32_t y{};
-            std::int32_t surface{-1};
-        };
-        std::vector<LightmapPlacement> placements(topology.light_maps.size());
-        for (std::size_t index = 0; index < selected_count; ++index) {
-            const auto& triangle = mesh.triangles[index];
-            const auto& surface = topology.surfaces[triangle.surface_index];
-            if (surface.light_map_index >= 0) {
-                placements[static_cast<std::size_t>(surface.light_map_index)]
-                    .surface = static_cast<std::int32_t>(
-                        triangle.surface_index);
-            }
-        }
-        for (const std::uint32_t atlas_size : {512U, 1024U, 2048U, 4096U}) {
-            std::uint32_t cursor_x = kLightmapGutter;
-            std::uint32_t cursor_y = kLightmapGutter;
-            std::uint32_t row_height = 0;
-            bool fits = true;
-            for (std::size_t index = 0; index < placements.size(); ++index) {
-                if (placements[index].surface < 0) continue;
-                const auto& light_map = topology.light_maps[index];
-                const auto width = static_cast<std::uint32_t>(
-                    light_map.u_clamp) + kLightmapGutter * 2U;
-                const auto height = static_cast<std::uint32_t>(
-                    light_map.v_clamp) + kLightmapGutter * 2U;
-                if (cursor_x + width > atlas_size) {
-                    cursor_x = kLightmapGutter;
-                    cursor_y += row_height;
-                    row_height = 0;
-                }
-                if (cursor_y + height > atlas_size) {
-                    fits = false;
-                    break;
-                }
-                placements[index].x = cursor_x + kLightmapGutter;
-                placements[index].y = cursor_y + kLightmapGutter;
-                cursor_x += width;
-                row_height = std::max(row_height, height);
-            }
-            if (fits) {
-                result.lightmap_width = atlas_size;
-                result.lightmap_height = atlas_size;
-                break;
-            }
-        }
-        if (result.lightmap_width == 0) {
-            result.error = "BSP light maps do not fit the 4096 atlas cap";
-            return result;
-        }
+        const auto layout = detail::MakeLightmapLayout(topology, mesh, selected_count);
+        const auto& placements = layout.placements;
+        result.lightmap_width = result.lightmap_height = layout.size;
         result.lightmap_rgba8.assign(
             static_cast<std::size_t>(result.lightmap_width) *
                 result.lightmap_height * 4U,
@@ -899,6 +900,7 @@ Hp1TexturedBspScene build_hp1_textured_bsp_scene(
                 result.error = "texture layer count exceeds uint32";
                 return result;
             }
+            material.masked=material.masked||(texture.polygon_flags&2U)!=0;
             material.layer = next_layer++;
             if(result.texture_layer_names.size()<=material.layer)result.texture_layer_names.resize(material.layer+1);
             if(!target.target_object_path.empty())result.texture_layer_names[material.layer]=ascii_fold(target.target_object_path.back());
@@ -988,137 +990,11 @@ Hp1TexturedBspScene build_hp1_textured_bsp_scene(
             const auto& placement = placements[map_index];
             if (placement.surface < 0) continue;
             const auto& light_map = topology.light_maps[map_index];
-            const auto& surface = topology.surfaces[
-                static_cast<std::size_t>(placement.surface)];
-            const auto& base = topology.points[
-                static_cast<std::size_t>(surface.base_point_index)];
-            const auto& texture_u = topology.vectors[
-                static_cast<std::size_t>(surface.texture_u_vector_index)];
-            const auto& texture_v = topology.vectors[
-                static_cast<std::size_t>(surface.texture_v_vector_index)];
-            const auto& normal = topology.vectors[
-                static_cast<std::size_t>(surface.normal_vector_index)];
-            const float normal_length = std::sqrt(std::max(dot(normal, normal),
-                                                            1.0e-12F));
-            const Hp1BspVector unit_normal{
-                normal.x / normal_length,
-                normal.y / normal_length,
-                normal.z / normal_length};
-            const float base_u = dot(texture_u, base) + light_map.pan.x -
-                                 0.5F * light_map.u_scale;
-            const float base_v = dot(texture_v, base) + light_map.pan.y -
-                                 0.5F * light_map.v_scale;
-            const float plane = dot(normal, base);
-            const std::size_t width =
-                static_cast<std::size_t>(light_map.u_clamp);
-            const std::size_t height =
-                static_cast<std::size_t>(light_map.v_clamp);
-            const std::size_t pitch = (width + 7U) / 8U;
-            const std::size_t bytes_per_light = pitch * height;
-            std::vector<std::array<std::uint8_t, 4>> pixels(width * height);
-
-            const auto visibility = [&](std::size_t light_ordinal,
-                                        int x, int y) {
-                static constexpr int kernel[3][3] = {
-                    {1, 2, 1}, {2, 4, 2}, {1, 2, 1}};
-                int sum = 0;
-                for (int ky = -1; ky <= 1; ++ky) {
-                    for (int kx = -1; kx <= 1; ++kx) {
-                        const int sx = std::clamp(x + kx, 0,
-                                                 light_map.u_clamp - 1);
-                        const int sy = std::clamp(y + ky, 0,
-                                                 light_map.v_clamp - 1);
-                        const auto byte = static_cast<std::size_t>(
-                            light_map.data_offset) +
-                            light_ordinal * bytes_per_light +
-                            static_cast<std::size_t>(sy) * pitch +
-                            static_cast<std::size_t>(sx >> 3);
-                        if ((topology.light_bits[byte] &
-                             (1U << static_cast<unsigned>(sx & 7))) != 0) {
-                            sum += kernel[ky + 1][kx + 1];
-                        }
-                    }
-                }
-                return static_cast<float>(sum) / 16.0F;
-            };
-            for (std::size_t y = 0; y < height; ++y) {
-                for (std::size_t x = 0; x < width; ++x) {
-                    std::array<float, 3> lighting{0.085F, 0.080F, 0.070F};
-                    const auto world = solve_plane_coordinates(
-                        texture_u, texture_v, normal,
-                        base_u + (static_cast<float>(x) + 0.5F) *
-                                     light_map.u_scale,
-                        base_v + (static_cast<float>(y) + 0.5F) *
-                                     light_map.v_scale,
-                        plane);
-                    if (world.has_value() &&
-                        light_map.light_actor_index >= 0) {
-                        std::size_t ordinal = 0;
-                        for (std::size_t reference_index =
-                                 static_cast<std::size_t>(
-                                     light_map.light_actor_index);
-                             reference_index <
-                                 topology.light_references.size() &&
-                             topology.light_references[reference_index] != 0;
-                             ++reference_index, ++ordinal) {
-                            const auto found = light_actors.find(
-                                topology.light_references[reference_index]);
-                            if (found == light_actors.end()) continue;
-                            const auto& actor = *found->second;
-                            const float dx = actor.location_unreal.x - world->x;
-                            const float dy = actor.location_unreal.y - world->y;
-                            const float dz = actor.location_unreal.z - world->z;
-                            const float distance_squared =
-                                dx * dx + dy * dy + dz * dz;
-                            const float radius =
-                                static_cast<float>(actor.light_radius) * 25.0F;
-                            if (!(distance_squared < radius * radius)) continue;
-                            const float distance = std::sqrt(
-                                std::max(distance_squared, 1.0e-8F));
-                            const float ratio = distance / radius;
-                            const float smooth = std::min(
-                                (1.0F + 2.0F * ratio * ratio * ratio -
-                                 3.0F * ratio * ratio) /
-                                    std::max(ratio, 1.0e-4F),
-                                1.0F);
-                            const float angle = std::abs(
-                                (dx * unit_normal.x + dy * unit_normal.y +
-                                 dz * unit_normal.z) /
-                                distance);
-                            const float amount = visibility(
-                                ordinal, static_cast<int>(x),
-                                static_cast<int>(y)) *
-                                std::max(smooth, 0.0F) * angle *
-                                (static_cast<float>(actor.light_brightness) /
-                                 255.0F) * 1.55F;
-                            const auto color = hsb_light_color(
-                                actor.light_hue, actor.light_saturation);
-                            for (std::size_t channel = 0; channel < 3;
-                                 ++channel) {
-                                lighting[channel] += color[channel] * amount;
-                            }
-                        }
-                    }
-                    pixels[y * width + x] = {
-                        encode_linear(lighting[0]),
-                        encode_linear(lighting[1]),
-                        encode_linear(lighting[2]), 255};
-                }
-            }
-            for (int y = -1; y <= light_map.v_clamp; ++y) {
-                for (int x = -1; x <= light_map.u_clamp; ++x) {
-                    const auto source_x = static_cast<std::size_t>(
-                        std::clamp(x, 0, light_map.u_clamp - 1));
-                    const auto source_y = static_cast<std::size_t>(
-                        std::clamp(y, 0, light_map.v_clamp - 1));
-                    write_lightmap_pixel(
-                        static_cast<std::uint32_t>(
-                            static_cast<int>(placement.x) + x),
-                        static_cast<std::uint32_t>(
-                            static_cast<int>(placement.y) + y),
-                        pixels[source_y * width + source_x]);
-                }
-            }
+            const auto pixels = detail::BakeLightmapTile(topology, light_actors,
+                dark_zone_ambient, placement, map_index, true);
+            detail::VisitLightmapTile(light_map, placement, pixels, write_lightmap_pixel);
+            const auto width=static_cast<std::size_t>(light_map.u_clamp);
+            const auto height=static_cast<std::size_t>(light_map.v_clamp);
             ++result.decoded_lightmap_count;
             result.lightmap_texel_count += width * height;
             if (light_map.light_actor_index >= 0) {
@@ -1182,7 +1058,7 @@ Hp1TexturedBspScene build_hp1_textured_bsp_scene(
                     },
                     lightmap_uv,
                     material->second.layer,
-                    surface.polygon_flags|((material->second.masked&&(surface.polygon_flags&8U))?2U:0U),
+                    surface.polygon_flags|(material->second.masked?2U:0U),
                     has_lightmap ? 1U : 0U,
                     triangle.node_index,
                     triangle.surface_index,

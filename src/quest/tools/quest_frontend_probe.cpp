@@ -3,10 +3,15 @@
 #include <iostream>
 #include <fstream>
 #include <cmath>
+#include <string_view>
 int main(int argc,char**argv){
- if(argc!=3)return 2;
+ if(argc!=3&&(argc!=4||std::string_view(argv[3])!="--challenge")){
+  std::cerr<<"usage: hpvr_quest_frontend_probe <owned-root> <output> [--challenge]\n";return 2;
+ }
+ const unsigned map_id=argc==4?1U:0U;
  hpvr::quest::QuestFrontEnd f;
- if(!hpvr::quest::LoadFrontAssets(argv[1],&f.assets)){std::cerr<<f.assets.error;return 3;}
+ if(!hpvr::quest::LoadFrontAssets(argv[1],&f.assets,map_id)){std::cerr<<f.assets.error;return 3;}
+ f.progress.map_id=map_id;
  const std::filesystem::path output(argv[2]);std::filesystem::create_directories(output);
  std::ofstream plan(output/"audio-plan.tsv");
  auto emit=[&](const auto& source,bool stereo){
@@ -63,7 +68,7 @@ int main(int argc,char**argv){
  f.selection=4;f.vr.first_person_cutscenes=false;image("camera-theatrical.ppm");
  f.vr.first_person_cutscenes=true;image("camera-harry.ppm");
  std::cout<<"FRONT_ASSETS=PASS pages="<<f.assets.story.size()<<" music="<<f.assets.music.size()
-          <<" textures="<<f.assets.textures.size()<<"\n";
+          <<" textures="<<f.assets.textures.size()<<" map="<<map_id<<" voices="<<f.assets.gameplay_audio.size()<<"\n";
  for(const auto&p:f.assets.story)std::cout<<p.dialogue_name<<"\n";
  return 0;
 }

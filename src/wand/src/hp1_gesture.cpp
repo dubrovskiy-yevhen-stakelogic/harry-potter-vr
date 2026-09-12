@@ -8,6 +8,7 @@
 #include <fstream>
 #include <limits>
 #include <map>
+#include <memory>
 #include <new>
 #include <optional>
 #include <set>
@@ -209,8 +210,37 @@ private:
     return static_cast<std::size_t>(value);
 }
 
-[[nodiscard]] std::vector<std::uint8_t> read_package_file(
+struct CachedPackageBytes {
+    std::filesystem::file_time_type modified;
+    std::uintmax_t size=0;
+    std::shared_ptr<const std::vector<std::uint8_t>> bytes;
+    std::size_t used=0;
+};
+thread_local unsigned package_read_depth=0;
+thread_local std::map<std::filesystem::path,CachedPackageBytes> package_read_cache;
+thread_local Hp1PackageReadStats package_read_stats;
+thread_local std::size_t package_read_clock=0;
+constexpr std::size_t kPackageReadCacheLimit=96U*1024U*1024U;
+
+[[nodiscard]] std::shared_ptr<const std::vector<std::uint8_t>> read_package_file(
     const std::filesystem::path& path) {
+    const auto key=std::filesystem::absolute(path).lexically_normal();
+    std::error_code error;
+    const auto modified=std::filesystem::last_write_time(key,error);
+    std::error_code size_error;
+    const auto size=std::filesystem::file_size(key,size_error);
+    const bool cacheable=package_read_depth&&!error&&!size_error&&size<=kPackageReadCacheLimit;
+    if(cacheable){
+        const auto cached=package_read_cache.find(key);
+        if(cached!=package_read_cache.end()){
+            if(cached->second.modified==modified&&cached->second.size==size){
+                ++package_read_stats.hits;cached->second.used=++package_read_clock;
+                return cached->second.bytes;
+            }
+            package_read_stats.retained_bytes-=cached->second.bytes->size();
+            package_read_cache.erase(cached);
+        }
+    }
     std::ifstream stream(path, std::ios::binary | std::ios::ate);
     if (!stream) {
         fail(Hp1ProfileStatus::io_error, "could not open package read-only");
@@ -233,7 +263,20 @@ private:
     if (!stream) {
         fail(Hp1ProfileStatus::io_error, "could not read complete package");
     }
-    return bytes;
+    auto storage=std::make_shared<const std::vector<std::uint8_t>>(std::move(bytes));
+    if(package_read_depth)++package_read_stats.reads;
+    if(cacheable&&storage->size()==size){
+        while(!package_read_cache.empty()&&(package_read_cache.size()>=8||
+              package_read_stats.retained_bytes+storage->size()>kPackageReadCacheLimit)){
+            const auto oldest=std::min_element(package_read_cache.begin(),package_read_cache.end(),
+                [](const auto& a,const auto& b){return a.second.used<b.second.used;});
+            package_read_stats.retained_bytes-=oldest->second.bytes->size();
+            package_read_cache.erase(oldest);
+        }
+        package_read_stats.retained_bytes+=storage->size();
+        package_read_cache.emplace(key,CachedPackageBytes{modified,size,storage,++package_read_clock});
+    }
+    return storage;
 }
 
 struct ImportEntry {
@@ -256,7 +299,7 @@ struct ExportEntry {
 class Package {
 public:
     explicit Package(const std::filesystem::path& path)
-        : bytes_(read_package_file(path)) {
+        : bytes_storage_(read_package_file(path)), bytes_(*bytes_storage_) {
         parse();
     }
 
@@ -592,7 +635,8 @@ private:
         }
     }
 
-    std::vector<std::uint8_t> bytes_;
+    std::shared_ptr<const std::vector<std::uint8_t>> bytes_storage_;
+    std::span<const std::uint8_t> bytes_;
     std::uint16_t version_{};
     std::uint16_t licensee_version_{};
     std::vector<std::string> names_;
@@ -1072,10 +1116,10 @@ void require_topology_index(std::int32_t value,
         node.flags = cursor.read_u8();
         node.vertex_pool_index = cursor.read_compact_index();
         node.surface_index = cursor.read_compact_index();
-        // Serialized node field +0x20 is not required for the minimal view.
-        static_cast<void>(cursor.read_compact_index());
-        node.front_node_index = cursor.read_compact_index();
+        // Authored zone-actor samples establish back/front/coplanar order.
         node.back_node_index = cursor.read_compact_index();
+        node.front_node_index = cursor.read_compact_index();
+        node.coplanar_node_index = cursor.read_compact_index();
         // Serialized node field +0x2C is not exposed; owned data proves it is
         // not a safe index into the serialized Nodes array when Linked is 0.
         static_cast<void>(cursor.read_compact_index());
@@ -1123,13 +1167,16 @@ void require_topology_index(std::int32_t value,
         cursor.read_i32(), kMaximumTableEntries, "Model shared sides");
     result.zone_count = checked_count(
         cursor.read_i32(), kMaximumTableEntries, "Model Zones");
+    result.zone_actor_references.reserve(result.zone_count);
     for (std::size_t index = 0; index < result.zone_count; ++index) {
         const auto actor_reference = cursor.read_compact_index();
         package.require_valid_reference(actor_reference);
+        result.zone_actor_references.push_back(actor_reference);
         static_cast<void>(cursor.take(16));
     }
 
     const auto polys_reference = cursor.read_compact_index();
+    result.polys_reference = polys_reference;
     package.require_valid_reference(polys_reference);
     if (polys_reference != 0 &&
         (polys_reference < 0 ||
@@ -1680,6 +1727,14 @@ void merge_policy(LessonPolicy& base, const LessonPolicy& overrides) {
 }
 
 }  // namespace
+
+Hp1PackageReadScope::Hp1PackageReadScope(){
+    if(package_read_depth++==0){package_read_cache.clear();package_read_stats={};package_read_clock=0;}
+}
+Hp1PackageReadScope::~Hp1PackageReadScope(){
+    if(--package_read_depth==0){package_read_cache.clear();package_read_stats.retained_bytes=0;}
+}
+Hp1PackageReadStats Hp1PackageReadScope::stats()const{return package_read_stats;}
 
 Hp1PackageSummary inspect_hp1_package(
     const std::filesystem::path& package_path) {
@@ -2435,6 +2490,12 @@ Hp1P8Texture load_hp1_p8_texture(
                          "Texture Palette property has trailing bytes");
                 }
                 package.require_valid_reference(result.palette_reference);
+            } else if (ascii_equal_fold(tag->name, "PolyFlags")) {
+                if(tag->value.size()!=4 || tag->array_index.has_value())
+                    fail(Hp1ProfileStatus::invalid_profile,"Texture PolyFlags is not one scalar integer");
+                Cursor value(tag->value);
+                result.polygon_flags=value.read_u32();
+                palette_zero_transparent=palette_zero_transparent||(result.polygon_flags&2U)!=0;
             } else if (ascii_equal_fold(tag->name, "bHasComp")) {
                 if (tag->kind != PropertyKind::boolean ||
                     !tag->boolean_value.has_value()) {
@@ -4252,6 +4313,69 @@ Hp1BspTopology load_hp1_brush_topology(
         result = {};
         result.error = error.what();
     }
+    return result;
+}
+
+Hp1BspTopology load_hp1_brush_polygon_topology(
+    const std::filesystem::path& map_package, std::int32_t model_reference) {
+    Hp1BspTopology result;
+    try {
+        const Package package(map_package);
+        package.require_valid_reference(model_reference);
+        if(model_reference<=0 || !ascii_equal_fold(package.class_name_for_export(
+            static_cast<std::size_t>(model_reference-1)),"Engine.Model"))
+            fail(Hp1ProfileStatus::invalid_profile,"Brush is not a local Model");
+        const auto auxiliary=decode_bsp_topology(package,model_reference);
+        const auto reference=auxiliary.polys_reference;
+        if(reference<=0)fail(Hp1ProfileStatus::invalid_profile,"Brush has no authored Polys");
+        const auto index=static_cast<std::size_t>(reference-1);
+        Cursor cursor(package.export_bytes(index));
+        skip_object_stack(cursor,package.export_at(index).object_flags);
+        skip_properties(package,cursor,"Polys");
+        const auto count=checked_count(cursor.read_i32(),65536,"Polys count");
+        const auto capacity=checked_count(cursor.read_i32(),65536,"Polys capacity");
+        if(!count||capacity<count)fail(Hp1ProfileStatus::invalid_profile,"Invalid Polys array");
+        result.model_reference=model_reference;result.polys_reference=reference;
+        result.package_version=auxiliary.package_version;
+        for(std::size_t i=0;i<count;++i){
+            const auto vertices=cursor.read_u8();
+            if(vertices<3||vertices>64)fail(Hp1ProfileStatus::invalid_profile,"Invalid brush polygon vertex count");
+            const auto base=read_bsp_vector(cursor,"Poly base");
+            const auto normal=read_bsp_vector(cursor,"Poly normal");
+            const auto u=read_bsp_vector(cursor,"Poly U");
+            const auto v=read_bsp_vector(cursor,"Poly V");
+            Hp1BspSurface surface;surface.base_point_index=static_cast<std::int32_t>(result.points.size());
+            result.points.push_back(base);
+            surface.normal_vector_index=static_cast<std::int32_t>(result.vectors.size());result.vectors.push_back(normal);
+            surface.texture_u_vector_index=static_cast<std::int32_t>(result.vectors.size());result.vectors.push_back(u);
+            surface.texture_v_vector_index=static_cast<std::int32_t>(result.vectors.size());result.vectors.push_back(v);
+            surface.light_map_index=-1;
+            Hp1BspNode node;node.vertex_count=vertices;node.surface_index=static_cast<std::int32_t>(i);
+            node.vertex_pool_index=static_cast<std::int32_t>(result.vertices.size());
+            node.front_node_index=node.back_node_index=node.coplanar_node_index=-1;
+            node.collision_bound_index=-1;node.leaf_indices={-1,-1};
+            node.plane={normal.x,normal.y,normal.z,normal.x*base.x+normal.y*base.y+normal.z*base.z};
+            for(unsigned j=0;j<vertices;++j){
+                const auto point=read_bsp_vector(cursor,"Poly vertex");
+                const float plane=(point.x-base.x)*normal.x+(point.y-base.y)*normal.y+(point.z-base.z)*normal.z;
+                if(!std::isfinite(plane)||std::abs(plane)>.125F)
+                    fail(Hp1ProfileStatus::invalid_profile,"Non-planar authored brush polygon");
+                result.vertices.push_back({static_cast<std::int32_t>(result.points.size()),-1});result.points.push_back(point);
+            }
+            surface.polygon_flags=cursor.read_u32();
+            surface.actor_reference=cursor.read_compact_index();package.require_valid_reference(surface.actor_reference);
+            surface.texture_reference=cursor.read_compact_index();package.require_valid_reference(surface.texture_reference);
+            static_cast<void>(package.name(cursor.read_compact_index()));
+            const auto link=cursor.read_compact_index();
+            if(link < -1 || link>=static_cast<std::int32_t>(count))
+                fail(Hp1ProfileStatus::invalid_profile,"Invalid authored polygon link");
+            static_cast<void>(cursor.read_compact_index()); // Brush polygon bookkeeping index.
+            surface.pan_u=cursor.read_i16();surface.pan_v=cursor.read_i16();
+            result.surfaces.push_back(surface);result.nodes.push_back(node);
+        }
+        if(cursor.remaining()!=0)fail(Hp1ProfileStatus::invalid_profile,"Trailing authored polygon data");
+        result.status=Hp1ProfileStatus::ok;
+    }catch(const std::exception& error){result={};result.error=error.what();}
     return result;
 }
 

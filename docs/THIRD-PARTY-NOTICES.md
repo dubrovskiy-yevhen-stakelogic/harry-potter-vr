@@ -4,7 +4,7 @@ HPVR is an independent community project. Original Harry Potter game data,
 Warner Bros./EA logos, textures, models, music and speech are not included.
 Game names describe the required user-owned data; no endorsement is implied.
 
-This inventory describes dependencies linked by the C37 Quest build:
+This inventory describes dependencies used by the Quest build:
 
 - Khronos OpenXR loader 1.1.43, distributed unmodified as
   org.khronos.openxr:openxr_loader_for_android:1.1.43. Copyright 2017-2024,
@@ -28,6 +28,54 @@ This inventory describes dependencies linked by the C37 Quest build:
 The release script retains these texts under APK META-INF/HPVR-NOTICES/ and
 as readable THIRD-PARTY files beside the APK. It does not bundle Gradle, JDK,
 ADB, FFmpeg, the NDK toolchain itself or proprietary game assets.
+
+## Offline voice casting
+
+Voice casting uses a CPU-only build of [sherpa-onnx 1.13.7](https://github.com/k2-fsa/sherpa-onnx/tree/917bed95c8e5c7c18aa4d69fea42e9ef8ef0a60e),
+licensed under Apache-2.0, and [ONNX Runtime 1.27.1](https://github.com/microsoft/onnxruntime/tree/v1.27.1),
+licensed under MIT. Microphone samples are processed locally; public builds
+do not upload or save them. TTS, espeak-ng and JNI are disabled in the native
+build. Generic upstream Android packages with TTS enabled are not used.
+
+HPVR's native preparation script makes one documented compatibility change to
+`sherpa-onnx/csrc/session.cc`: its two Android NNAPI guards additionally require
+`HPVR_SHERPA_ENABLE_NNAPI`, which this CPU-only build leaves unset. This avoids
+headers absent from the pinned ONNX Runtime Android package. The script pins
+the source file's SHA-256 both before and after that patch; no NNAPI or GPU
+inference provider is enabled.
+
+The included neural weights are
+`sherpa-onnx-kws-zipformer-gigaspeech-3.3M-2024-01-01`, by pkufool.
+The README in the [official model archive](https://github.com/k2-fsa/sherpa-onnx/releases/download/kws-models/sherpa-onnx-kws-zipformer-gigaspeech-3.3M-2024-01-01.tar.bz2)
+explicitly licenses the weights under Apache-2.0 and identifies GigaSpeech XL
+as the training corpus. Both that README and the complete Apache license are
+included with the model. No training recordings, game speech or player
+recordings are distributed. The custom `Flipendo` keyword token sequences are
+HPVR configuration, not a separately trained model.
+
+The static runtime also contains the following third-party components:
+
+- kaldi-decoder 0.3.0, kaldi-native-fbank 1.22.3, kaldifst 1.8.0,
+  OpenFst 1.8.5-2026-07-09 and simple-sentencepiece 0.7: Apache-2.0.
+- nlohmann/json 3.12.0: MIT.
+- Kiss FFT, commit `febd4caeed32e33ad8b2e0bb5ea77542c40f18ec`:
+  BSD-3-Clause, with its copyright notice.
+- Eigen 5.0.1: MPL-2.0 and the component-specific BSD, Apache and MINPACK
+  notices included by upstream. Its six license files are retained. The
+  unmodified covered source is available from the
+  [exact Eigen release](https://gitlab.com/libeigen/eigen/-/tree/5.0.1);
+  the native preparation script pins and downloads that source.
+- ONNX Runtime's transitive dependencies: the complete, unmodified upstream
+  `ThirdPartyNotices.txt` is included, rather than reducing these notices to
+  ONNX Runtime's own MIT license.
+
+`tools/voice/NEURAL-RUNTIME-NOTICES.psd1` records the exact upstream URL,
+length and SHA-256 of each native notice. `VOICE-ASSETS.psd1` pins all 24
+permitted model/configuration/notice files. The APK carries them in
+`assets/hpvr-voice/`; release packaging also places readable copies of the
+notices beside the APK. Native source and the build recipe are separate from
+HPVR's original code. No source or binary from an unknown-provenance game
+engine is used by this voice implementation.
 
 ## JsonCpp license (verbatim)
 

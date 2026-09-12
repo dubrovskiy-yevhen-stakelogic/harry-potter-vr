@@ -1,6 +1,7 @@
 #pragma once
 
 #include "hpvr/hp1_gesture.h"
+#include "hpvr/quest_pickup_audio.h"
 
 #include <aaudio/AAudio.h>
 
@@ -30,12 +31,14 @@ public:
                    const std::filesystem::path& cache_directory);
     bool Start();
     bool ConfigureTutorialFrog(const wand::Hp1PcmSound& source);
+    bool ConfigureBeanPickup(std::size_t index);
     bool ConfigureMusic(const std::vector<wand::Hp1MpegSound>& sources,
                         const std::filesystem::path& cache);
     void SelectMusic(unsigned index);
     void SetPresentationAudio(bool ambient, bool paused);
     void StopDialogue();
     bool DialogueBusy() const { return dialogue_cursor_.load()!=kIdleCursor; }
+    bool SpeechBusy() const { return DialogueBusy() || incantation_cursor_.load()!=kIdleCursor; }
     void Stop();
     void SetWandDrawing(bool drawing);
     void PlaySpellCast();
@@ -43,6 +46,7 @@ public:
     void PlaySpellHit();
     [[nodiscard]] bool PlayDialogue(std::size_t index);
     bool PlayWorldEffect(std::size_t index,float gain);
+    void PlayBeanPickup();
     [[nodiscard]] float DialogueDurationSeconds(std::size_t index) const;
     [[nodiscard]] bool DialogueFinished(std::size_t index) const;
     [[nodiscard]] std::size_t DialogueClipCount() const noexcept;
@@ -88,6 +92,8 @@ private:
     std::atomic<std::uint64_t> effect_cursor_{kIdleCursor};
     std::atomic<unsigned> effect_index_{0};
     std::atomic<float> effect_gain_{0};
+    PickupAudioCue bean_cue_;
+    std::size_t bean_sound_index_ = std::numeric_limits<std::size_t>::max();
     std::atomic<std::uint32_t> dialogue_index_{
         std::numeric_limits<std::uint32_t>::max()};
     std::atomic<bool> wand_drawing_{false};

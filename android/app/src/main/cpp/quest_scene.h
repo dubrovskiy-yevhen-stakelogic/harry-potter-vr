@@ -5,6 +5,7 @@
 #include "hpvr/quest_view.h"
 #include "hpvr/quest_vr_settings.h"
 #include "hpvr/quest_performance.h"
+#include "hpvr/quest_frontend.h"
 
 #include <vulkan/vulkan.h>
 
@@ -24,16 +25,28 @@ public:
     QuestScene& operator=(const QuestScene&) = delete;
 
     [[nodiscard]] bool LoadFromOwnedData(
-        const std::filesystem::path& data_root,const std::filesystem::path& save_root);
+        const std::filesystem::path& data_root,const std::filesystem::path& save_root,unsigned map_id=0);
+    bool ConsumeMapTransition(unsigned* map_id,ProgressSave* progress,unsigned* slot);
+    void RestoreTransferredProgress(const ProgressSave& progress,unsigned slot);
+    void AbortMapTransition(const char* message);
+    void Swap(QuestScene& other) noexcept;
     [[nodiscard]] bool CreateGpu(VkPhysicalDevice physical_device,
                                  VkDevice device,
                                  VkQueue queue,
                                  std::uint32_t queue_family,
-                                 VkRenderPass render_pass,unsigned width,unsigned height,VkFormat color,VkFormat depth);
+                                 VkRenderPass render_pass,unsigned width,unsigned height,VkFormat color,VkFormat depth,unsigned frame_count);
     void PrepareReflections(const Matrix4& matrix,unsigned width,unsigned height,bool active);
     bool ReflectionCaptureEnabled() const;
     void CaptureReflections(VkCommandBuffer command,VkImage color,VkImage depth,const Matrix4& matrix,unsigned width,unsigned height);
     VrSettings GetVrSettings() const;
+    void SetSupportedRefreshRates(const std::vector<int>& rates);
+    bool WantsGesture() const;
+    bool GestureTargetLocked() const;
+    bool VoiceCaptureAllowed() const;
+    std::int32_t VoiceTarget(std::array<float,3>* point=nullptr) const;
+    void SetVoiceStatus(unsigned status);
+    bool DispatchVoiceCast(std::int32_t target,const std::array<float,3>& point,const ViewPose& wand);
+    bool IsGestureLesson() const;
     unsigned LessonRound() const;
     bool ConsumeCommunityRequest();
     void UpdateExitTracking(const ViewPose& local_head,const ViewPose& reference,bool valid);
@@ -45,7 +58,7 @@ public:
     void RecordDraw(VkCommandBuffer command_buffer,
                     std::uint32_t width,
                     std::uint32_t height,
-                    const std::array<float, 16>& view_projection) const;
+                    const std::array<float, 16>& view_projection,unsigned frame_slot) const;
     void RecordWandDraw(VkCommandBuffer command_buffer,
                         std::uint32_t width,
                         std::uint32_t height,
@@ -67,10 +80,13 @@ public:
     void UpdateJumpInput(bool held,float seconds);
     bool NeedsPhysicsTick() const;
     void UpdateHudPose(const ViewPose& head);
+    void UpdatePlayerPose(const ViewPose& head,float yaw,const std::array<float,3>& capsule_center);
     void RecordHudDraw(VkCommandBuffer command_buffer,const Matrix4& view_projection) const;
+    void RecordDeathFade(VkCommandBuffer command_buffer) const;
     void UpdateFrontEnd(const LocomotionInput& input,bool confirm,bool back,const ViewPose& head,float yaw);
     void UpdateFrontPresentation(const ViewPose& rendered_head,const ViewPose* cinematic_rig,bool first_person,bool recapture);
     bool ConsumePlayerPlacement(std::array<float,3>* position,float* yaw);
+    bool ConsumePlayerTransport(std::array<float,3>* displacement);
     bool IsFrontEndVisible() const;
     bool IsWorldPaused() const;
     bool CanCast() const;
@@ -97,6 +113,17 @@ public:
     [[nodiscard]] std::uint32_t CurrentAnimationFrame() const;
 
 private:
+    void BeginChallengeDeath(const char* reason) const;
+    void AdvanceChallengeDeath(float step);
+    void StartPickupFlight(std::int32_t actor_reference);
+    std::int32_t FindChallengeSpellTarget(const std::array<float,3>& origin,const std::array<float,3>& direction,float* distance,
+        std::array<float,3>* bounds_min=nullptr,std::array<float,3>* bounds_max=nullptr) const;
+    void LaunchChallengeSpell(const std::array<float,3>& origin,const std::array<float,3>& direction,const std::array<float,3>& tip,std::uint64_t serial);
+    void AdvanceChallenge(float seconds);
+    void StartChallengeScene(std::int32_t reference);
+    void RequestChallengeTravel();
+    void RebuildChallengeCollision();
+    void RestoreCurrentProgress();
     void AdvanceIntroCutscene(float delta_seconds);
     void StartOpening();
     void StartRonEncounter();
@@ -106,7 +133,7 @@ private:
     void StartStoryEncounter(unsigned index);
     void StartTutorialScene(bool reward);
     void MoveTwinsToNextRoom(bool finish=false);
-    void SaveCheckpoint();
+    void SaveCheckpoint(bool authored=false);
     void SkipOpening();
     struct State;
     std::unique_ptr<State> state_;

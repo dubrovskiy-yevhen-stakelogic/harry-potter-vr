@@ -21,6 +21,9 @@ else()
 endif()
 
 if(BUILD_TESTING AND NOT ANDROID)
+    add_executable(hpvr_hp1_bsp_build_context_tests tests/hp1_bsp_build_context_tests.cpp)
+    target_link_libraries(hpvr_hp1_bsp_build_context_tests PRIVATE hpvr_wand)
+    add_test(NAME hpvr_hp1_bsp_build_context_tests COMMAND hpvr_hp1_bsp_build_context_tests)
     add_library(hpvr_wand_c_header_test OBJECT
         tests/hp1_gesture_c_header_test.c
         tests/wand_trajectory_c_header_test.c
@@ -185,6 +188,12 @@ if(BUILD_TESTING AND NOT ANDROID)
         target_compile_options(hpvr_hp1_world_probe PRIVATE -Wall -Wextra -Wpedantic -Werror)
     endif()
 
+    add_executable(hpvr_hp1_dark_zone_ambient_tests tests/hp1_dark_zone_ambient_tests.cpp)
+    add_executable(hpvr_hp1_dark_lightmap_tests tests/hp1_dark_lightmap_tests.cpp)
+    target_link_libraries(hpvr_hp1_dark_lightmap_tests PRIVATE hpvr_wand)
+    add_test(NAME hpvr_hp1_dark_lightmap_tests COMMAND hpvr_hp1_dark_lightmap_tests)
+    target_link_libraries(hpvr_hp1_dark_zone_ambient_tests PRIVATE hpvr_wand)
+    add_test(NAME hpvr_hp1_dark_zone_ambient_tests COMMAND hpvr_hp1_dark_zone_ambient_tests)
     add_test(NAME hpvr_wand_tests COMMAND hpvr_wand_tests)
     add_test(NAME hpvr_hp1_gesture_tests COMMAND hpvr_hp1_gesture_tests)
 endif()

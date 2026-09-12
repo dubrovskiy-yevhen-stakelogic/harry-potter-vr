@@ -3,6 +3,22 @@
 #include <algorithm>
 #include <cmath>
 namespace hpvr::quest {
+// Re-arm only after the old projectile and spoken incantation have ended.
+// A fresh worker generation then requires another complete keyword.
+struct VoiceRepeatCooldown {
+    bool pending=false;
+    float remaining=0;
+    void Begin(){pending=true;remaining=.35F;}
+    void Cancel(){pending=false;remaining=0;}
+    bool Advance(bool active,bool held,bool speech_busy,bool projectile_flying,float seconds){
+        if(!active||!held){Cancel();return false;}
+        if(!pending)return false;
+        if(speech_busy||projectile_flying)remaining=.35F;
+        else if(std::isfinite(seconds))remaining-=std::clamp(seconds,0.0F,.05F);
+        if(remaining>0)return false;
+        Cancel();return true;
+    }
+};
 // Basic spellnone input is separate from learned gesture spells.
 struct BasicCast {
     std::array<float,3> aim{}, origin{}, destination{};

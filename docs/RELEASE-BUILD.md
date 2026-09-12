@@ -1,8 +1,10 @@
 # Quest release build
 
-The release contains the port and third-party libraries, not HP game assets,
-decoded audio, saves or signing keys. Players import their own compatible US PC
-data. The demo ends after the first Flipendo lesson.
+The **0.1.1-alpha** release uses Android version code **54** and includes the
+opening level and the [Flipendo Challenge](FLIPENDO-CHALLENGE.md). The release
+contains the port, third-party libraries and the licensed offline voice model,
+not HP game assets, decoded game audio, user recordings, saves or signing keys.
+Players import their own compatible US PC data for both levels.
 
 ## Tools
 
@@ -13,35 +15,59 @@ NDK 27.2.12479018 and CMake 3.22.1 are required. The build script accepts
 
 ## Build and package
 
-From the repository root, initialize a signing identity on the first build:
+For an update, reuse the existing release signing identity. From the repository
+root, build into a new artifact directory:
 
 ```powershell
-.\BUILD-QUEST-RELEASE.ps1 -InitializeSigningKey
+.\BUILD-QUEST-RELEASE.ps1 -OutputDirectory artifacts\quest-release-0.1.1-alpha-c54
 ```
 
-Later builds reuse that identity. Output directories must be new children of
-`artifacts/`; existing releases are not overwritten:
-
-```powershell
-.\BUILD-QUEST-RELEASE.ps1 -OutputDirectory artifacts\quest-release-rebuild
-```
+Only a project's first release with no identity should use
+`-InitializeSigningKey`. Do not generate a replacement key for an update.
+Output directories must be new children of `artifacts/`; existing releases are
+not overwritten. For a rebuild, choose a new output directory and pass its APK
+path explicitly to the packager.
 
 The script builds the Gradle Release variant with native CMake Release
 optimizations, adds dependency notices, aligns and signs the APK. It verifies
 the signature, non-debuggable manifest, ARM64-only ABI and asset-free payload.
-Version values are in `android/app/build.gradle`.
+Version values are read from `android/app/build.gradle`. The APK is named
+`HPVR-Quest-<versionName>.apk`; an omitted output directory generates a fresh
+versioned, timestamped directory under `artifacts/`.
 
-To create the Windows player ZIP, first build the host tools in Release, then:
+Build the matching Windows Release host helpers from this checkout, then create
+the player ZIP. This example uses the main `build` tree:
 
 ```powershell
-.\PACKAGE-QUEST-PLAYER.ps1 -ApkPath artifacts\quest-release-rebuild\HPVR-Quest-0.1.0-demo.apk -OutputDirectory artifacts\HPVR-Quest-Demo-rebuild
+cmake --build build --config Release --target hpvr_hp1_package_graph hpvr_hp1_sound_probe hpvr_quest_frontend_probe hpvr_quest_intro_probe hpvr_quest_prepare_assets
+.\PACKAGE-QUEST-PLAYER.ps1 -HostBuildDirectory build
 ```
 
 The packager reads the matching `RELEASE-METADATA.json`, checks the APK and
 includes the installer, required helper tools, documentation and hashes. Its
-default host-tool directory is `build/quest-host-tests`; override with
-`-HostBuildDirectory`. Build and packaging do not install or launch the game.
+default input is `artifacts/quest-release-0.1.1-alpha-c54/HPVR-Quest-0.1.1-alpha.apk`
+and default output is `artifacts/HPVR-Quest-Demo-0.1.1-alpha` plus the sibling ZIP.
+Its default host-tool directory is `build/quest-host-tests`; the explicit
+`-HostBuildDirectory build` above selects the main tree instead. Build and
+packaging do not install or launch the game.
 Player instructions are in [PLAYER-INSTALL.md](../tools/release/PLAYER-INSTALL.md).
+
+The alpha manifest declares `mapIds: [0, 1]`. Installer revision 5 uses that
+selection for both package closures, dialogue/music enumeration and scene
+preparation. Both `map-0.hpvc` and `map-1.hpvc` are generated and independently
+verified on the player's PC; they are never packaged into the ZIP. Historical
+manifests without map metadata retain map 0 only, with `-IncludeChallenge`
+available for compatible older development APKs.
+
+Before packaging, run the synthetic installer tests:
+
+```powershell
+.\tools\release\TEST-PLAYER-INSTALL.ps1
+```
+
+After packaging, validate the actual bundled helpers against an owned copy with
+the bundled `INSTALL-HPVR.ps1 -GamePath '<owned US PC game folder>' -PrepareOnly`.
+This prepares both selected maps without installing or accessing a headset.
 
 ## Signing and upgrades
 
@@ -53,23 +79,41 @@ CLIXML file alone is not a portable recovery method. Keep secure offline key and
 credential recovery separately. An incomplete key/credential pair is an error;
 the script does not replace it automatically.
 
-Release and development use `io.github.hpvr.quest` but different certificates.
+Release-signed and debug-signed builds use `io.github.hpvr.quest` but different
+certificates. A development version can use the existing release key, too.
 **A release APK cannot update a debug-signed installation. Do not uninstall a
 development build to bypass this conflict: saves, settings and imported data may
 be lost.** Arrange a backup/migration first. Public updates must keep the original
 release certificate.
 
+Version code 54 is newer than the original public demo, but certificate equality
+must also be checked against the previous release's `RELEASE-METADATA.json`.
+The player installer uses a normal in-place `adb install -r`, without downgrade
+or uninstall flags. Android rejects an incompatible signer before data import.
+Do not install the public release over a debug-signed development test just to
+validate packaging.
+
 ## Data and licenses
 
-The player installer imports packages and fingerprint-named PCM to
+The player installer imports packages, fingerprint-named PCM and both selected
+scene caches to
 `/sdcard/Android/data/io.github.hpvr.quest/files/HP/`, including `Cache/Audio/`.
 This uses external storage access, not debug-only `run-as`. Saves and VR settings
 remain private. No game data belongs in the public ZIP.
 
 [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md) lists dependencies. The release
 includes the installed OpenXR AAR and NDK license texts in APK `META-INF` and a
-`THIRD-PARTY` folder. Aggregate NDK notices also describe toolchain components
-that are not embedded in the app.
+`THIRD-PARTY` folder. The voice model, keyword/token files and their license
+notices are pinned by `tools/voice/VOICE-ASSETS.psd1`; payload verification
+rejects unexpected or modified voice files. Aggregate NDK notices also describe
+toolchain components that are not embedded in the app.
+
+Normal and Release builds compile without voice-recording diagnostics. The
+separate `voiceDiagnostic` APK is for explicitly authorized local testing only.
+The player packager rejects its version/manifest and retained native diagnostic
+marker even when an explicit APK path is supplied. There is no override in the
+player packager. Do not copy `local/`, private recordings, diagnostic grants,
+prepared owned data or signing material into either distribution.
 
 Before publication, test a fresh install with owned-data import on Quest,
 including menus, saves, audio and cutscenes. Build/signature checks alone do not

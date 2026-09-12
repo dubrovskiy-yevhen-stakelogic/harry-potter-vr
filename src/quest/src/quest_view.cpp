@@ -207,13 +207,7 @@ bool LocomotionState::Tick(const LocomotionInput& input,
                 direction[2] * distance};
             LocomotionMove movement{requested, 0, 0};
             if (resolver != nullptr) {
-                const auto body_local = RotateYaw(
-                    {head_position_[0], 0.0F, head_position_[2]},
-                    yaw_radians_);
-                const std::array<float, 3> capsule_center{
-                    body_local[0] + translation_[0],
-                    translation_[1] - eye_height_m_ + restored_head_reference_y_,
-                    body_local[2] + translation_[2]};
+                const auto capsule_center = CapsuleCenter();
                 if (!resolver(resolver_context, capsule_center, requested,
                               &movement) ||
                     !std::all_of(
@@ -256,6 +250,12 @@ bool LocomotionState::Tick(const LocomotionInput& input,
     return true;
 }
 
+std::array<float,3> LocomotionState::CapsuleCenter() const {
+    const auto body_local=RotateYaw({head_position_[0],0.0F,head_position_[2]},yaw_radians_);
+    return {body_local[0]+translation_[0],
+            translation_[1]-eye_height_m_+restored_head_reference_y_,
+            body_local[2]+translation_[2]};
+}
 bool LocomotionState::RestoreHead(const std::array<float,3>& world_head,float yaw) {
     if(!has_head_||!std::isfinite(yaw)||!std::ranges::all_of(world_head,
         [](float v){return std::isfinite(v)&&std::abs(v)<2000;}))return false;
@@ -264,6 +264,31 @@ bool LocomotionState::RestoreHead(const std::array<float,3>& world_head,float ya
     for(std::size_t i=0;i<3;++i)translation_[i]=world_head[i]-head[i];
     restored_head_reference_y_=head_position_[1];
     snap_armed_=false;
+    return true;
+}
+bool LocomotionState::RecenterToCapsule(const std::array<float,3>& world_capsule,float yaw) {
+    if (!has_head_ || !std::isfinite(yaw) || !std::isfinite(eye_height_m_) ||
+        !std::ranges::all_of(world_capsule, [](float v) {
+            return std::isfinite(v) && std::abs(v) < 2000;
+        })) return false;
+    const auto head = RotateYaw(head_position_, yaw);
+    const std::array<float,3> translation{
+        world_capsule[0] - head[0],
+        world_capsule[1] + eye_height_m_ - head[1],
+        world_capsule[2] - head[2]};
+    if (!std::ranges::all_of(translation, [](float v) { return std::isfinite(v); })) return false;
+    // Commit only after the complete transform is valid. In particular, the
+    // old mapped eye height must not become a new capsule height when crouched.
+    translation_ = translation;
+    yaw_radians_ = yaw;
+    restored_head_reference_y_ = head_position_[1];
+    snap_armed_ = false;
+    return true;
+}
+bool LocomotionState::TranslateWorld(const std::array<float,3>& displacement) {
+    if(!has_head_||!std::ranges::all_of(displacement,
+        [](float v){return std::isfinite(v)&&std::abs(v)<2000;}))return false;
+    for(std::size_t i=0;i<3;++i)translation_[i]+=displacement[i];
     return true;
 }
 bool LocomotionState::MapPose(const ViewPose& local_pose,

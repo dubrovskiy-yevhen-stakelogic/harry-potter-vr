@@ -721,8 +721,10 @@ Bytes make_level_package(bool imported_actor = false,
     append_f32(model_payload, 1.0F);
     append_f32(model_payload, 0.0F);
     model_payload.insert(model_payload.end(), 9, 0);
+    // Vertex pool, surface, back child, front child, coplanar link,
+    // deferred bound field, collision bound.
     for (const std::int32_t value :
-         std::array{0, 0, 999, -1, -1, 999, 0}) {
+         std::array{0, 0, -1, -1, -1, 999, 0}) {
         append_compact(model_payload, value);
     }
     append_u8(model_payload, 0);
@@ -1071,6 +1073,25 @@ void synthetic_profile_loads_and_merges_lesson_override() {
     expect(profile.pass_mark_count == 10, "all pass marks are loaded");
     expect_near(profile.pass_marks[0], 0.05F, "first pass mark");
     expect_near(profile.pass_marks[9], 0.725F, "last pass mark");
+}
+
+void scoped_package_reads_reuse_and_invalidate(){
+    const TemporaryPackages packages;
+    {
+        hpvr::wand::Hp1PackageReadScope scope;
+        expect(hpvr::wand::inspect_hp1_package(packages.base()).status==Hp1ProfileStatus::ok,"cached source loads");
+        const auto first=scope.stats();
+        expect(hpvr::wand::inspect_hp1_package(packages.base()).status==Hp1ProfileStatus::ok,"cached source reloads");
+        expect(scope.stats().reads==first.reads&&scope.stats().hits==first.hits+1,"package reused without read/copy");
+        {hpvr::wand::Hp1PackageReadScope nested;
+            (void)hpvr::wand::inspect_hp1_package(packages.base());
+            expect(nested.stats().hits==first.hits+2,"nested load shares cache");}
+        {std::ofstream out(packages.base(),std::ios::binary|std::ios::trunc);out.put('x');}
+        expect(hpvr::wand::inspect_hp1_package(packages.base()).status!=Hp1ProfileStatus::ok,"changed package invalidates cache");
+        expect(scope.stats().retained_bytes<=96U*1024U*1024U,"read cache is bounded");
+    }
+    hpvr::wand::Hp1PackageReadScope fresh;
+    expect(fresh.stats().hits==0&&fresh.stats().retained_bytes==0,"scope releases all cached data");
 }
 
 void package_census_validates_tables_and_aggregates_classes() {
@@ -1668,7 +1689,8 @@ void bsp_topology_decodes_and_validates_active_cross_indices() {
                topology.nodes[0].vertex_count == 3 &&
                topology.nodes[0].surface_index == 0 &&
                topology.nodes[0].front_node_index == -1 &&
-               topology.nodes[0].back_node_index == -1,
+               topology.nodes[0].back_node_index == -1 &&
+               topology.nodes[0].coplanar_node_index == -1,
            "node topology and remapped active vertex span are exact");
     expect(topology.vertices[0].point_index == 0 &&
                topology.vertices[1].point_index == 1 &&
@@ -2160,6 +2182,7 @@ void mpeg_loader_excludes_object_tail_and_incomplete_frames() {
 }
 
 int main() {
+    scoped_package_reads_reuse_and_invalidate();
     mpeg_loader_excludes_object_tail_and_incomplete_frames();
     synthetic_profile_loads_and_merges_lesson_override();
     package_census_validates_tables_and_aggregates_classes();

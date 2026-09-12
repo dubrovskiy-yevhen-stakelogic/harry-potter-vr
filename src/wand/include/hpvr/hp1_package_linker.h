@@ -5,7 +5,9 @@
 #include <cstddef>
 #include <cstdint>
 #include <filesystem>
+#include <memory>
 #include <string>
+#include <string_view>
 #include <vector>
 
 namespace hpvr::wand {
@@ -90,6 +92,49 @@ struct Hp1TexturedBspScene {
     std::size_t fallback_triangle_count{};
 };
 
+struct Hp1LightmapRepair {
+    Hp1ProfileStatus status{Hp1ProfileStatus::invalid_profile};
+    std::string error;
+    std::size_t dark_light_actor_count{};
+    std::size_t dark_light_maps{};
+    std::size_t ambient_light_maps{};
+    std::size_t affected_lightmaps{};
+    std::size_t changed_texels{}; // Includes replicated one-pixel gutters.
+    std::size_t staged_bytes{};
+};
+
+// Repairs only authored dark-light/zero-ambient tiles in the cached Lev_Tut1b
+// world atlas. Other maps are no-ops. Source topology recreates the exact atlas
+// layout; every affected tile must match the legacy or corrected CPU bake.
+// No bytes change on failure. Repeated calls are idempotent. No cache is written.
+[[nodiscard]] Hp1LightmapRepair repair_hp1_bsp_dark_lightmaps(
+    const std::filesystem::path& map_package,
+    std::uint32_t maximum_triangle_count,
+    std::size_t expected_decoded_lightmaps,
+    std::uint32_t atlas_width, std::uint32_t atlas_height,
+    std::vector<std::uint8_t>& atlas_rgba8);
+
+// One immutable, caller-owned dependency/link/light census for a batch of BSP
+// brushes. It retains no global state and is released after scene preparation.
+class Hp1BspBuildContext {
+public:
+    Hp1BspBuildContext() = default;
+    [[nodiscard]] Hp1ProfileStatus status() const noexcept;
+    [[nodiscard]] std::string_view error() const noexcept;
+private:
+    struct Data;
+    std::shared_ptr<const Data> data_;
+    friend Hp1BspBuildContext prepare_hp1_bsp_build_context(
+        const std::filesystem::path&, const std::filesystem::path&);
+    friend Hp1TexturedBspScene build_hp1_textured_bsp_scene(
+        const std::filesystem::path&, const std::filesystem::path&, float,
+        std::uint32_t, std::int32_t, const Hp1BspBuildContext*, bool);
+};
+
+[[nodiscard]] Hp1BspBuildContext prepare_hp1_bsp_build_context(
+    const std::filesystem::path& data_root,
+    const std::filesystem::path& map_package);
+
 struct Hp1CharacterSkinOverride {
     std::size_t material_slot{};
     std::filesystem::path package;
@@ -134,11 +179,14 @@ struct Hp1CharacterManifest {
 // Resolves character actors through the validated package graph and UClass
 // visual defaults. No UObject is constructed, no script is executed, and no
 // mesh/texture payload is decoded by this manifest pass.
+// include_decorations also accepts owned HPBase.baseProps subclasses with a
+// resolved skeletal mesh; native Engine superclass code is never required.
 [[nodiscard]] Hp1CharacterManifest build_hp1_character_manifest(
     const std::filesystem::path& data_root,
     const std::filesystem::path& map_package,
     std::int32_t excluded_actor_reference = 0,
-    const std::vector<Hp1ActorVisual>& additional_actors = {});
+    const std::vector<Hp1ActorVisual>& additional_actors = {},
+    bool include_decorations = false);
 
 // Builds a bounded BSP preview with repeating normalized UVs and a uniform
 // RGBA8 texture array. Direct Engine.Texture P8 materials are decoded from the
@@ -149,6 +197,8 @@ struct Hp1CharacterManifest {
     const std::filesystem::path& map_package,
     float meters_per_unreal_unit,
     std::uint32_t maximum_triangle_count,
-    std::int32_t brush_model_reference = 0);
+    std::int32_t brush_model_reference = 0,
+    const Hp1BspBuildContext* context = nullptr,
+    bool authored_brush_polygons = false);
 
 }  // namespace hpvr::wand

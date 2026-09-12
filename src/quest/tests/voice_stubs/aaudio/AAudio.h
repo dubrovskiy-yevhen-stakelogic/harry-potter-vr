@@ -1,0 +1,31 @@
+#pragma once
+#include <cstdint>
+struct AAudioStreamBuilder;
+struct AAudioStream;
+inline constexpr int AAUDIO_OK = 0;
+inline constexpr int AAUDIO_DIRECTION_INPUT = 1;
+inline constexpr int AAUDIO_SHARING_MODE_SHARED = 1;
+inline constexpr int AAUDIO_PERFORMANCE_MODE_NONE = 10;
+inline constexpr int AAUDIO_INPUT_PRESET_VOICE_RECOGNITION = 6;
+inline constexpr int AAUDIO_FORMAT_PCM_I16 = 1;
+inline constexpr int AAUDIO_ERROR_INVALID_FORMAT = -883;
+int AAudio_createStreamBuilder(AAudioStreamBuilder**);
+void AAudioStreamBuilder_setDirection(AAudioStreamBuilder*, int);
+void AAudioStreamBuilder_setSharingMode(AAudioStreamBuilder*, int);
+void AAudioStreamBuilder_setPerformanceMode(AAudioStreamBuilder*, int);
+void AAudioStreamBuilder_setInputPreset(AAudioStreamBuilder*, int);
+void AAudioStreamBuilder_setPrivacySensitive(AAudioStreamBuilder*, bool);
+void AAudioStreamBuilder_setFormat(AAudioStreamBuilder*, int);
+void AAudioStreamBuilder_setChannelCount(AAudioStreamBuilder*, int);
+void AAudioStreamBuilder_setSampleRate(AAudioStreamBuilder*, int);
+int AAudioStreamBuilder_openStream(AAudioStreamBuilder*, AAudioStream**);
+int AAudioStreamBuilder_delete(AAudioStreamBuilder*);
+int AAudioStream_getSampleRate(AAudioStream*);
+int AAudioStream_getChannelCount(AAudioStream*);
+int AAudioStream_getFormat(AAudioStream*);
+std::int64_t AAudioStream_getFramesWritten(AAudioStream*);
+std::int64_t AAudioStream_getFramesRead(AAudioStream*);
+int AAudioStream_requestStart(AAudioStream*);
+int AAudioStream_requestStop(AAudioStream*);
+int AAudioStream_close(AAudioStream*);
+int AAudioStream_read(AAudioStream*, void*, std::int32_t, std::int64_t);

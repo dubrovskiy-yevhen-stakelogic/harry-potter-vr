@@ -13,6 +13,18 @@
 
 namespace hpvr::wand {
 
+struct Hp1PackageReadStats { std::size_t hits=0, reads=0, retained_bytes=0; };
+// Thread-local, bounded read cache for one owned-data load. No derived assets
+// are written; the outer scope releases all cached buffers before GPU upload.
+class Hp1PackageReadScope {
+public:
+    Hp1PackageReadScope();
+    ~Hp1PackageReadScope();
+    Hp1PackageReadScope(const Hp1PackageReadScope&)=delete;
+    Hp1PackageReadScope& operator=(const Hp1PackageReadScope&)=delete;
+    [[nodiscard]] Hp1PackageReadStats stats()const;
+};
+
 inline constexpr std::size_t kHp1PassMarkCount{10};
 inline constexpr std::size_t kHp1NativeGesturePointLimit{1024};
 
@@ -444,6 +456,7 @@ struct Hp1P8Texture {
     std::int32_t palette_reference{};
     std::string object_name;
     std::uint8_t format{};
+    std::uint32_t polygon_flags{};
     bool format_serialized{};
     bool compressed_mips_serialized{};
     std::vector<Hp1TextureMipInfo> mips;
@@ -497,6 +510,7 @@ struct Hp1BspNode {
     std::int32_t surface_index{};
     std::int32_t front_node_index{};
     std::int32_t back_node_index{};
+    std::int32_t coplanar_node_index{-1};
     std::int32_t collision_bound_index{};
     std::array<std::uint8_t, 2> zone_indices{};
     std::uint8_t vertex_count{};
@@ -550,8 +564,10 @@ struct Hp1BspTopology {
     std::vector<Hp1BspVertex> vertices;
     std::size_t shared_side_count{};
     std::size_t zone_count{};
+    std::vector<std::int32_t> zone_actor_references;
     std::size_t bound_count{};
     std::size_t leaf_count{};
+    std::int32_t polys_reference{};
 };
 
 struct Hp1BspTriangle {
@@ -707,6 +723,11 @@ struct Hp1BspTriangleMesh {
     float meters_per_unreal_unit);
 
 [[nodiscard]] Hp1BspTopology load_hp1_brush_topology(
+    const std::filesystem::path& map_package, std::int32_t model_reference);
+
+// Authored moving-brush polygons retain material/UV edits that may not be in
+// the brush's auxiliary BSP. World geometry must continue to use its BSP.
+[[nodiscard]] Hp1BspTopology load_hp1_brush_polygon_topology(
     const std::filesystem::path& map_package, std::int32_t model_reference);
 
 // Reads only package metadata, one named Engine.Gesture export, the compiled

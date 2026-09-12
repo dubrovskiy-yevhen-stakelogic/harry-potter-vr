@@ -51,6 +51,10 @@ public:
 
     void Reset();
     [[nodiscard]] bool RestoreHead(const std::array<float,3>& world_head, float yaw);
+    // Tracking-origin changes rebase the observed head, never the physical body.
+    [[nodiscard]] bool RecenterToCapsule(const std::array<float,3>& world_capsule, float yaw);
+    // Physical platform transport is not a teleport or a new input epoch.
+    [[nodiscard]] bool TranslateWorld(const std::array<float,3>& displacement);
     [[nodiscard]] bool ObserveHead(const ViewPose& local_head);
     [[nodiscard]] bool Tick(const LocomotionInput& input,
                             float delta_seconds,
@@ -58,6 +62,8 @@ public:
                             void* resolver_context = nullptr);
     [[nodiscard]] bool MapPose(const ViewPose& local_pose,
                                ViewPose* world_pose) const;
+    // Same physical body used by Tick; headset crouching does not move its feet.
+    [[nodiscard]] std::array<float,3> CapsuleCenter() const;
 
     [[nodiscard]] const std::array<float, 3>& translation() const;
     [[nodiscard]] float yaw_radians() const;

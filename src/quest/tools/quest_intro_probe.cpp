@@ -201,10 +201,30 @@ int main(int argc, char** argv) {
         if(vertices.size()!=expected || pixels.size()!=std::uint64_t(scene.texture_layer_width)*scene.texture_layer_height*layers*4) return 14;
         QuestFrontEnd frontend;
         if(!LoadFrontAssets(root,&frontend.assets))return 17;
-        if(frontend.assets.gameplay_audio.size()!=79||frontend.assets.bump_speech.size()!=10||frontend.assets.frog_pickup.samples.empty()||
-           frontend.assets.card_pickup.status!=hpvr::wand::Hp1ProfileStatus::ok)return 25;
-        for(const auto& source:frontend.assets.gameplay_audio)
-            if(!std::filesystem::exists(std::filesystem::path(argv[2])/AudioCacheName(source)))return 25;
+        constexpr std::array<const char*,4> appended_effects{"pickup_star","vase_breaking","cauldron_flip","save_game"};
+        constexpr std::size_t dialogue_prefix_count=79;
+        constexpr std::size_t expected_gameplay_audio=dialogue_prefix_count+appended_effects.size();
+        if(frontend.assets.gameplay_audio.size()!=expected_gameplay_audio||frontend.assets.bump_speech.size()!=10||
+           frontend.assets.frog_pickup.samples.empty()||frontend.assets.card_pickup.status!=hpvr::wand::Hp1ProfileStatus::ok){
+            std::cerr<<"gameplay_audio_count="<<frontend.assets.gameplay_audio.size()<<" expected="<<expected_gameplay_audio
+                <<" bump_speech_count="<<frontend.assets.bump_speech.size()<<" expected_bump_speech=10"
+                <<" frog_samples="<<frontend.assets.frog_pickup.samples.size()
+                <<" card_pickup_ok="<<(frontend.assets.card_pickup.status==hpvr::wand::Hp1ProfileStatus::ok)<<'\n';
+            return 25;
+        }
+        for(std::size_t i=0;i<appended_effects.size();++i){
+            const auto& name=frontend.assets.gameplay_audio[dialogue_prefix_count+i].object_name;
+            if(AsciiFold(name)!=appended_effects[i]){
+                std::cerr<<"gameplay_effect_index="<<dialogue_prefix_count+i<<" actual="<<name<<" expected="<<appended_effects[i]<<'\n';
+                return 25;
+            }
+        }
+        for(const auto& source:frontend.assets.gameplay_audio){
+            const auto cache=std::filesystem::path(argv[2])/AudioCacheName(source);
+            if(!std::filesystem::exists(cache)){std::cerr<<"missing_gameplay_audio_cache="<<cache.string()<<'\n';return 25;}
+        }
+        std::cout<<"GAMEPLAY_AUDIO=PASS count="<<expected_gameplay_audio
+            <<" appended=pickup_star,vase_breaking,cauldron_flip,save_game\n";
         std::vector<BeanDraw> beans;
         if(!LoadOwnedBeans(root,map,start,yaw,vertices,pixels,layers,beans,&triangles))return 28;
         for(const auto& bean:beans){

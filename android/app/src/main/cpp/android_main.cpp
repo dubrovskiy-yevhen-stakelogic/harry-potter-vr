@@ -297,6 +297,8 @@ bool InitializeOpenXr(QuestHost& host) {
     create_info.applicationInfo.engineVersion = 1;
     create_info.applicationInfo.apiVersion = XR_CURRENT_API_VERSION;
     std::vector<const char*> enabled(required_extensions.begin(),required_extensions.end());
+    if(HasExtension(extensions,XR_FB_DISPLAY_REFRESH_RATE_EXTENSION_NAME))
+        enabled.push_back(XR_FB_DISPLAY_REFRESH_RATE_EXTENSION_NAME);
     host.metrics_extension=HasExtension(extensions,XR_META_PERFORMANCE_METRICS_EXTENSION_NAME);
     if(host.metrics_extension)
         enabled.push_back(XR_META_PERFORMANCE_METRICS_EXTENSION_NAME);
@@ -416,7 +418,7 @@ extern "C" void android_main(android_app* app) {
     host.app = app;
     app->userData = &host;
     app->onAppCmd = OnAppCommand;
-HPVR_LOGI("[hpvr.quest.host] status=ENTER abi=arm64-v8a gate=C37 loading=WARNER_THEATER sprint=L3_TOGGLE running=MATCHED_TRANSLATION knights=ONESHOT_CLAMPED story=DRACO_THEN_OPTIONAL_FILCH peeves=MANDATORY_CONTACT ui=BOOK_HUD stairs=INVISIBLE_RAMPS_HIDDEN cutscene=6DOF_PCM_RELEASE basic_cast=SPELLNONE lesson=CLASSROOM_CAST_GHOST_BOARDS reward=APPROACH_FRED objective=OWNED_TEXT frog=ANIMATED_GROUNDED twins=STAGED_SWAP demo=FIRST_STEP_AND_LESSON_END lesson_difficulty=ORIGINAL_OPTIONAL_RELAXED camera=LIVE_HARRY_OR_THEATRICAL vr_menu=CINEMATIC_RIG_WINDOW settings=VR3 defaults=HARRY_RELAXED_100_SSR30 ssr_budget=UNCHANGED_16_PLUS_4");
+HPVR_LOGI("[hpvr.quest.host] status=ENTER abi=arm64-v8a gate=C38 loading=WARNER_THEATER sprint=L3_TOGGLE running=MATCHED_TRANSLATION knights=ONESHOT_CLAMPED story=DRACO_THEN_OPTIONAL_FILCH peeves=MANDATORY_CONTACT ui=BOOK_HUD stairs=INVISIBLE_RAMPS_HIDDEN cutscene=6DOF_PCM_RELEASE basic_cast=SPELLNONE lesson=CLASSROOM_CAST_GHOST_BOARDS reward=APPROACH_FRED objective=OWNED_TEXT frog=ANIMATED_GROUNDED twins=STAGED_SWAP demo=FIRST_STEP_AND_CHALLENGE_END lesson_difficulty=ORIGINAL_OPTIONAL_RELAXED camera=LIVE_HARRY_OR_THEATRICAL vr_menu=CINEMATIC_RIG_WINDOW settings=VR3 defaults=HARRY_RELAXED_100_SSR30 ssr_budget=UNCHANGED_16_PLUS_4 map_transfer=LEV_TUT1_TO_LEV_TUT1B");
     if (!ValidatePortableCore()) {
         HPVR_LOGE("[hpvr.quest.host] status=PORTABLE_CORE_REJECTED");
         return;
@@ -457,6 +459,7 @@ HPVR_LOGI("[hpvr.quest.host] status=ENTER abi=arm64-v8a gate=C37 loading=WARNER_
             HPVR_LOGE("[hpvr.quest.host] status=FRAME_FAILURE");
             break;
         }
+        host.stereo_smoke.UpdateVoicePlatform(app->activity);
         if (host.stereo_smoke.ConsumeCommunityRequest()) {
             OpenDemoCommunity(app->activity);
         }

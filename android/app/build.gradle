@@ -2,6 +2,12 @@ plugins {
     id 'com.android.application'
 }
 
+// Local consented microphone diagnostics are never enabled by a normal build.
+def hpvrVoiceDiagnostics = providers.gradleProperty('hpvrVoiceDiagnostics').orElse('false').get() == 'true'
+if (hpvrVoiceDiagnostics && gradle.startParameter.taskNames.any { it.toLowerCase().contains('release') }) {
+    throw new GradleException('Voice recording diagnostics cannot be included in release tasks.')
+}
+
 android {
     namespace 'io.github.hpvr.quest'
     compileSdk 35
@@ -11,8 +17,8 @@ android {
         applicationId 'io.github.hpvr.quest'
         minSdk 32
         targetSdk 35
-        versionCode 37
-        versionName '0.1.0-demo'
+        versionCode 54
+        versionName '0.1.1-alpha'
 
         ndk {
             abiFilters 'arm64-v8a'
@@ -28,6 +34,9 @@ android {
 
     buildFeatures {
         prefab true
+    }
+    sourceSets {
+        main.assets.srcDirs += [file('../../local/neural-voice-dependencies/assets')]
     }
 
     externalNativeBuild {
@@ -50,7 +59,20 @@ android {
             minifyEnabled false
             externalNativeBuild {
                 cmake {
-                    arguments '-DCMAKE_BUILD_TYPE=RelWithDebInfo'
+                    arguments '-DCMAKE_BUILD_TYPE=RelWithDebInfo', '-DHPVR_VOICE_DIAGNOSTICS=OFF'
+                }
+            }
+        }
+        // Separate artifact path: the local recording APK never replaces app-debug.apk.
+        if (hpvrVoiceDiagnostics) {
+            voiceDiagnostic {
+                initWith debug
+                matchingFallbacks = ['debug']
+                versionNameSuffix '-voice-diag'
+                externalNativeBuild {
+                    cmake {
+                        arguments '-DCMAKE_BUILD_TYPE=RelWithDebInfo', '-DHPVR_VOICE_DIAGNOSTICS=ON'
+                    }
                 }
             }
         }
@@ -61,7 +83,7 @@ android {
             // Signing belongs to BUILD-QUEST-RELEASE.ps1, never Gradle secrets.
             externalNativeBuild {
                 cmake {
-                    arguments '-DCMAKE_BUILD_TYPE=Release'
+                    arguments '-DCMAKE_BUILD_TYPE=Release', '-DHPVR_VOICE_DIAGNOSTICS=OFF'
                 }
             }
         }

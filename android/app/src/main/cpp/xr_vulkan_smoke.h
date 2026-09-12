@@ -4,6 +4,7 @@
 
 #include <filesystem>
 #include <memory>
+struct ANativeActivity;
 
 namespace hpvr::quest {
 
@@ -27,6 +28,7 @@ public:
     [[nodiscard]] bool PollEvents(bool* exit_requested);
     [[nodiscard]] bool RenderFrame();
     bool ConsumeCommunityRequest();
+    void UpdateVoicePlatform(ANativeActivity* activity);
     [[nodiscard]] bool IsRunning() const;
     [[nodiscard]] bool HasSession() const;
 
