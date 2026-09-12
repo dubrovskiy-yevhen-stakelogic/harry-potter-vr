@@ -39,7 +39,7 @@ $rootFiles = @(
     'tools/voice/TEST-NEURAL-VOICE-RUNTIME.ps1',
     'tools/voice/flipendo.keywords', 'tools/voice/voice_keyword_probe.cpp', 'tools/voice/README.md',
     'docs/architecture.md', 'docs/wand-gesture-contract.md',
-    'docs/RELEASE-BUILD.md', 'docs/THIRD-PARTY-NOTICES.md',
+    'docs/RELEASE-BUILD.md', 'docs/THIRD-PARTY-NOTICES.md', 'docs/VOICE-HOTFIX-0.1.2.1.md',
     'docs/CLASSIC-CASTING-AND-CHALLENGE.md', 'docs/FLIPENDO-CHALLENGE.md', 'docs/LOADING-AND-PICKUPS.md',
     'tools/xr-runtime-probe/Cargo.toml', 'tools/xr-runtime-probe/Cargo.lock',
     'tools/xr-runtime-probe/rust-toolchain.toml', 'tools/xr-runtime-probe/build.rs'

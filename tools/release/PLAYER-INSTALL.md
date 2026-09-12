@@ -1,8 +1,8 @@
 # Harry Potter VR — Quest demo installation
 
-Version **0.1.2 alpha** is an unofficial standalone Quest 3 demo containing the
+Version **0.1.2.1 alpha** is an unofficial standalone Quest 3 demo containing the
 opening level, Flipendo Challenge and Broomstick Training. All three maps are
-selected automatically.
+selected automatically. This voice-recognition hotfix adds no new maps.
 The release contains the APK, an offline voice-recognition model and Windows
 import tools, **not game assets, player recordings or saves**.
 
@@ -108,10 +108,10 @@ key. **Do not uninstall it to bypass the error: that can erase saves, settings
 and imported data. Contact the author for migration.** The installer does not
 uninstall apps or bypass downgrade protection.
 
-The alpha APK uses Android version code 57. Updating an earlier public release
+The alpha APK uses Android version code 59. Updating an earlier public release
 requires the same release certificate; a higher version number alone cannot
-resolve a different signing key. Use the complete matching alpha installer kit
-to add the new level's packages and prepared cache, not just its APK.
+resolve a different signing key. Use the complete matching alpha installer kit;
+this hotfix retains the same three-map data scope as 0.1.2.
 
 ## Offline preparation and storage
 
@@ -144,7 +144,7 @@ non-debuggable release; private saves are separate.
 
 `HP/Cache/Scenes/map-0.hpvc` is the prepared first map, `map-1.hpvc` is the
 prepared Flipendo Challenge and `map-2.hpvc` is Broomstick Training.
-All three are generated and verified by default for 0.1.2 alpha. Only these
+All three are generated and verified by default for 0.1.2.1 alpha. Only these
 selected cache files are transferred; their SHA-256 hashes are checked on the
 headset along with the other imported files. They remain private game-derived
 data and are never included in the public release ZIP. If a cache is missing or
@@ -156,8 +156,10 @@ packages instead; rerun the installer from a matching kit to restore preparation
 Voice casting is optional. When enabled, it uses the headset microphone with
 Android's microphone permission and recognizes spells locally; it does not need
 an online speech service. The player build does not save voice recordings.
-It is an early experimental feature tested only by the author so far; some
-pronunciations may be missed. Voice and gesture casting are disabled during
+It is an early experimental feature with limited player testing. Additional
+pronunciation paths do not guarantee recognition for every accent or microphone;
+some pronunciations may be missed, and similar-sounding speech can trigger a
+spell while aiming. Voice and gesture casting are disabled during
 Broomstick Training. The in-game Controls submenu explains each casting mode.
 Private diagnostic recordings, test audio and diagnostic APKs are not part of
 this release. The model's license notices are included in `THIRD-PARTY/`.

@@ -1,6 +1,7 @@
 [CmdletBinding()]
 param(
     [switch]$InitializeSigningKey,
+    [string]$SigningDirectory,
     [string]$OutputDirectory,
     [string]$AndroidSdk = 'C:\Dev\android-toolchain\sdk',
     [string]$JavaDirectory = 'C:\Dev\android-toolchain\jdk21',
@@ -39,6 +40,23 @@ if ([string]::IsNullOrWhiteSpace($OutputDirectory)) {
 }
 $buildRoot = Join-Path $repositoryRoot 'build'
 $signingRoot = Join-Path $repositoryRoot 'local\signing\release'
+if (-not [string]::IsNullOrWhiteSpace($SigningDirectory)) {
+    if ($InitializeSigningKey) { throw 'An external signing directory must contain an existing identity; key initialization is not allowed.' }
+    if ($SigningDirectory -notmatch '^[A-Za-z]:[\\/]') { throw 'SigningDirectory must be an absolute local drive path.' }
+    $signingRoot = [IO.Path]::GetFullPath($SigningDirectory)
+    if (-not (Test-Path -LiteralPath $signingRoot -PathType Container)) { throw 'The existing signing directory was not found.' }
+}
+foreach ($signingPath in @($signingRoot, (Join-Path $signingRoot 'hpvr-release.p12'),
+        (Join-Path $signingRoot 'hpvr-release-password.clixml'))) {
+    $signingAncestor = $signingPath
+    while ($signingAncestor) {
+        if ((Test-Path -LiteralPath $signingAncestor) -and
+            ((Get-Item -LiteralPath $signingAncestor -Force).Attributes -band [IO.FileAttributes]::ReparsePoint)) {
+            throw 'Signing paths must not contain symbolic links or junctions.'
+        }
+        $signingAncestor = [IO.Path]::GetDirectoryName($signingAncestor)
+    }
+}
 $keystore = Join-Path $signingRoot 'hpvr-release.p12'
 $credentialPath = Join-Path $signingRoot 'hpvr-release-password.clixml'
 $alias = 'hpvr-release'

@@ -1,4 +1,4 @@
-# Harry Potter VR — 0.1.2 Alpha
+# Harry Potter VR — 0.1.2.1 Alpha
 
 An unofficial native VR port of *Harry Potter and the Sorcerer's Stone*
 (PC, 2001) for **Meta Quest 3**. Runs standalone, without a PC or Quest Link.
@@ -8,6 +8,14 @@ lesson, **Flipendo Challenge** and **Broomstick Training**. A user-owned US PC
 copy is required.
 Original maps, textures, models, music and dialogue are not included in the
 download.
+
+## Changes in 0.1.2.1
+
+- Expanded offline Flipendo recognition for additional pronunciations, including
+  different syllable timing and stress.
+- Voice-only hotfix for 0.1.2: the same three maps, with no new level content.
+
+Voice casting remains experimental; support for every accent is not guaranteed.
 
 ## Features
 
@@ -99,8 +107,10 @@ implemented. Original PC saves cannot be imported.
 Fountain water uses the original texture; its original procedural ripple
 simulation is not implemented yet.
 
-**Voice casting is experimental and has only been tested by the author.**
-Some pronunciations may be missed; similar-sounding phrases can trigger a spell
+**Voice casting is experimental, with limited player testing.**
+Recorded examples from a small number of speakers do not establish support for
+every accent or headset microphone. Some pronunciations may be missed;
+similar-sounding phrases can trigger a spell
 while aiming. Recognition runs locally, without uploading or saving your voice.
 No internet connection or personal voice training is needed.
 

@@ -269,7 +269,7 @@ int main(){try{
             Check(TextAt(front,347)=="INLESSONS,FOLLOWTHESHOWNPATTERN.","lesson precision distinguished from gameplay");
         }
         if(page==3)Check(TextAt(front,263)=="KEEPHOLDINGTOCASTAGAINBYVOICE."&&
-                         TextAt(front,319)=="EXPERIMENTAL-ONLYTESTEDBYTHEAUTHOR.","voice repeat and experimental warning");
+                         TextAt(front,319)=="EXPERIMENTAL-LIMITEDPLAYERTESTING.","voice repeat and experimental warning");
         if(page==4)Check(TextAt(front,207)=="RIGHTSTICKUP/DOWN-ASCEND/DESCEND."&&
                          TextAt(front,235)=="RELEASETHELEFTSTICKTOBRAKE.","broom controls explain height and braking");
         Press(front);
@@ -293,8 +293,8 @@ int main(){try{
     Check(front.WorldVisible()&&front.PausesWorld(),"controls opened over welcome retains notice pause");
     front.ToggleVrMenu();
     Check(front.screen==FrontScreen::Welcome,"controls closes back to welcome without dismissing it");
-    Check(TextAt(front,78)=="0.1.2ALPHA-WELCOME"&&TextAt(front,122)=="VERYEARLYALPHA-EXPECTBUGS."&&
-          TextAt(front,194)=="ITHASONLYBEENTESTEDBYTHEAUTHOR.","welcome states alpha status and author-only voice testing");
+    Check(TextAt(front,78)=="0.1.2.1ALPHA-WELCOME"&&TextAt(front,122)=="VERYEARLYALPHA-EXPECTBUGS."&&
+          TextAt(front,194)=="LIMITEDPLAYERTESTINGSOFAR.","welcome states alpha status and limited voice testing");
     for(unsigned map:{0U,1U,2U})for(auto screen:{FrontScreen::Welcome,FrontScreen::DemoEnd})for(unsigned row:{0U,1U}){
         front.assets.map_id=map;front.screen=screen;front.selection=row;
         for(const auto& quad:front.Quads())Check(quad.x>=0&&quad.y>=0&&quad.x+quad.w<=640&&quad.y+quad.h<=480,

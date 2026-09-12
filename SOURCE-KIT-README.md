@@ -1,7 +1,8 @@
 # Harry Potter VR — source code
 
-Source code for **0.1.2 Alpha**, the native Meta Quest 3 port. It includes the
+Source code for **0.1.2.1 Alpha**, the native Meta Quest 3 port. It includes the
 opening tutorials, Flipendo lesson, Flipendo Challenge and Broomstick Training.
+This is a voice-recognition hotfix for 0.1.2, not a new-level release.
 See [README](README.md) for features, controls and limitations.
 
 ## Layout
@@ -65,10 +66,10 @@ The APK is written to `android/app/build/outputs/apk/debug/app-debug.apk`.
 `BUILD-QUEST-DEBUG.ps1` uses locally configured tool paths and an offline cache;
 use the Gradle command above for another environment.
 
-For a signed release:
+For a signed update using the existing release identity:
 
 ```powershell
-.\BUILD-QUEST-RELEASE.ps1 -InitializeSigningKey
+.\BUILD-QUEST-RELEASE.ps1 -OutputDirectory artifacts\quest-release-0.1.2.1-alpha-c59
 ```
 
 Use `-InitializeSigningKey` only when creating the first key. Keep the key private

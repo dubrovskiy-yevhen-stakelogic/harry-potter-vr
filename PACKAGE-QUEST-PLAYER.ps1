@@ -1,8 +1,8 @@
 #requires -Version 5.1
 [CmdletBinding()]
 param(
-    [string]$ApkPath = 'artifacts/quest-release-0.1.2-alpha-c57/HPVR-Quest-0.1.2-alpha.apk',
-    [string]$OutputDirectory = 'artifacts/HPVR-Quest-Demo-0.1.2-alpha',
+    [string]$ApkPath = 'artifacts/quest-release-0.1.2.1-alpha-c59/HPVR-Quest-0.1.2.1-alpha.apk',
+    [string]$OutputDirectory = 'artifacts/HPVR-Quest-Demo-0.1.2.1-alpha',
     [string]$HostBuildDirectory = 'build/quest-host-tests'
 )
 

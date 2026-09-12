@@ -53,7 +53,7 @@ $required = @(
     'android/app/src/main/cpp/quest_challenge_runtime.inl',
     'tools/xr-runtime-probe/src/main.rs',
     'docs/architecture.md', 'docs/wand-gesture-contract.md',
-    'docs/RELEASE-BUILD.md', 'docs/THIRD-PARTY-NOTICES.md',
+    'docs/RELEASE-BUILD.md', 'docs/THIRD-PARTY-NOTICES.md', 'docs/VOICE-HOTFIX-0.1.2.1.md',
     'docs/CLASSIC-CASTING-AND-CHALLENGE.md', 'docs/FLIPENDO-CHALLENGE.md', 'docs/LOADING-AND-PICKUPS.md'
 )
 foreach ($relative in $required) { Write-Fixture $relative }
@@ -94,7 +94,7 @@ foreach ($relative in @('cmake/HPVRVoice.cmake', 'tools/voice/FETCH-VOICE-DEPEND
 foreach ($relative in $excludedDocs) {
     Expect (-not (Test-Path -LiteralPath (Join-Path $destination $relative))) "Non-public documentation exported: $relative"
 }
-foreach ($relative in @('docs/architecture.md', 'docs/wand-gesture-contract.md', 'docs/RELEASE-BUILD.md', 'docs/THIRD-PARTY-NOTICES.md')) {
+foreach ($relative in @('docs/architecture.md', 'docs/wand-gesture-contract.md', 'docs/RELEASE-BUILD.md', 'docs/THIRD-PARTY-NOTICES.md', 'docs/VOICE-HOTFIX-0.1.2.1.md')) {
     Expect (Test-Path -LiteralPath (Join-Path $destination $relative)) "Maintained documentation missing: $relative"
 }
 $manifest = @(Get-Content -LiteralPath (Join-Path $destination 'SOURCE-SHA256.txt'))

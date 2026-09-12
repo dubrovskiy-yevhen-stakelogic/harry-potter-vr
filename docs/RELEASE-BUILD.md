@@ -1,14 +1,18 @@
 # Quest release build
 
-The **0.1.2-alpha** release uses Android version code **57** and includes the
+The **0.1.2.1-alpha** release uses Android version code **59** and includes the
 opening level, [Flipendo Challenge](FLIPENDO-CHALLENGE.md) and Broomstick Training.
+It is a voice-recognition hotfix for the public 0.1.2 baseline; no later maps or
+untested gameplay changes are included.
 The release contains the port, third-party libraries and the licensed offline voice model,
 not HP game assets, decoded game audio, user recordings, saves or signing keys.
 Players import their own compatible US PC data for all three levels.
 
 Each newly restored level increments the last numeric version component:
-0.1.2, then 0.1.3, 0.1.4, and so on. The alpha label remains while the port is
-in early testing. Android version codes increase independently for new APKs.
+0.1.2, then 0.1.3, 0.1.4, and so on. Hotfixes without a new level use a fourth
+component, such as 0.1.2.1. The alpha label remains while the port is in early
+testing. Android version codes increase independently for new APKs; code 58 was
+used for a private development build and is not this public release.
 
 ## Tools
 
@@ -23,11 +27,20 @@ For an update, reuse the existing release signing identity. From the repository
 root, build into a new artifact directory:
 
 ```powershell
-.\BUILD-QUEST-RELEASE.ps1 -OutputDirectory artifacts\quest-release-0.1.2-alpha-c57
+.\BUILD-QUEST-RELEASE.ps1 -OutputDirectory artifacts\quest-release-0.1.2.1-alpha-c59
 ```
 
 Only a project's first release with no identity should use
 `-InitializeSigningKey`. Do not generate a replacement key for an update.
+When building from a separate checkout, pass `-SigningDirectory` with the
+absolute path of the existing private signing directory. The directory must
+contain the matching `hpvr-release.p12` and `hpvr-release-password.clixml` pair;
+the DPAPI credential requires the original Windows account and machine profile.
+The build reads this identity in place without copying it into the checkout or
+release. This option cannot be combined with `-InitializeSigningKey`, and
+symbolic links or junctions in the signing paths are rejected. Never put signing
+material in a public source kit or player archive.
+
 Output directories must be new children of `artifacts/`; existing releases are
 not overwritten. For a rebuild, choose a new output directory and pass its APK
 path explicitly to the packager.
@@ -49,8 +62,8 @@ cmake --build build --config Release --target hpvr_hp1_package_graph hpvr_hp1_so
 
 The packager reads the matching `RELEASE-METADATA.json`, checks the APK and
 includes the installer, required helper tools, documentation and hashes. Its
-default input is `artifacts/quest-release-0.1.2-alpha-c57/HPVR-Quest-0.1.2-alpha.apk`
-and default output is `artifacts/HPVR-Quest-Demo-0.1.2-alpha` plus the sibling ZIP.
+default input is `artifacts/quest-release-0.1.2.1-alpha-c59/HPVR-Quest-0.1.2.1-alpha.apk`
+and default output is `artifacts/HPVR-Quest-Demo-0.1.2.1-alpha` plus the sibling ZIP.
 Its default host-tool directory is `build/quest-host-tests`; the explicit
 `-HostBuildDirectory build` above selects the main tree instead. Build and
 packaging do not install or launch the game.
@@ -90,8 +103,8 @@ development build to bypass this conflict: saves, settings and imported data may
 be lost.** Arrange a backup/migration first. Public updates must keep the original
 release certificate.
 
-Version code 57 is newer than the previous public demo, but certificate equality
-must also be checked against the previous release's `RELEASE-METADATA.json`.
+Version code 59 is newer than the 0.1.2 public demo (code 57), but certificate
+equality must also be checked against that release's `RELEASE-METADATA.json`.
 The player installer uses a normal in-place `adb install -r`, without downgrade
 or uninstall flags. Android rejects an incompatible signer before data import.
 Do not install the public release over a debug-signed development test just to

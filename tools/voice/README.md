@@ -2,7 +2,8 @@
 
 Voice mode recognizes the complete spoken **Flipendo** locally using neural
 keyword spotting. It needs no account, online speech service or personal voice
-enrollment. It is experimental and has only been tested by the author.
+enrollment. It is experimental; testing covers the author and a second player's
+recording, not a representative range of accents or microphones.
 
 ## Dependencies and builds
 
@@ -57,16 +58,29 @@ off by default.
 
 ## Recognition and limitations
 
-The decoder uses six complete pronunciation paths, beam size 16, keyword score 1,
+The decoder uses eight complete pronunciation paths, beam size 16, keyword score 1,
 one trailing blank and a default keyword threshold of 0.25. The PRE P END O
 alternative has a stricter 0.35 threshold. These model scores are not calibrated
 probabilities. Full keyword identity and bounded, monotonic word timing are
 checked before dispatch.
 
 Fast speech, accents and room noise can still cause misses. Near-sounding speech,
-including “prepend a word”, can trigger while an eligible target is armed.
+including “prepend a word” and a fast “fleet been dormant”, can trigger while an
+eligible target is armed.
 The supported paths are whole-word alternatives, not suffix wildcards. Testing
-by one author does not establish reliability for every player or microphone.
+on two speakers does not establish reliability for every player or microphone.
+
+The 0.1.2.1 hotfix adds two whole-word acoustic token paths for first-syllable
+stress and separated syllables. The pinned English model can segment the invented
+word into English-like tokens; these paths are not literal phrases players must
+say. Existing paths, thresholds, timing checks and target-lock rules are unchanged.
+No recording is included in the vocabulary or shipped with the game.
+
+In the supplied eight-repeat recording, the original vocabulary produced no
+events; the revised vocabulary produced seven. Isolated clips improved from
+one to seven recognized repetitions. This is a local replay result, not a
+headset test or a global accent benchmark. See
+[hotfix validation](../../docs/VOICE-HOTFIX-0.1.2.1.md).
 
 ## Tests
 

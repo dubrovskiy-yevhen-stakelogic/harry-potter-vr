@@ -703,7 +703,7 @@ std::vector<FrontQuad> QuestFrontEnd::Quads()const{
             const bool finished=screen==FrontScreen::DemoEnd;
             const bool challenge=assets.map_id==1;
             const bool flying=assets.map_id==kBroomstickTrainingMapId;
-            const std::string heading=!finished?"0.1.2 ALPHA - WELCOME":
+            const std::string heading=!finished?"0.1.2.1 ALPHA - WELCOME":
                 (flying?"BROOMSTICK TRAINING COMPLETE":challenge?"FLIPENDO CHALLENGE COMPLETE":"THANK YOU FOR PLAYING!");
             text(heading,320-float(heading.size())*6,78,2,0xffe164);
             if(finished){
@@ -713,7 +713,7 @@ std::vector<FrontQuad> QuestFrontEnd::Quads()const{
                 text("THANKS FOR TRYING HARRY POTTER VR!",62,245,2,0xffffff);
             }else{
                 const std::array lines{"VERY EARLY ALPHA - EXPECT BUGS.","NOW INCLUDES BROOMSTICK TRAINING.",
-                    "VOICE CASTING IS EXPERIMENTAL.","IT HAS ONLY BEEN TESTED BY THE AUTHOR.",
+                    "VOICE CASTING IS EXPERIMENTAL.","LIMITED PLAYER TESTING SO FAR.",
                     "IT MAY NOT RECOGNIZE EVERY PLAYER", "OR ACCENT. PLEASE SEND YOUR FEEDBACK.",
                     "FOLLOW DEVELOPMENT NEWS ON DISCORD."};
                 for(unsigned i=0;i<lines.size();++i)text(lines[i],62,122+24*float(i),1.8F,0xffffff);
@@ -749,7 +749,7 @@ std::vector<FrontQuad> QuestFrontEnd::Quads()const{
                 {{"TURN ON VOICE CAST IN VR SETTINGS.","HOLD THE RIGHT TRIGGER.",
                   "AIM AT A FLIPENDO SYMBOL TO LOCK ON.","SAY FLIPENDO TO CAST.",
                   "KEEP HOLDING TO CAST AGAIN BY VOICE.","PAUSE BRIEFLY BETWEEN SPOKEN CASTS.",
-                  "EXPERIMENTAL - ONLY TESTED BY THE AUTHOR.","MAY NOT RECOGNIZE EVERY VOICE OR ACCENT."}},
+                  "EXPERIMENTAL - LIMITED PLAYER TESTING.","MAY NOT RECOGNIZE EVERY VOICE OR ACCENT."}},
                 {{"LEFT STICK - FLY FORWARD / BACK / SIDEWAYS.","RIGHT STICK LEFT / RIGHT - TURN.",
                   "RIGHT STICK UP / DOWN - ASCEND / DESCEND.","RELEASE THE LEFT STICK TO BRAKE.",
                   "FLY THROUGH THE ACTIVE HOOPS IN ORDER.","LOOK AROUND FREELY WITH YOUR HEAD.",

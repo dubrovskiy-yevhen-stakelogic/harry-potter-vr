@@ -135,7 +135,8 @@ if (Test-Path -LiteralPath $keywordTarget) {
         # Only our known previous vocabulary may migrate. Third-party weights,
         # user edits and unknown keyword files retain the strict no-replace rule.
         if (@('AF2C96A1130127BD9A7A82002BFC307D5E9A555D980AF58D96CEB0927495564C',
-              '2A832EEA7B6F8791E5B510E9D3DC982A29840640157C6D3C4141CBFBCE6B91D2') -cnotcontains $previousKeywordHash) {
+              '2A832EEA7B6F8791E5B510E9D3DC982A29840640157C6D3C4141CBFBCE6B91D2',
+              'B772267DFCED642A7C3010EA368487BD43C4A3CBFD394DC543D6A66DE3FF00AF') -cnotcontains $previousKeywordHash) {
             throw 'Unknown staged keyword file; preserve and inspect it before updating.'
         }
         $keywordBackup = Join-Path $root ('keyword-history/' + $previousKeywordHash + '.keywords')

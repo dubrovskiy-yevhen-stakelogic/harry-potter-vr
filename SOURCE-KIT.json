@@ -1,8 +1,8 @@
 {
   "format": "hpvr-source-kit-v1",
-  "createdUtc": "2026-09-12T11:09:47.2361926Z",
-  "sourceFiles": 279,
-  "sourceBytes": 3391980.0,
+  "createdUtc": "2026-09-12T20:45:09.2939732Z",
+  "sourceFiles": 280,
+  "sourceBytes": 3399896.0,
   "payload": "Text source, build configuration, documentation only. No game assets, binaries, saves or private caches.",
   "license": "No project-wide redistribution license is granted by this snapshot."
 }
