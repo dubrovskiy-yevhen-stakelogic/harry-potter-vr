@@ -54,6 +54,8 @@ public:
     void SetPerformance(const PerformanceSnapshot& performance);
     void RecordFrontDraw(VkCommandBuffer command_buffer,const Matrix4& view_projection) const;
     void DestroyGpu();
+    void RecordMirrorCapture(VkCommandBuffer command,const Matrix4& projection);
+    void RecordMirrorComposite(VkCommandBuffer command,const Matrix4& projection,unsigned width,unsigned height) const;
 
     void RecordDraw(VkCommandBuffer command_buffer,
                     std::uint32_t width,
@@ -91,6 +93,7 @@ public:
     bool IsFrontEndVisible() const;
     bool IsWorldPaused() const;
     bool CanCast() const;
+    GestureSpell ActiveGestureSpell() const;
     void Advance(float delta_seconds);
     void SetTrackingActive(bool active);
     void RejectLessonGesture();
@@ -114,6 +117,10 @@ public:
     [[nodiscard]] std::uint32_t CurrentAnimationFrame() const;
 
 private:
+    void StartCharmsLesson(std::int32_t reference);
+    void SubmitCharmsLesson(float score);
+    void AdvanceCharms(float seconds);
+    void UpdateCharmsWand(const std::array<float,3>& tip,const std::array<float,3>& direction,bool tracked,bool held);
     void StartBroomScene(const std::string& tag,unsigned phase);
     void BeginBroomTrial();
     void AdvanceBroom(float seconds);

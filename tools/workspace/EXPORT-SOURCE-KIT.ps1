@@ -7,7 +7,7 @@ param(
 
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
-$repositoryRoot = [IO.Path]::GetFullPath($PSScriptRoot).TrimEnd('\', '/')
+$repositoryRoot = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '../..')).TrimEnd('\', '/')
 $repositoryPrefix = $repositoryRoot + [IO.Path]::DirectorySeparatorChar
 if ([string]::IsNullOrWhiteSpace($DestinationPath)) {
     $DestinationPath = Join-Path (Split-Path -Parent $repositoryRoot) ((Split-Path -Leaf $repositoryRoot) + '-source-kit')
@@ -20,12 +20,14 @@ $archivePath = $destination + '.zip'
 # or untracked. It never traverses the private local/build/retail data trees.
 $rootFiles = @(
     '.gitattributes', '.gitignore', 'CMakeLists.txt', 'README.md',
-    'SOURCE-KIT-README.md', 'EXPORT-SOURCE-KIT.ps1', 'BUILD-QUEST-DEBUG.ps1',
-    'PACKAGE-QUEST-DEBUG.ps1', 'VERIFY-QUEST-APK.ps1', 'IMPORT-QUEST-DATA.ps1',
-    'BUILD-QUEST-RELEASE.ps1', 'PACKAGE-QUEST-PLAYER.ps1',
-    'PREPARE-QUEST-AUDIO.ps1', 'PREPARE-QUEST-FRONTEND.ps1', 'RUN-LATEST-VR.cmd',
-    'PREPARE-QUEST-CHALLENGE.ps1', 'PREPARE-QUEST-BROOM.ps1',
-    'tools/test-quest-broom-preparation.ps1',
+    'INSTALL.bat', 'docs/BUILDING.md', 'tools/workspace/INSTALL-PLAYER.ps1',
+    'tools/workspace/EXPORT-SOURCE-KIT.ps1', 'tools/workspace/BUILD-QUEST-DEBUG.ps1',
+    'tools/workspace/PACKAGE-QUEST-DEBUG.ps1', 'tools/workspace/VERIFY-QUEST-APK.ps1', 'tools/workspace/IMPORT-QUEST-DATA.ps1',
+    'tools/workspace/BUILD-QUEST-RELEASE.ps1', 'tools/workspace/PACKAGE-QUEST-PLAYER.ps1',
+    'tools/workspace/PREPARE-QUEST-AUDIO.ps1', 'tools/workspace/PREPARE-QUEST-FRONTEND.ps1', 'tools/workspace/RUN-LATEST-VR.cmd',
+    'tools/workspace/PREPARE-QUEST-CHALLENGE.ps1', 'tools/workspace/PREPARE-QUEST-BROOM.ps1',
+    'tools/test-quest-broom-preparation.ps1', 'tools/workspace/PREPARE-QUEST-CHARMS.ps1',
+    'tools/test-quest-charms-preparation.ps1',
     'android/build.gradle', 'android/settings.gradle', 'android/gradle.properties',
     'android/app/build.gradle', 'tools/verify-baseline.ps1', 'tools/test-source-kit-export.ps1',
     'tools/release/INSTALL-HPVR.ps1', 'tools/release/INSTALL-HPVR.cmd',

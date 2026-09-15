@@ -229,8 +229,8 @@ void TestInterruptedMantleSceneWiring() {
     const auto legacy=scene.find("state.placement=state.frontend.progress;state.placement.player=state.climb.start;",failed);
     Check(resolver!=std::string::npos&&failed!=std::string::npos&&legacy!=std::string::npos,"mantle fallback located");
     const auto branch=scene.substr(failed,legacy-failed);
-    Check(branch.find("if(StepClimb(")<branch.find("if(state.map_id==1)")&&
-          branch.find("if(state.map_id==1){BeginChallengeDeath(\"MANTLE_INTERRUPTED\");*output={};return true;}")!=std::string::npos,
+    Check(branch.find("if(StepClimb(")<branch.find("if(IsWalkingChallenge(state.map_id))")&&
+          branch.find("if(IsWalkingChallenge(state.map_id)){BeginChallengeDeath(\"MANTLE_INTERRUPTED\");*output={};return true;}")!=std::string::npos,
           "failed challenge mantle enters world recovery and returns before player-only placement");
     const auto runtime=read(directory/"quest_challenge_runtime.inl");
     const auto death=runtime.find("void QuestScene::BeginChallengeDeath(");

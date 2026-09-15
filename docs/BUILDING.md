@@ -1,9 +1,9 @@
 # Harry Potter VR — source code
 
-Source code for **0.1.2.1 Alpha**, the native Meta Quest 3 port. It includes the
-opening tutorials, Flipendo lesson, Flipendo Challenge and Broomstick Training.
-This is a voice-recognition hotfix for 0.1.2, not a new-level release.
-See [README](README.md) for features, controls and limitations.
+Source code for the native Meta Quest 3 port.
+It includes the opening tutorials, Flipendo lesson, Flipendo Challenge,
+Broomstick Training and the Alohomora / Charms level.
+See [README](../README.md) for features, controls and limitations.
 
 ## Layout
 
@@ -23,6 +23,9 @@ Exported packages include `SOURCE-SHA256.txt` with source-file checksums.
 
 ## Windows build and tests
 
+Run the commands below from the repository root. Build and packaging scripts
+live under `tools/workspace/`; players should use the release installer instead.
+
 Requires Visual Studio 2022 C++ Build Tools, Windows SDK and CMake 3.25 or newer.
 The code uses C++20. The default portable tests do not need game data or a headset.
 
@@ -35,7 +38,7 @@ ctest --test-dir build\host -C Release --output-on-failure
 Owned-data probes additionally need a compatible US PC installation. They must
 write generated assets outside that installation and outside the source package.
 Neural voice checks use separate dependencies and are described in the
-[voice build guide](tools/voice/README.md).
+[voice build guide](../tools/voice/README.md).
 
 ## Android / Quest
 
@@ -66,19 +69,19 @@ The APK is written to `android/app/build/outputs/apk/debug/app-debug.apk`.
 `BUILD-QUEST-DEBUG.ps1` uses locally configured tool paths and an offline cache;
 use the Gradle command above for another environment.
 
-For a signed update using the existing release identity:
+For a signed release:
 
 ```powershell
-.\BUILD-QUEST-RELEASE.ps1 -OutputDirectory artifacts\quest-release-0.1.2.1-alpha-c59
+.\tools\workspace\BUILD-QUEST-RELEASE.ps1 -InitializeSigningKey
 ```
 
 Use `-InitializeSigningKey` only when creating the first key. Keep the key private
 and backed up: updates must use the same signing identity. Tool paths, signing and
-packaging are covered in the [release build guide](docs/RELEASE-BUILD.md).
+packaging are covered in the [release build guide](RELEASE-BUILD.md).
 
 `PACKAGE-QUEST-PLAYER.ps1` creates the player installation kit. It contains the
-APK and importer, not game data. The [installer](tools/release/PLAYER-INSTALL.md)
-prepares all three supported maps from the player's own US PC copy.
+APK and importer, not game data. The [installer](../tools/release/PLAYER-INSTALL.md)
+prepares every declared map from the player's own US PC copy.
 
 Normal debug and all release APKs exclude microphone-recording diagnostics.
 Do not distribute the separate opt-in diagnostic build.
@@ -88,8 +91,8 @@ Do not distribute the separate opt-in diagnostic build.
 Export to a new directory. Existing directories are not overwritten.
 
 ```powershell
-.\EXPORT-SOURCE-KIT.ps1 -AuditOnly
-.\EXPORT-SOURCE-KIT.ps1 -DestinationPath 'D:\HPVR-Source'
+.\tools\workspace\EXPORT-SOURCE-KIT.ps1 -AuditOnly
+.\tools\workspace\EXPORT-SOURCE-KIT.ps1 -DestinationPath 'D:\HPVR-Source'
 .\tools\test-source-kit-export.ps1
 ```
 
@@ -108,7 +111,7 @@ cargo test --locked --all-targets --manifest-path tools\xr-runtime-probe\Cargo.t
 
 ## Licences
 
-[Third-party notices](docs/THIRD-PARTY-NOTICES.md) identify the dependencies and
+[Third-party notices](THIRD-PARTY-NOTICES.md) identify the dependencies and
 their licences. The repository does not currently include a root `LICENSE`
 granting general reuse or redistribution rights for its own source.
 Original game data belongs to its respective rights holders and is not included.

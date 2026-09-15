@@ -11,6 +11,8 @@ int main(int argc, char** argv) {
         std::cout << "brush=" << argv[2] << " status=" << static_cast<int>(topology.status)
                   << " nodes=" << topology.nodes.size() << " surfaces=" << topology.surfaces.size()
                   << " triangles=" << mesh.triangles.size() << " error=" << topology.error << ' ' << mesh.error << '\n';
+        for(const auto& surface:topology.surfaces)
+            std::cout<<"texture="<<surface.texture_reference<<" flags="<<surface.polygon_flags<<'\n';
         return mesh.status == hpvr::wand::Hp1ProfileStatus::ok ? 0 : 1;
     }
     if (argc != 2) {

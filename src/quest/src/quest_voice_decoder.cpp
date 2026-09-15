@@ -7,6 +7,7 @@
 #include <array>
 #include <cmath>
 #include <cstring>
+#include <fstream>
 #include <string>
 #include <system_error>
 
@@ -15,6 +16,8 @@ struct QuestVoiceDecoder::State {
     const SherpaOnnxKeywordSpotter* spotter = nullptr;
     const SherpaOnnxOnlineStream* stream = nullptr;
     bool failed = false;
+    VoiceSpell spell = VoiceSpell::Flipendo;
+    std::array<std::string,3> keywords;
     VoiceDecoderStats stats{};
     // One fixed 20 ms analysis window makes the boundary independent of AAudio
     // read sizes. This is not a speech gate: every sample still reaches KWS.
@@ -52,6 +55,16 @@ bool QuestVoiceDecoder::Load(const std::filesystem::path& directory, double thre
     const auto joiner = (directory / "joiner.int8.onnx").string();
     const auto tokens = (directory / "tokens.txt").string();
     const auto keywords = (directory / "flipendo.keywords").string();
+    std::ifstream keyword_file(keywords);
+    std::string line;
+    while(std::getline(keyword_file,line)) {
+        if(!line.empty()&&line.back()=='\r')line.pop_back();
+        const std::array<const char*,3> labels{"@FLIPENDO","@ALOHOMORA","@WINGARDIUM"};
+        for(unsigned i=0;i<labels.size();++i)if(line.ends_with(labels[i])) {
+            if(!state_->keywords[i].empty())state_->keywords[i]+='/';
+            state_->keywords[i]+=line;
+        }
+    }
     SherpaOnnxKeywordSpotterConfig config{};
     config.feat_config.sample_rate = 16000;
     config.feat_config.feature_dim = 80;
@@ -74,10 +87,13 @@ bool QuestVoiceDecoder::Load(const std::filesystem::path& directory, double thre
     return !state_->failed;
 }
 
-bool QuestVoiceDecoder::Begin() {
+bool QuestVoiceDecoder::Begin(VoiceSpell spell) {
     End();
-    if (!loaded()) return false;
-    state_->stream = SherpaOnnxCreateKeywordStream(state_->spotter);
+    if (!loaded() || VoiceKeyword(spell).empty()) return false;
+    state_->spell = spell;
+    if(state_->keywords[static_cast<unsigned>(spell)].empty())return false;
+    state_->stream = SherpaOnnxCreateKeywordStreamWithKeywords(state_->spotter,
+        state_->keywords[static_cast<unsigned>(spell)].c_str());
     state_->failed = state_->stream == nullptr;
     return !state_->failed;
 }
@@ -110,7 +126,8 @@ bool QuestVoiceDecoder::Process(const std::int16_t* samples,
             // of stable quiet, never on a wall-clock timer or during a word.
             // A whole stream also resets its processed-frame offset; the
             // upstream partial Reset retains that offset and is not equivalent.
-            const auto* fresh = SherpaOnnxCreateKeywordStream(state_->spotter);
+            const auto* fresh = SherpaOnnxCreateKeywordStreamWithKeywords(state_->spotter,
+                state_->keywords[static_cast<unsigned>(state_->spell)].c_str());
             if (fresh == nullptr) { state_->failed = true; return false; }
             SherpaOnnxDestroyOnlineStream(state_->stream);
             state_->stream = fresh;
@@ -151,7 +168,10 @@ bool QuestVoiceDecoder::Process(const std::int16_t* samples,
             if (result->keyword != nullptr && result->keyword[0] != '\0') {
                 // Do not retain recognized text or a waveform. Only a fixed
                 // identity, duration and numeric counters cross this boundary.
-                if (std::strcmp(result->keyword, "FLIPENDO") == 0 && result->count >= 2 &&
+                const char* expected = state_->spell == VoiceSpell::Alohomora ? "ALOHOMORA" :
+                    state_->spell == VoiceSpell::Wingardium ? "WINGARDIUM" : "FLIPENDO";
+                if (std::strcmp(result->keyword, expected) == 0 &&
+                    result->count >= (state_->spell==VoiceSpell::Wingardium?6:state_->spell==VoiceSpell::Alohomora?4:2) &&
                     result->count <= 32 && result->timestamps != nullptr) {
                     ++state_->stats.keyword_hits;
                     bool timing_valid = true;
@@ -164,7 +184,7 @@ bool QuestVoiceDecoder::Process(const std::int16_t* samples,
                     const float seconds = result->timestamps[result->count - 1] -
                                           result->timestamps[0] + 0.04F;
                     state_->stats.last_keyword_seconds = timing_valid ? seconds : 0;
-                    if (timing_valid && seconds >= kVoiceMinWordSeconds && seconds <= kVoiceMaxWordSeconds) {
+                    if (timing_valid && seconds >= VoiceMinimumWordSeconds(state_->spell) && seconds <= VoiceMaximumWordSeconds(state_->spell)) {
                         *duration = seconds;
                         matched = true;
                         // The game closes capture on its first accepted word.

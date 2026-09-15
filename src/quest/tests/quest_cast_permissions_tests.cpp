@@ -20,7 +20,8 @@ void TestMapPermissions() {
               "Flipendo challenge keeps every casting input path");
         Check(!MapAllowsSpellInput(kBroomstickTrainingMapId, path),
               "broom lesson blocks basic, gesture and voice casting");
-        for (const unsigned map : {3U, 999U, std::numeric_limits<unsigned>::max()}) {
+        Check(MapAllowsSpellInput(kCharmsTrainingMapId,path),"charms permits walking spell paths");
+        for (const unsigned map : {4U, 999U, std::numeric_limits<unsigned>::max()}) {
             Check(!MapAllowsSpellInput(map, path), "unknown map cannot inherit wand input");
         }
     }

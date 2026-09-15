@@ -4,6 +4,7 @@
 #include <cstdint>
 #include <filesystem>
 #include <memory>
+#include "hpvr/quest_voice_cast.h"
 
 namespace hpvr::quest {
 
@@ -28,7 +29,7 @@ public:
     // gain and not a personal pronunciation calibration.
     [[nodiscard]] bool Load(const std::filesystem::path& model_directory,
                             double keyword_threshold = kVoiceKeywordThreshold);
-    [[nodiscard]] bool Begin();
+    [[nodiscard]] bool Begin(VoiceSpell spell = VoiceSpell::Flipendo);
     [[nodiscard]] bool Process(const std::int16_t* mono_16khz,
                                std::size_t samples,
                                float* detected_word_seconds);

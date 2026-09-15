@@ -9,10 +9,17 @@
 #include "hpvr/quest_startup.h"
 
 int main(int argc, char** argv) {
-    if (argc != 3 && argc!=4) { std::cerr << "usage: hpvr_quest_intro_probe <owned-root> <pcm-cache> [startup-rgba]\n"; return 2; }
+    if (argc != 3 && argc!=4) { std::cerr << "usage: hpvr_quest_intro_probe <owned-root> <pcm-cache|--wand-only> [startup-rgba]\n"; return 2; }
     using namespace hpvr::quest;
     try {
         const std::filesystem::path root(argv[1]);
+        std::vector<WandGpuVertex> startup_wand;
+        if (!LoadOwnedWand(root, &startup_wand)) {
+            std::cerr << "STARTUP_WAND_CHECK=FAIL package=system/HPBase.u object=WandMesh\n";
+            return 41;
+        }
+        std::cout << "STARTUP_WAND_CHECK=PASS vertices=" << startup_wand.size() << '\n';
+        if (std::string_view(argv[2]) == "--wand-only") return 0;
         const auto startup=LoadWarnerStartup(root);if(startup.size()!=640*480*4)return 33;
         if(argc==4){std::ofstream out(argv[3],std::ios::binary);out.write(reinterpret_cast<const char*>(startup.data()),startup.size());}
         const auto map = root / "Maps/Lev_Tut1.unr";

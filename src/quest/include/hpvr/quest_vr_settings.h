@@ -29,6 +29,7 @@ struct VrSettings {
     int refresh_rate=90;
     TurningMode turning_mode=TurningMode::Snap;
     int smooth_turn_speed=90; // Degrees per second at full stick deflection.
+    bool gpu_boost=true; // OpenXR performance hint; thermal limits remain runtime-owned.
 };
 inline std::uint32_t VrSettingsChecksum(int scale,int ssr,std::uint64_t generation){
     std::uint32_t h=2166136261U;
@@ -66,6 +67,11 @@ inline std::uint32_t VrSettingsChecksumV7(const VrSettings& v,std::uint64_t gene
     for(unsigned char c:":"+std::to_string(static_cast<int>(v.turning_mode))+":"+std::to_string(v.smooth_turn_speed))h=(h^c)*16777619U;
     return h;
 }
+inline std::uint32_t VrSettingsChecksumV8(const VrSettings& v,std::uint64_t generation){
+    auto h=VrSettingsChecksumV7(v,generation);
+    for(unsigned char c:std::string(v.gpu_boost?":1":":0"))h=(h^c)*16777619U;
+    return h;
+}
 inline VrSettings ReadVrSettings(const std::filesystem::path& root){
     VrSettings best;
     for(int bank=0;bank<2;++bank){
@@ -75,11 +81,11 @@ inline VrSettings ReadVrSettings(const std::filesystem::path& root){
         VrSettings v;std::uint32_t sum=0;
         if(!(f>>magic>>v.render_scale>>v.ssr>>v.generation))continue;
         int relaxed=0,welcome=0,legacy_manual=0;
-        if(magic=="HPVR_VR2"||magic=="HPVR_VR3"||magic=="HPVR_VR4"||magic=="HPVR_VR5"||magic=="HPVR_VR6"||magic=="HPVR_VR7"){
+        if(magic=="HPVR_VR2"||magic=="HPVR_VR3"||magic=="HPVR_VR4"||magic=="HPVR_VR5"||magic=="HPVR_VR6"||magic=="HPVR_VR7"||magic=="HPVR_VR8"){
             if(!(f>>relaxed>>welcome)||relaxed<0||relaxed>1||welcome<0||welcome>1)continue;
             v.relaxed_lesson=relaxed!=0;v.welcome_seen=welcome!=0;
         }else if(magic!="HPVR_VR1")continue;
-        if(magic=="HPVR_VR3"||magic=="HPVR_VR4"||magic=="HPVR_VR5"||magic=="HPVR_VR6"||magic=="HPVR_VR7"){
+        if(magic=="HPVR_VR3"||magic=="HPVR_VR4"||magic=="HPVR_VR5"||magic=="HPVR_VR6"||magic=="HPVR_VR7"||magic=="HPVR_VR8"){
             int first_person=0;
             if(!(f>>first_person)||first_person<0||first_person>1)continue;
             v.first_person_cutscenes=first_person!=0;
@@ -88,22 +94,25 @@ inline VrSettings ReadVrSettings(const std::filesystem::path& root){
             if(!(f>>legacy_manual>>v.refresh_rate)||legacy_manual<0||legacy_manual>1||!ValidRefreshRate(v.refresh_rate))continue;
             v.casting_mode=legacy_manual?CastingMode::Gesture:CastingMode::Classic;
         }
-        if(magic=="HPVR_VR5"||magic=="HPVR_VR6"||magic=="HPVR_VR7"){
+        if(magic=="HPVR_VR5"||magic=="HPVR_VR6"||magic=="HPVR_VR7"||magic=="HPVR_VR8"){
             int mode=0,voice=0;
             if(!(f>>mode>>v.refresh_rate>>voice)||mode<0||mode>2||voice<0||voice>1||!ValidRefreshRate(v.refresh_rate))continue;
             v.casting_mode=static_cast<CastingMode>(mode);v.voice_cast=voice!=0;
         }
-        if(magic=="HPVR_VR6"||magic=="HPVR_VR7"){
+        if(magic=="HPVR_VR6"||magic=="HPVR_VR7"||magic=="HPVR_VR8"){
             int hints=0;
             if(!(f>>hints)||hints<0||hints>1)continue;
             v.voice_hints=hints!=0;
         }
-        if(magic=="HPVR_VR7"){
+        if(magic=="HPVR_VR7"||magic=="HPVR_VR8"){
             int turning=0;
             if(!(f>>turning>>v.smooth_turn_speed)||turning<0||turning>1||!ValidSmoothTurnSpeed(v.smooth_turn_speed))continue;
             v.turning_mode=static_cast<TurningMode>(turning);
         }
-        const auto expected=magic=="HPVR_VR7"?VrSettingsChecksumV7(v,v.generation):magic=="HPVR_VR6"?VrSettingsChecksumV6(v,v.generation):magic=="HPVR_VR5"?VrSettingsChecksumV5(v,v.generation):magic=="HPVR_VR4"?VrSettingsChecksumV4(v,v.generation,legacy_manual!=0):magic=="HPVR_VR3"?VrSettingsChecksumV3(v,v.generation):
+        if(magic=="HPVR_VR8"){
+            int boost=0;if(!(f>>boost)||boost<0||boost>1)continue;v.gpu_boost=boost!=0;
+        }
+        const auto expected=magic=="HPVR_VR8"?VrSettingsChecksumV8(v,v.generation):magic=="HPVR_VR7"?VrSettingsChecksumV7(v,v.generation):magic=="HPVR_VR6"?VrSettingsChecksumV6(v,v.generation):magic=="HPVR_VR5"?VrSettingsChecksumV5(v,v.generation):magic=="HPVR_VR4"?VrSettingsChecksumV4(v,v.generation,legacy_manual!=0):magic=="HPVR_VR3"?VrSettingsChecksumV3(v,v.generation):
             magic=="HPVR_VR2"?VrSettingsChecksumV2(v,v.generation):VrSettingsChecksum(v.render_scale,v.ssr,v.generation);
         if(f>>sum && !(f>>extra) &&
            v.render_scale>=50&&v.render_scale<=175&&v.render_scale%5==0&&v.ssr>=0&&v.ssr<=100&&v.ssr%5==0&&
@@ -119,7 +128,7 @@ inline bool WriteVrSettings(const std::filesystem::path& root,VrSettings& v){
     const auto generation=std::max(v.generation,ReadVrSettings(root).generation)+1;
     std::error_code ec;std::filesystem::create_directories(root,ec);if(ec)return false;
     std::ofstream f(root/("vr-settings."+std::to_string(generation%2)),std::ios::trunc);
-    f<<"HPVR_VR7 "<<v.render_scale<<' '<<v.ssr<<' '<<generation<<' '<<v.relaxed_lesson<<' '<<v.welcome_seen<<' '<<v.first_person_cutscenes<<' '<<static_cast<int>(v.casting_mode)<<' '<<v.refresh_rate<<' '<<v.voice_cast<<' '<<v.voice_hints<<' '<<static_cast<int>(v.turning_mode)<<' '<<v.smooth_turn_speed<<' '<<VrSettingsChecksumV7(v,generation)<<'\n';
+    f<<"HPVR_VR8 "<<v.render_scale<<' '<<v.ssr<<' '<<generation<<' '<<v.relaxed_lesson<<' '<<v.welcome_seen<<' '<<v.first_person_cutscenes<<' '<<static_cast<int>(v.casting_mode)<<' '<<v.refresh_rate<<' '<<v.voice_cast<<' '<<v.voice_hints<<' '<<static_cast<int>(v.turning_mode)<<' '<<v.smooth_turn_speed<<' '<<v.gpu_boost<<' '<<VrSettingsChecksumV8(v,generation)<<'\n';
     f.flush();if(!f)return false;f.close();if(f.fail())return false;
     v.generation=generation;return true;
 }

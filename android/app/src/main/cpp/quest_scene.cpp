@@ -2,12 +2,17 @@
 #include "quest_scene.h"
 #include "quest_audio.h"
 #include "quest_reflections.h"
+#include "quest_planar_mirror.h"
 #include "quest_load_trace.h"
 
 #include <android/log.h>
 
 #include "hogwarts_frag.spv.h"
 #include "hogwarts_vert.spv.h"
+#include "mirror_vert.spv.h"
+#include "mirror_frag.spv.h"
+#include "mirror_veil_frag.spv.h"
+#include "mirror_capture_frag.spv.h"
 #include "particle_frag.spv.h"
 #include "particle_vert.spv.h"
 #include "wand_frag.spv.h"
@@ -23,11 +28,15 @@
 #include "hpvr/hp1_abyss_lighting.h"
 #include "hpvr/hp1_authored_environment.h"
 #include "hpvr/quest_lighting.h"
+#include "hpvr/quest_package_resource.h"
 #include "hpvr/quest_view.h"
 #include "hpvr/quest_frontend.h"
+#include "hpvr/quest_campaign_progress.h"
+#include "hpvr/quest_chest.h"
 #include "hpvr/quest_basic_cast.h"
 #include "hpvr/quest_cast_permissions.h"
 #include "hpvr/quest_target_marker.h"
+#include "hpvr/quest_target_tracking.h"
 #include "hpvr/quest_voice_hint.h"
 #include "hpvr/quest_original_spell.h"
 #include "hpvr/quest_fixture_effects.h"
@@ -51,6 +60,9 @@
 #include "hpvr/quest_broom_flight.h"
 #include "hpvr/quest_broom_lesson.h"
 #include "hpvr/quest_broom_session.h"
+#include "hpvr/quest_charms_lesson.h"
+#include "hpvr/quest_lesson_speech.h"
+#include "hpvr/quest_charms_block.h"
 #include "quest_challenge_movers.h"
 #include "quest_challenge_zones.h"
 
@@ -95,7 +107,6 @@ constexpr float kPlayerCapsuleHalfHeightMeters =
 constexpr float kCollisionMaximumSubstepMeters = 0.08F;
 constexpr std::uint32_t kMaximumTriangles =
     HPVR_HP1_BSP_MAX_SLICE_TRIANGLES;
-constexpr std::int32_t kWandMeshReference = 1092;
 constexpr std::int32_t kFireTextureReference = 72;
 constexpr std::int32_t kHarryActorReference = 603;
 constexpr std::uint32_t kMaximumCombinedTextureLayers = 256;
@@ -167,7 +178,7 @@ struct ParticlePushConstants {
 struct DoorDraw {
     movers::Placement placement;
     movers::Motion motion;
-    bool challenge=false,collision_only=false,two_sided=false;
+    bool challenge=false,collision_only=false,two_sided=false,cutscene_hold=false;
     float open_seconds=1,close_seconds=1;
     std::int32_t actor_reference=0;
     std::string initial_state;
@@ -400,6 +411,8 @@ struct WorldMetadata {
     std::vector<wand::Hp1MpegSound> cutscene_dialogue;
     IntroCutscene intro_cutscene;
     std::string ambient_object;
+    std::array<float,3> ambient_position{};
+    float ambient_radius=0,ambient_volume=0;
     std::size_t actor_count = 0;
     std::size_t script_class_count = 0;
     std::size_t tagged_actor_count = 0;
@@ -840,6 +853,8 @@ bool LoadWorldMetadata(
     struct AmbientCandidate {
         std::int32_t sound_reference{};
         float distance_squared{};
+        std::array<float,3> position{};
+        float radius=0,volume=0;
     };
     std::vector<AmbientCandidate> ambient_candidates;
     for (const auto& actor : census.actors) {
@@ -906,7 +921,8 @@ bool LoadWorldMetadata(
             ambient_candidates.push_back({
                 actor.ambient_sound_reference,
                 local[0] * local[0] + local[1] * local[1] +
-                    local[2] * local[2]});
+                    local[2] * local[2],local,
+                actor.sound_radius*25.0F*kMetersPerUnrealUnit,float(actor.sound_volume)/255});
             ++metadata.ambient_actor_count;
         }
     }
@@ -948,6 +964,8 @@ bool LoadWorldMetadata(
             package->path, resolved->target_reference);
         if (sound.status != wand::Hp1ProfileStatus::ok) continue;
         metadata.ambient_object = sound.object_name;
+        metadata.ambient_position=candidate.position;
+        metadata.ambient_radius=candidate.radius;metadata.ambient_volume=candidate.volume;
         metadata.ambient_sound = std::move(sound);
         break;
     }
@@ -1596,6 +1614,27 @@ std::optional<std::array<float,3>> CinematicTarget(const IntroCutscene& scene,co
     }
     return std::nullopt;
 }
+std::optional<std::array<float,3>> CharmsFirstPersonFocus(const IntroCutscene& scene,
+                                                       const std::vector<CharacterDraw>& actors){
+    if(scene.object_name=="cutscene1"){
+        for(const auto& loc:scene.locations)if(AsciiFold(loc.alias)=="hpgoto")return loc.position;
+    }
+    if(scene.object_name=="cutscene6"&&!scene.harry_released){
+        for(const auto& track:scene.tracks)if(AsciiFold(track.alias)=="hermione")return track.position;
+    }
+    if(scene.object_name=="cutscene51"||scene.object_name=="cutscene52"||
+       scene.object_name=="cutscene53"||scene.object_name=="cutscene54"||
+       scene.object_name=="cutscene3"||scene.object_name=="cutscene4")return CinematicTarget(scene,actors);
+    return std::nullopt;
+}
+void FaceCharmsCinematicTarget(const IntroCutscene& scene,std::vector<CharacterDraw>& actors){
+    const auto focus=CharmsFirstPersonFocus(scene,actors);
+    if(!focus)return;
+    for(auto& actor:actors)if(actor.player){
+        const auto delta=SubtractVector(*focus,AddVector(actor.base_origin,actor.cutscene_offset));
+        if(std::hypot(delta[0],delta[2])>.05F)actor.yaw=actor.desired_yaw=std::atan2(delta[0],delta[2]);
+    }
+}
 void PlaceWaitingTwins(IntroCutscene scene,std::vector<CharacterDraw>& actors,
                        const std::vector<CollisionTriangle>& triangles){
     std::erase_if(scene.tracks,[](const auto& t){return t.actor_reference!=1329&&t.actor_reference!=1326;});
@@ -1981,6 +2020,31 @@ bool LoadStaticMesh(const std::string& package,
     return true;
 }
 
+bool PoseStaticMesh(const std::filesystem::path& package,std::int32_t reference,
+                    std::string_view clip,LoadedStaticMesh& mesh){
+    const auto skin=wand::load_hp1_skeletal_skin(package,reference);
+    if(skin.status!=wand::Hp1ProfileStatus::ok)return false;
+    const auto animation=wand::load_hp1_animation(package,skin.census.animation_reference);
+    if(animation.status!=wand::Hp1ProfileStatus::ok)return false;
+    const auto sequence=std::ranges::find_if(animation.sequences,[&](const auto& s){return AsciiFold(s.name)==clip;});
+    if(sequence==animation.sequences.end())return false;
+    const auto pose=wand::sample_hp1_skeletal_animation(skin,animation,
+        static_cast<std::size_t>(sequence-animation.sequences.begin()),0);
+    if(pose.status!=wand::Hp1ProfileStatus::ok)return false;
+    for(unsigned axis=0;axis<3;++axis){mesh.report.bounds_min_m[axis]=1e9F;mesh.report.bounds_max_m[axis]=-1e9F;}
+    for(auto& vertex:mesh.vertices){
+        if(vertex.point_index>=pose.points.size())return false;
+        const auto& point=pose.points[vertex.point_index];
+        const std::array<float,3> p{point.y*kMetersPerUnrealUnit,point.z*kMetersPerUnrealUnit,point.x*kMetersPerUnrealUnit};
+        for(unsigned axis=0;axis<3;++axis){
+            vertex.position_m[axis]=p[axis];
+            mesh.report.bounds_min_m[axis]=std::min(mesh.report.bounds_min_m[axis],p[axis]);
+            mesh.report.bounds_max_m[axis]=std::max(mesh.report.bounds_max_m[axis],p[axis]);
+        }
+    }
+    return true;
+}
+
 struct BeanDraw {
     std::int32_t actor_reference=0;
     std::uint32_t first=0,count=0;
@@ -1993,10 +2057,11 @@ struct BeanDraw {
     float emission_time=1;
     std::array<std::array<float,3>,17> emission_path{};
     unsigned emission_points=0; // Runtime sweep path, never part of cooked geometry.
+    std::array<float,3> attachment_offset{};
 };
 
 std::array<float,3> BeanWorldPosition(const BeanDraw& bean){
-    if(!bean.source_actor)return bean.position;
+    if(!bean.source_actor)return AddVector(bean.position,bean.attachment_offset);
     const float t=std::clamp(bean.emission_time,0.0F,1.0F);
     if(bean.emission_points>1&&bean.emission_points<=bean.emission_path.size()){
         const float sample=t*float(bean.emission_points-1);
@@ -2042,28 +2107,49 @@ bool LoadOwnedBeans(const std::filesystem::path& root,const std::filesystem::pat
     auto pickup_actors=census.actors;
     struct RewardSource { std::int32_t actor; std::array<float,3> emission,landing; };
     std::map<std::int32_t,RewardSource> rewards;
-    if(AsciiFold(map.stem().string())=="lev_tut1b")for(const auto& pot:census.actors){
+    const auto map_name=AsciiFold(map.stem().string());
+    if(map_name=="lev_tut1b"||map_name=="lev_tut3")for(const auto& pot:census.actors){
         const auto cls=AsciiFold(pot.qualified_class_name);
         const bool cauldron=cls=="hprops.bronzecauldron";
-        if(!cauldron&&!cls.starts_with("hprops.flipendovase"))continue;
+        const bool chest=map_name=="lev_tut3"&&chest::IsChest(cls);
+        if(!cauldron&&!chest&&!cls.starts_with("hprops.flipendovase"))continue;
         const auto def=std::ranges::find_if(table.exports,[&](const auto& e){
             return e.qualified_class_name=="Core.Class"&&!e.object_path.empty()&&AsciiFold(e.object_path.back())==cls.substr(7);});
         if(def==table.exports.end())return false;
         const auto defaults=wand::inspect_hp1_class_visual_defaults(package,def->reference);
         if(defaults.status!=wand::Hp1ProfileStatus::ok)return false;
-        std::vector<wand::Hp1ClassDefaultProperty> properties=defaults.serialized_properties;
+        std::vector<wand::Hp1ClassDefaultProperty> properties;
+        if(chest&&cls=="hprops.ironchest"){
+            const auto base=std::ranges::find_if(table.exports,[](const auto& e){
+                return e.qualified_class_name=="Core.Class"&&!e.object_path.empty()&&AsciiFold(e.object_path.back())=="bronzechest";
+            });
+            if(base==table.exports.end())return false;
+            const auto inherited=wand::inspect_hp1_class_visual_defaults(package,base->reference);
+            if(inherited.status!=wand::Hp1ProfileStatus::ok)return false;
+            properties=inherited.serialized_properties;
+        }
+        properties.insert(properties.end(),defaults.serialized_properties.begin(),defaults.serialized_properties.end());
         properties.insert(properties.end(),pot.serialized_properties.begin(),pot.serialized_properties.end());
         std::map<unsigned,std::string> colors;
         unsigned count=1;
+        bool random_beans=false;
         for(const auto& p:properties){
             const auto key=AsciiFold(p.name);
-            if(cauldron&&key=="inumberofbeans"&&p.value.size()==4){
+            if((cauldron||chest)&&key=="inumberofbeans"&&p.value.size()==4){
                 std::uint32_t n=0;std::memcpy(&n,p.value.data(),4);count=std::min(n,16U);
             }
-            if(((cauldron&&key=="ejectedobjects")||(!cauldron&&key=="transforminto"))&&!p.object_path.empty()){
+            if(chest&&key=="brandombeans"&&p.boolean_value_serialized)random_beans=p.boolean_value;
+            if((((cauldron||chest)&&key=="ejectedobjects")||(!cauldron&&!chest&&key=="transforminto"))&&!p.object_path.empty()){
                 const auto name=AsciiFold(p.object_path.back());
-                if(name.ends_with("bean"))colors[cauldron?unsigned(std::max<std::int64_t>(0,p.array_index)):0]="hprops."+name;
+                if(name.ends_with("bean")||(chest&&chest::RewardCardId("hprops."+name)))
+                    colors[cauldron||chest?unsigned(std::max<std::int64_t>(0,p.array_index)):0]="hprops."+name;
             }
+        }
+        if(chest&&random_beans){
+            constexpr std::array<const char*,5> types{"hprops.bluejellybean","hprops.greenjellybean","hprops.spottedjellybean",
+                "hprops.greenpurplecheckerbean","hprops.redblackstripebean"};
+            std::uint32_t seed=static_cast<std::uint32_t>(pot.actor_reference);
+            for(unsigned index=0;index<count;++index){seed=seed*1664525U+1013904223U;colors[index]=types[seed%types.size()];}
         }
         for(const auto& [index,color]:colors){
             if(index>=count)continue;
@@ -2073,9 +2159,9 @@ bool LoadOwnedBeans(const std::filesystem::path& root,const std::filesystem::pat
             const float launch_yaw=yaw+(pot.rotation_units[1]+(cauldron?5000:0))*kTau/65536.0F;
             auto emission=ActorLocalPosition(pot,start,yaw);
             const auto forward=RotateYaw({0,0,-1},launch_yaw);
-            if(!cauldron)emission=AddVector(emission,ScaleVector(forward,20*kMetersPerUnrealUnit));
+            if(!cauldron&&!chest)emission=AddVector(emission,ScaleVector(forward,20*kMetersPerUnrealUnit));
             std::array<float,3> velocity=ScaleVector(forward,80*kMetersPerUnrealUnit);
-            for(const auto& property:properties)if(cauldron&&unsigned(std::max<std::int64_t>(0,property.array_index))==index&&property.value.size()==12){
+            for(const auto& property:properties)if((cauldron||chest)&&unsigned(std::max<std::int64_t>(0,property.array_index))==index&&property.value.size()==12){
                 const auto key=AsciiFold(property.name);
                 if(key!="objectstartpoint"&&key!="objectstartvelocity")continue;
                 std::array<float,3> value{};std::memcpy(value.data(),property.value.data(),12);
@@ -2088,6 +2174,24 @@ bool LoadOwnedBeans(const std::filesystem::path& root,const std::filesystem::pat
             if(ground){float floor=0;if(FindPropGroundBelow(*ground,landing,&floor))landing[1]=floor+.18F;}
             rewards.emplace(actor.actor_reference,RewardSource{pot.actor_reference,emission,landing});
         }
+    }
+    if(map_name=="lev_tut3")for(const auto& source:census.actors){
+        if(AsciiFold(source.qualified_class_name)!="hpbase.spawnthingy")continue;
+        std::string spawn_class;
+        for(const auto& property:source.serialized_properties)
+            if(AsciiFold(property.name)=="spawnclass"&&property.object_reference_serialized)
+                for(const auto& part:property.object_path){if(!spawn_class.empty())spawn_class+='.';spawn_class+=part;}
+        const auto name=AsciiFold(spawn_class);
+        if(!name.starts_with("hprops.")||!name.ends_with("bean"))continue;
+        auto actor=source;
+        actor.actor_reference=0x30000000+source.actor_reference;
+        actor.qualified_class_name=spawn_class;actor.hidden=false;actor.draw_scale=1;
+        pickup_actors.push_back(std::move(actor));
+        const auto emission=ActorLocalPosition(source,start,yaw);
+        const auto forward=RotateYaw({0,0,-1},source.rotation_units[1]*kTau/65536.0F+yaw);
+        auto landing=AddVector(emission,ScaleVector(forward,.65F));
+        if(ground){float floor=0;if(FindPropGroundBelow(*ground,landing,&floor))landing[1]=floor+.18F;}
+        rewards.emplace(0x30000000+source.actor_reference,RewardSource{source.actor_reference,emission,landing});
     }
     for(const auto& actor:pickup_actors){
         const auto name=AsciiFold(actor.qualified_class_name);
@@ -2116,8 +2220,9 @@ bool LoadOwnedBeans(const std::filesystem::path& root,const std::filesystem::pat
         beans.push_back(bean);
     }
     HPVR_LOGI("[hpvr.quest.beans] status=READY actors=%zu colors=%zu",beans.size(),meshes.size());
-    for(const auto& actor:census.actors)if(AsciiFold(map.stem().string())=="lev_tut1"&&(actor.actor_reference==1778||actor.actor_reference==1617)){
-        const bool frog=actor.actor_reference==1778;
+    for(const auto& actor:census.actors)if((map_name=="lev_tut1"&&(actor.actor_reference==1778||actor.actor_reference==1617))||
+        (map_name=="lev_tut3"&&AsciiFold(actor.qualified_class_name)=="harrypotter.chocolatefrog"&&!actor.hidden)){
+        const bool frog=AsciiFold(actor.qualified_class_name)=="harrypotter.chocolatefrog";
         const auto pkg=root/(frog?"System/HarryPotter.u":"System/HProps.u");
         if(frog){
             LoadedCharacterMesh mesh;if(!LoadCharacterMesh(pkg.string(),1677,layers,&mesh))return false;
@@ -2177,11 +2282,36 @@ bool LoadOwnedBeans(const std::filesystem::path& root,const std::filesystem::pat
             {v.texture_uv[0],v.texture_uv[1]},{0,0},mesh.layer_base+v.texture_layer,v.polygon_flags,0,0xe8e8e8U});
         beans.push_back(pickup);
     }
-    if(AsciiFold(map.stem().string())=="lev_tut2"){
+    if(AsciiFold(map.stem().string())=="lev_tut2"||AsciiFold(map.stem().string())=="lev_tut3"){
         const auto manifest=wand::build_hp1_character_manifest(root,map,0,{},true);
         if(manifest.status!=wand::Hp1ProfileStatus::ok)return false;
-        for(const auto& actor:manifest.actors){
-            if(AsciiFold(actor.qualified_class_name)!="hprops.wcmerlin")continue;
+        auto cards=manifest.actors;
+        if(map_name=="lev_tut3")for(const auto& reward:pickup_actors)if(chest::RewardCardId(AsciiFold(reward.qualified_class_name))){
+            const auto icon=std::ranges::find_if(manifest.actors,[](const auto& actor){return AsciiFold(actor.qualified_class_name)=="hprops.wctoke";});
+            const auto def=std::ranges::find_if(table.exports,[&](const auto& e){return e.qualified_class_name=="Core.Class"&&
+                !e.object_path.empty()&&AsciiFold(e.object_path.back())==AsciiFold(reward.qualified_class_name).substr(7);});
+            if(icon==manifest.actors.end()||def==table.exports.end())return false;
+            const auto defaults=wand::inspect_hp1_class_visual_defaults(package,def->reference);
+            if(defaults.status!=wand::Hp1ProfileStatus::ok)return false;
+            auto card=*icon;card.actor_reference=reward.actor_reference;card.qualified_class_name=reward.qualified_class_name;
+            card.location_unreal=reward.location_unreal;card.skins.clear();
+            for(const auto& property:defaults.serialized_properties)if(AsciiFold(property.name)=="skin"&&property.object_reference>0)
+                card.skins.push_back({0,package,property.object_reference});
+            if(card.skins.empty())return false;
+            cards.push_back(std::move(card));
+        }
+        for(auto actor:cards){
+            const auto cls=AsciiFold(actor.qualified_class_name);
+            if(cls!="hprops.wcmerlin"&&cls!="hprops.wctoke"&&!chest::RewardCardId(cls))continue;
+            const auto def=std::ranges::find_if(table.exports,[&](const auto& e){return e.qualified_class_name=="Core.Class"&&
+                !e.object_path.empty()&&AsciiFold(e.object_path.back())==cls.substr(7);});
+            if(def==table.exports.end())return false;
+            const auto defaults=wand::inspect_hp1_class_visual_defaults(package,def->reference);
+            if(defaults.status!=wand::Hp1ProfileStatus::ok)return false;
+            for(const auto& property:defaults.serialized_properties)if(AsciiFold(property.name)=="skin"&&property.object_reference>0){
+                std::erase_if(actor.skins,[](const auto& skin){return skin.material_slot==0;});
+                actor.skins.push_back({0,package,property.object_reference});
+            }
             LoadedStaticMesh mesh;
             if(!LoadStaticMesh(actor.mesh_package.string(),actor.mesh_reference,layers,&mesh)||
                layers+mesh.report.texture_layer_count>kMaximumCombinedTextureLayers)return false;
@@ -2205,6 +2335,9 @@ bool LoadOwnedBeans(const std::filesystem::path& root,const std::filesystem::pat
                 -actor.location_unreal.x*kMetersPerUnrealUnit-start.position_m[2]},yaw);
             BeanDraw pickup{actor.actor_reference,static_cast<std::uint32_t>(vertices.size()),
                 static_cast<std::uint32_t>(mesh.vertices.size()),position,4};
+            if(const auto reward=rewards.find(actor.actor_reference);reward!=rewards.end()){
+                pickup.source_actor=reward->second.actor;pickup.emission=reward->second.emission;pickup.position=reward->second.landing;
+            }
             for(const auto& v:mesh.vertices)vertices.push_back({
                 {v.position_m[0]*actor.draw_scale,v.position_m[1]*actor.draw_scale,v.position_m[2]*actor.draw_scale},
                 {v.texture_uv[0],v.texture_uv[1]},{0,0},mesh.layer_base+v.texture_layer,v.polygon_flags,0,0xe8e8e8U});
@@ -2604,6 +2737,15 @@ bool LoadIntroDoors(
                 return AsciiFold(a.tag)=="rotateit"&&AsciiFold(a.qualified_class_name).find("cutcamerapos")!=std::string::npos;});
         door.collision_only=!tutorial&&model.decoded_texture_count==0&&
             (door.initial_state=="none"||camera_helper);
+        if(!tutorial&&model.decoded_texture_count==0&&!door.collision_only){
+            const auto authored=wand::load_hp1_brush_topology(map_package,brush);
+            door.collision_only=authored.status==wand::Hp1ProfileStatus::ok&&!authored.surfaces.empty()&&
+                std::ranges::all_of(authored.surfaces,[](const auto& surface){return surface.texture_reference==0;});
+        }
+        if(cls=="engine.attachmover"&&model.decoded_texture_count==0){
+            const auto tag=SerializedName(actor,"attachtag");
+            door.collision_only=!tag.empty()&&std::ranges::any_of(actors.actors,[&](const auto& target){return AsciiFold(target.tag)==tag;});
+        }
         if (model.status != wand::Hp1ProfileStatus::ok || model.vertices.empty() ||
             (!door.collision_only&&model.fallback_triangle_count != 0) || model.omitted_triangle_count != 0) {
             HPVR_LOGE("[hpvr.quest.doors] status=REJECTED brush=%d error=%s", brush, model.error.c_str());
@@ -2708,10 +2850,12 @@ bool LoadOwnedCharacters(
     const auto& actors = manifest.actors;
     IntroCutscene intro;
     const bool flying_lesson=AsciiFold(map_package.stem().string())=="lev_tut2";
+    const bool charms_lesson=AsciiFold(map_package.stem().string())=="lev_tut3";
     if (!LoadIntroCutscene(census, player_start, player_start_yaw, &intro,tutorial?"cutscene4":flying_lesson?"cutscene10":"cutscene0",tutorial)) return false;
     const auto triangles = BuildCollisionTriangles(map_vertices, map_vertex_count);
     std::set<std::string> challenge_clips{"breathe","breath","walk","run","roll","stop","idle","talk1","talk2","float","attack","hit","die","faint","stunned"};
     if(flying_lesson)challenge_clips.insert("hover");
+    if(charms_lesson)for(const auto* name:{"runattack","runattackbite","knockback","downbreath","downdizzy","look","fidget_1"})challenge_clips.insert(name);
     if(!tutorial)for(const auto& a:census.actors)for(const auto& p:a.serialized_properties)
         if(p.text_value_serialized&&AsciiFold(p.name).starts_with("cast")&&AsciiFold(p.text_value).starts_with("animate "))
             challenge_clips.insert(AsciiFold(p.text_value.substr(8)));
@@ -2740,7 +2884,9 @@ bool LoadOwnedCharacters(
             })) continue;
         const bool broom_cast=cls=="harrypotter.broomharry"||cls=="tut2.broomhooch";
         const bool flying_scene_cast=flying_lesson&&std::ranges::any_of(intro.tracks,[&](const auto& t){return !t.camera&&t.actor_reference==actor.actor_reference;});
-        if(!tutorial&&!broom_cast&&!flying_scene_cast&&cls!="harrypotter.harry"&&cls!="tut1.tut1quirrell"&&cls!="tut1.tut1gnome"&&
+        const bool charms_cast=charms_lesson&&(cls.find("hermione")!=std::string::npos||cls.find("flitwick")!=std::string::npos||
+            cls.rfind("harrypotter.gen_fem_",0)==0||cls.rfind("harrypotter.gen_male_",0)==0);
+        if(!tutorial&&!broom_cast&&!flying_scene_cast&&!charms_cast&&cls!="harrypotter.harry"&&cls!="tut1.tut1quirrell"&&cls!="tut1.tut1gnome"&&
            cls!="harrypotter.nhnick"&&cls!="tut1.flipbarrel"&&cls!="tut1.cutharry")continue;
         const auto package = actor.mesh_package.string();
         const auto& object = actor.object_name;
@@ -2788,6 +2934,9 @@ bool LoadOwnedCharacters(
         draw.class_name = class_name;
         draw.vertex_count = static_cast<std::uint32_t>(mesh.vertices.size());
         draw.base_yaw = static_cast<float>(actor.rotation_units[1]) * kTau / 65536.0F + player_start_yaw;
+        const bool charms_student=charms_lesson&&(cls.starts_with("harrypotter.gen_fem_")||cls.starts_with("harrypotter.gen_male_"));
+        if(charms_student||(charms_lesson&&cls=="tut3.tut3flitwick"))
+            draw.base_yaw=player_start_yaw+kTau*.5F-static_cast<float>(actor.rotation_units[1])*kTau/65536.0F;
         draw.yaw = draw.base_yaw;
         draw.desired_yaw = draw.yaw;
         draw.base_origin = RotateYaw({
@@ -2804,6 +2953,15 @@ bool LoadOwnedCharacters(
             AddVector(draw.base_origin, {0.0F, 0.8F, 0.0F}), lights);
         auto idle=std::ranges::find_if(animation.sequences,[&](const auto& s){
             const auto name=AsciiFold(s.name);return name=="breathe"||name=="breath"||(apparition&&name=="float")||(!tutorial&&(name=="stop"||name=="idle"));});
+        if(charms_student){
+            const auto source=std::ranges::find_if(census.actors,[&](const auto& a){return a.actor_reference==actor.actor_reference;});
+            const auto authored=source==census.actors.end()?std::string{}:SerializedName(*source,"idleanimname");
+            if(!authored.empty()){
+                const auto selected=std::ranges::find_if(animation.sequences,[&](const auto& s){return AsciiFold(s.name)==authored;});
+                if(selected==animation.sequences.end())return false;
+                idle=selected;
+            }
+        }
         if(idle==animation.sequences.end()&&!tutorial&&!animation.sequences.empty())idle=animation.sequences.begin();
         if(idle==animation.sequences.end())return false;
         const auto rest=wand::sample_hp1_skeletal_animation(skin,animation,
@@ -2903,12 +3061,15 @@ std::vector<CollisionTriangle> BuildPropAimTriangles(const std::vector<GpuVertex
     return BuildCollisionTriangles(solid,static_cast<std::uint32_t>(solid.size()));
 }
 float BasicRayDistance(const std::vector<CollisionTriangle>& triangles,
-                       const std::array<float,3>& origin,const std::array<float,3>& direction) {
+                       const std::array<float,3>& origin,const std::array<float,3>& direction,
+                       std::size_t exclude_first=0,std::size_t exclude_count=0) {
     float nearest=24.0F;
     const auto cross=[](const auto& a,const auto& b)->std::array<float,3>{
         return {a[1]*b[2]-a[2]*b[1],a[2]*b[0]-a[0]*b[2],a[0]*b[1]-a[1]*b[0]};
     };
-    for(const auto& t:triangles){
+    for(std::size_t index=0;index<triangles.size();++index){
+        if(index>=exclude_first&&index-exclude_first<exclude_count)continue;
+        const auto& t=triangles[index];
         const auto e1=SubtractVector(t.vertices[1],t.vertices[0]);
         const auto e2=SubtractVector(t.vertices[2],t.vertices[0]);
         const auto p=cross(direction,e2);const float det=DotVector(e1,p);
@@ -2944,6 +3105,8 @@ std::array<float,3> CrossVector(const std::array<float,3>& left,const std::array
 }
 #include "quest_challenge_scene.inl"
 #include "quest_broom_scene.inl"
+#include "quest_charms_scene.inl"
+#include "quest_character_checkpoint.inl"
 #include "quest_broom_avatar.inl"
 #include "quest_broom_visuals.inl"
 
@@ -2972,7 +3135,7 @@ bool AppendFrontGeometry(QuestFrontEnd& front,std::vector<GpuVertex>& vertices,
         }
         range.count=static_cast<std::uint32_t>(vertices.size())-range.first;ranges.emplace(key,range);
     };
-    auto emit=[&](){emit_quads(layout.DrawKey(),layout.Quads());};
+    auto emit=[&](){emit_quads(layout.DrawKey(),layout.Quads(false));};
     layout.screen=FrontScreen::Vr;
     const auto same_quad=[](const FrontQuad& a,const FrontQuad& b){
         return a.x==b.x&&a.y==b.y&&a.w==b.w&&a.h==b.h&&a.u==b.u&&a.v==b.v&&
@@ -3008,10 +3171,12 @@ bool AppendFrontGeometry(QuestFrontEnd& front,std::vector<GpuVertex>& vertices,
     for(int ssr=0;ssr<=100;ssr+=5)emit_quads("vr_ssr_"+std::to_string(ssr),layout.VrValueQuads(ssr,false));
     for(int hz:{0,72,80,90,120})emit_quads("vr_hz_"+std::to_string(hz),layout.VrRefreshQuads(hz));
     for(bool smooth:{false,true})emit_quads("vr_turning_"+std::to_string(int(smooth)),layout.VrTurningQuads(smooth));
+    for(bool boost:{false,true})emit_quads("vr_gpu_boost_"+std::to_string(int(boost)),layout.VrGpuBoostQuads(boost));
     for(int speed:{30,60,90,120,150,180})emit_quads("vr_turn_speed_"+std::to_string(speed),layout.VrTurnSpeedQuads(speed));
     for(unsigned status=0;status<8;++status){
         emit_quads("vr_voice_status_"+std::to_string(status),layout.VrVoiceStatusQuads(status));
         emit_quads("voice_aim_"+std::to_string(status),layout.VoiceAimQuads(status));
+        emit_quads("voice_aloho_"+std::to_string(status),layout.VoiceAimQuads(status,true));
     }
     if(front.assets.map_id==2){
         emit_quads("broom_labels",layout.BroomLabelQuads());
@@ -3038,7 +3203,16 @@ bool AppendFrontGeometry(QuestFrontEnd& front,std::vector<GpuVertex>& vertices,
     layout.screen=FrontScreen::Cards;
     for(bool earned:{false,true})for(unsigned page=0;page<7;++page){layout.card_page=page;layout.progress.card_awarded=earned;
         for(unsigned i=0;i<3;++i){layout.selection=i;emit();}}
-    layout.screen=FrontScreen::Report;layout.selection=0;emit();
+    layout.screen=FrontScreen::Report;
+    for(unsigned i=0;i<5;++i){layout.selection=i;emit();}
+    for(unsigned field=0;field<7;++field)for(unsigned place=0;place<7;++place)for(unsigned digit=0;digit<10;++digit)
+        emit_quads("report_digit_"+std::to_string(field)+"_"+std::to_string(place)+"_"+std::to_string(digit),
+            layout.ReportDigitQuads(digit,field,place));
+    for(unsigned house=0;house<4;++house)for(unsigned fill=1;fill<=256;++fill)
+        emit_quads("report_sand_"+std::to_string(house)+"_"+std::to_string(fill),layout.ReportSandQuads(fill,house));
+    for(unsigned card=0;card<campaign::kCardIds.size();++card)
+        emit_quads("folio_card_"+std::to_string(card),layout.FolioCardQuads(card));
+    layout.selection=0;
     layout.screen=FrontScreen::Objective;emit();
     for(auto notice:{FrontScreen::Welcome,FrontScreen::DemoEnd}){
         layout.screen=notice;for(unsigned i=0;i<2;++i){layout.selection=i;emit();}
@@ -3046,19 +3220,15 @@ bool AppendFrontGeometry(QuestFrontEnd& front,std::vector<GpuVertex>& vertices,
     layout.screen=FrontScreen::Story;for(unsigned i=0;i<14;++i){layout.page=i;emit();}
     layout.screen=FrontScreen::Stub;layout.selection=0;
     for(const auto& message:{"NOT AVAILABLE IN THIS BUILD","USE THE QUEST MENU TO CLOSE THE APP",
-                            "SAVE FAILED - CHECK FREE STORAGE"}){
+                            "SAVE FAILED - PREVIOUS SAVE KEPT"}){
         layout.message=message;emit();}
-    for(unsigned n=0;n<=512;++n){
-        auto quads=layout.BeanCounterQuads(n);emit_quads("beans_"+std::to_string(n),quads);
-        for(auto& q:quads){q.x+=120;q.y=122;}emit_quads("report_beans_"+std::to_string(n),quads);
-    }
     for(unsigned health=0;health<=100;++health){
         layout.progress.health=health;emit_quads("health_"+std::to_string(health),layout.HudQuads(0,false));
         auto hurt=layout.HudQuads(0,false);for(auto& q:hurt)q.tint=0x4040ff;
         emit_quads("hurt_"+std::to_string(health),hurt);
     }
     layout.progress.health=100;
-    if(front.assets.map_id==1)for(unsigned stars=0;stars<=8;++stars){
+    if(front.assets.map_id==1||front.assets.map_id==3)for(unsigned stars=0;stars<=(front.assets.map_id==3?6U:8U);++stars){
         emit_quads("stars_"+std::to_string(stars),layout.ChallengeStarQuads(stars));
         emit_quads("report_stars_"+std::to_string(stars),layout.ChallengeStarQuads(stars,true));
     }
@@ -3068,6 +3238,10 @@ bool AppendFrontGeometry(QuestFrontEnd& front,std::vector<GpuVertex>& vertices,
         auto quads=layout.HudQuads(n,true);quads.erase(quads.begin(),quads.begin()+2);
         emit_quads("hud_"+std::to_string(n),quads);
     }
+    emit_quads("house_points_badge",layout.HousePointQuads());
+    for(unsigned n=0;n<=8;++n)emit_quads("star_pickup_"+std::to_string(n),layout.StarPickupQuads(n));
+    for(unsigned digits=1;digits<=7;++digits)for(unsigned place=0;place<digits;++place)for(unsigned digit=0;digit<10;++digit)
+        emit_quads("house_points_"+std::to_string(digits)+"_"+std::to_string(place)+"_"+std::to_string(digit),layout.HousePointQuads(static_cast<int>(digit),place,digits));
     count=static_cast<std::uint32_t>(vertices.size()-begin);
     return !ranges.empty();
 }
@@ -3165,12 +3339,15 @@ void AdvanceChildren(ChildSystem& children, std::vector<DoorDraw>& doors,
 
 #include "quest_broom_environment.inl"
 #include "quest_prepared_geometry.inl"
+#include "quest_mirror_surfaces.inl"
 #include "quest_prepared_codec.inl"
 #include "quest_gnome_restore.inl"
+#include "quest_gnome_movement.inl"
 #include "quest_grid_visual_restore.inl"
 #include "quest_candle_restore.inl"
 #include "quest_prop_orientation_restore.inl"
 #include "quest_ambient_restore.inl"
+#include "quest_lock_particles.inl"
 
 #ifndef HPVR_QUEST_CPU_ONLY
 bool BuildRibbonModel(const std::array<float, 3>& start,
@@ -3454,6 +3631,8 @@ VkShaderModule CreateShaderModule(const VkDevice device,
     return module;
 }
 
+#endif
+
 bool LoadOwnedWand(const std::filesystem::path& data_root,
                    std::vector<WandGpuVertex>* const output) {
     if (output == nullptr) {
@@ -3461,10 +3640,19 @@ bool LoadOwnedWand(const std::filesystem::path& data_root,
     }
     const std::string package =
         (data_root / "system" / "HPBase.u").string();
+    const auto table = wand::inspect_hp1_package_link_table(package);
+    const auto wand_reference = FindUniqueRootExport(table, "WandMesh", "Engine.SkeletalMesh");
+    if (wand_reference == 0) {
+        HPVR_LOGE("[hpvr.quest.wand.data] status=RESOURCE_REJECTED "
+                  "package=%s object=WandMesh class=Engine.SkeletalMesh "
+                  "reason=missing_ambiguous_or_invalid_package error=%s",
+                  package.c_str(), table.error.c_str());
+        return false;
+    }
     hpvr_hp1_skeletal_mesh_report query{};
     const std::uint32_t query_status =
         hpvr_hp1_load_skeletal_geometry_utf8(
-            package.c_str(), kWandMeshReference, 1.0F, nullptr, 0, &query);
+            package.c_str(), wand_reference, 1.0F, nullptr, 0, &query);
     if (query_status != HPVR_HP1_PROFILE_BUFFER_TOO_SMALL ||
         query.status != query_status ||
         query.abi_version != HPVR_HP1_SKELETAL_MESH_ABI_VERSION ||
@@ -3482,7 +3670,7 @@ bool LoadOwnedWand(const std::filesystem::path& data_root,
     hpvr_hp1_skeletal_mesh_report loaded{};
     const std::uint32_t load_status =
         hpvr_hp1_load_skeletal_geometry_utf8(
-            package.c_str(), kWandMeshReference, 1.0F, source.data(),
+            package.c_str(), wand_reference, 1.0F, source.data(),
             static_cast<std::uint32_t>(source.size()), &loaded);
     if (load_status != HPVR_HP1_PROFILE_OK ||
         loaded.status != load_status ||
@@ -3578,10 +3766,12 @@ bool LoadOwnedWand(const std::filesystem::path& data_root,
         "[hpvr.quest.wand.data] status=READY mesh=HPBase.WandMesh "
         "mesh_ref=%d vertices=%zu triangles=%zu length_m=%.3f "
         "long_axis=%zu handle_end=%s material=PROCEDURAL_BROWN",
-        kWandMeshReference, output->size(), output->size() / 3,
+        wand_reference, output->size(), output->size() / 3,
         kWandLengthMeters, long_axis, handle_is_max ? "max" : "min");
     return true;
 }
+
+#ifndef HPVR_QUEST_CPU_ONLY
 
 }  // namespace
 
@@ -3589,6 +3779,7 @@ struct QuestScene::State {
     unsigned map_id=0;
     std::int32_t harry_actor=kHarryActorReference;
     ChallengeRuntime challenge;
+    CharmsRuntime charms;
     BroomRuntime broom;
     BroomVisuals broom_visuals;
     BroomAvatar broom_avatar;
@@ -3602,6 +3793,11 @@ struct QuestScene::State {
     ProgressSave travel_origin;
     unsigned travel_slot=0;
     ReflectionHistory reflections;
+    PlanarMirrorTarget mirror_target;
+    std::vector<MirrorSurface> mirrors;
+    std::vector<bool> captured_mirrors;
+    VkPipeline mirror_capture_pipeline=VK_NULL_HANDLE,mirror_composite_pipeline=VK_NULL_HANDLE,mirror_veil_pipeline=VK_NULL_HANDLE;
+    VkPipelineLayout mirror_layout=VK_NULL_HANDLE;
     QuestFrontEnd frontend;
     DemoFirstStep first_step;
     DemoCameraReturn exit_return;
@@ -3614,6 +3810,8 @@ struct QuestScene::State {
     Matrix4 hud_transform{};
     Matrix4 effect_view_transform{};
     float bean_hud_time=0;
+    float star_hud_time=0;
+    HousePointHud house_point_hud;
     bool front_anchor_valid=false, restore_pending=false, restoring=false;
     std::array<float,3> platform_transport{};
     ProgressSave placement;
@@ -3699,8 +3897,10 @@ struct QuestScene::State {
     bool wand_was_held=false,wand_cast_consumed=false;
     CastingMode wand_cast_mode=CastingMode::Classic;
     std::array<float,3> wand_lock_point{};
+    std::array<float,3> wand_lock_actor_offset{};
     std::uint64_t automatic_cast_serial=0;
     TargetMarkerBatch target_marker;
+    std::array<TargetMarkerBatch,2> charms_markers;
     std::uint32_t target_marker_texture_layer=0;
     std::uint32_t smoke_texture_layer=0;
     unsigned voice_status=0;
@@ -3712,11 +3912,16 @@ struct QuestScene::State {
     std::vector<FlameEmitter> flames;
     std::vector<GlowEmitter> glows;
     std::vector<AmbientParticleEmitter> ambient_emitters;
+    std::vector<AmbientParticleEmitter> lock_emitters;
+    std::uint32_t lock_texture_layer=0;
+    std::uint32_t feather_texture_layer=0;
     std::size_t script_actor_count = 0;
     std::size_t script_event_edge_count = 0;
     std::size_t authored_light_count = 0;
     IntroCutscene intro_cutscene;
     QuestAudio audio;
+    std::array<float,3> ambient_position{};
+    float ambient_radius=0,ambient_volume=0;
 
     VkPhysicalDevice physical_device = VK_NULL_HANDLE;
     VkDevice device = VK_NULL_HANDLE;
@@ -3785,7 +3990,7 @@ bool QuestScene::LoadFromOwnedData(const std::filesystem::path& data_root,const 
     if (IsLoaded()) {
         return true;
     }
-    state.map_id=map_id;state.harry_actor=map_id==0?kHarryActorReference:map_id==1?1102:75;
+    state.map_id=map_id;state.harry_actor=map_id==0?kHarryActorReference:map_id==1?1102:map_id==3?346:75;
     SceneLoadTrace load_trace(save_root,map_id);
     const std::filesystem::path map_package = data_root / descriptor->package_path;
     try {
@@ -3823,7 +4028,7 @@ bool QuestScene::LoadFromOwnedData(const std::filesystem::path& data_root,const 
             try{
                 const auto fingerprint=cache::ComputeSourceFingerprint(data_root,map_id);
                 cache::Reader reader(cache_path,map_id,fingerprint);
-                const auto reserve=prepared_codec::kMaxFrontendVertexReserve+(map_id==1?kPreparedGnomeVertexReserve:0);
+                const auto reserve=prepared_codec::kMaxFrontendVertexReserve+((map_id==1||map_id==3)?kPreparedGnomeVertexReserve:0);
                 auto candidate=ReadPreparedGeometry(reader,reserve);
                 reader.Finish();
                 if(!ValidatePreparedGeometry(candidate))throw std::runtime_error("invalid prepared geometry layout");
@@ -3847,7 +4052,7 @@ bool QuestScene::LoadFromOwnedData(const std::filesystem::path& data_root,const 
         }
         HPVR_LOGI("[hpvr.quest.grid.visual] status=READY movers=%u vertices=%u new_layers=%u",
             grid_visuals.movers,grid_visuals.vertices,grid_visuals.texture_layers_added);
-        if(map_id==1){
+        if(map_id==1||map_id==3){
             if(!prepared)geometry.vertices.reserve(geometry.vertices.size()+prepared_codec::kMaxFrontendVertexReserve+kPreparedGnomeVertexReserve);
             const auto clips=RestorePreparedGnomeClips(geometry,data_root);
             if(!clips.valid){HPVR_LOGE("[hpvr.quest.gnomes.clips] status=REJECTED reason=%s",clips.error);return false;}
@@ -3865,7 +4070,10 @@ bool QuestScene::LoadFromOwnedData(const std::filesystem::path& data_root,const 
         HPVR_LOGI("[hpvr.quest.fixtures] restored=%zu removed_flame_faces=%zu wick_anchors=%zu",candle_restore.fixtures,candle_restore.removed_faces,candle_restore.wick_anchors);
         state.ambient_emitters=RestorePreparedAmbientParticles(geometry,quest_census,player_start,player_start_yaw);
         HPVR_LOGI("[hpvr.quest.ambient] blue_emitters=%zu",state.ambient_emitters.size());
+        if(map_id==3){state.mirrors=FindMirrorSurfaces(geometry.vertices,geometry.map_vertices);BindMirrorMovers(state.mirrors,geometry.doors);}
+        HPVR_LOGI("[hpvr.quest.mirror] surfaces=%zu",state.mirrors.size());
         auto loaded_vertices=std::move(geometry.vertices);
+        if(map_id==3)AppendWaterSurfaceGeometry(state.mirrors,loaded_vertices);
         auto loaded_textures=std::move(geometry.textures);
         auto loaded_collision_triangles=std::move(geometry.collision);
         auto loaded_doors=std::move(geometry.doors);
@@ -3878,6 +4086,11 @@ bool QuestScene::LoadFromOwnedData(const std::filesystem::path& data_root,const 
                 state.broom_avatar.removed_triangles,state.broom_avatar.broom_triangles);
         }
         auto loaded_texture_layers=geometry.texture_layers;
+        if(map_id==3&&!LoadLockParticles(data_root,quest_census,player_start,player_start_yaw,
+            geometry.texture_width,geometry.texture_height,loaded_textures,loaded_texture_layers,
+            state.lock_texture_layer,state.lock_emitters))return false;
+        if(map_id==3&&!LoadWingFeatherTexture(data_root,geometry.texture_width,geometry.texture_height,
+            loaded_textures,loaded_texture_layers,state.feather_texture_layer))return false;
         if(map_id==2&&!LoadBroomVisuals(data_root,geometry.texture_width,geometry.texture_height,
             loaded_textures,loaded_texture_layers,state.broom_visuals))return false;
         const auto map_vertex_count=geometry.map_vertices;
@@ -3924,6 +4137,13 @@ bool QuestScene::LoadFromOwnedData(const std::filesystem::path& data_root,const 
         std::vector<std::array<float,2>> marker_pattern;
         for(const auto& point:symbol.template_points)marker_pattern.push_back({point.x,point.y});
         state.target_marker=BuildTargetMarkerBatch(marker_pattern);
+        if(map_id==3)for(unsigned i=0;i<state.charms_markers.size();++i){
+            const auto profile=wand::load_hp1_spell_profile(data_root/"system/HPBase.u",data_root/"Maps/Lev_Tut3.unr",
+                i?"LevPattern":"AlohoPattern",i?"SPELLLEV":"spellAloho");
+            if(profile.status!=wand::Hp1ProfileStatus::ok)return false;
+            std::vector<std::array<float,2>> points;for(const auto& point:profile.template_points)points.push_back({point.x,point.y});
+            state.charms_markers[i]=BuildTargetMarkerBatch(points);if(!state.charms_markers[i].valid())return false;
+        }
         const auto sparkle=wand::load_hp1_p8_texture(data_root/"system/HPParticle.u",3);
         if(!state.target_marker.valid()||sparkle.status!=wand::Hp1ProfileStatus::ok||
             sparkle.object_name!="Sparkle_3"||sparkle.mips.empty()||
@@ -3965,6 +4185,8 @@ bool QuestScene::LoadFromOwnedData(const std::filesystem::path& data_root,const 
             return false;
         }
         load_trace.Stage("DIALOGUE_READY_MUSIC_BEGIN");
+        state.ambient_position=world.ambient_position;state.ambient_radius=world.ambient_radius;state.ambient_volume=world.ambient_volume;
+        state.audio.SetAmbientLoopGain(map_id==3?0.0F:1.0F);
         if(!state.audio.ConfigureMusic(state.frontend.assets.music,data_root/"Cache/Audio"))return false;
         load_trace.Stage("MUSIC_READY");
         state.frog_sound=state.audio.DialogueClipCount();
@@ -3981,7 +4203,7 @@ bool QuestScene::LoadFromOwnedData(const std::filesystem::path& data_root,const 
         HPVR_LOGI("[hpvr.quest.frontend] status=READY story_pages=14 save_slots=3 start=MAIN_MENU spell_lock=STORY");
         state.vertices = std::move(loaded_vertices);
         state.doors = std::move(loaded_doors);
-        const auto challenge_topology = map_id == 1
+        const auto challenge_topology = (map_id == 1 || map_id == 3)
             ? wand::load_hp1_bsp_topology(map_package) : wand::Hp1BspTopology{};
         const wand::Hp1ChallengeAbyssLighting abyss_lighting(challenge_topology, quest_census, map_id == 1);
         if (abyss_lighting.Enabled()) {
@@ -4096,9 +4318,9 @@ bool QuestScene::LoadFromOwnedData(const std::filesystem::path& data_root,const 
         state.authored_light_count = world.lights.size();
         state.intro_cutscene = std::move(world.intro_cutscene);
         state.initial_intro=state.intro_cutscene;
-        if(map_id==1){
-            if(!LoadChallengeMetadata(quest_census,player_start,player_start_yaw,state.challenge))return false;
-            SetBridgeProfessor(state.character_draws,false);
+        if(map_id==1||map_id==3){
+            if(!LoadChallengeMetadata(quest_census,player_start,player_start_yaw,state.challenge,map_id==3?23:15))return false;
+            if(map_id==1)SetBridgeProfessor(state.character_draws,false);
             if(!state.challenge.zones.Load(challenge_topology,quest_census))return false;
             state.challenge.source_origin={player_start.position_m[0],player_start.position_m[1],player_start.position_m[2]};
             state.challenge.source_yaw=player_start_yaw;
@@ -4109,6 +4331,10 @@ bool QuestScene::LoadFromOwnedData(const std::filesystem::path& data_root,const 
             }
             state.intro_cutscene.playing=false;
             RebuildChallengeCollision();
+            if(map_id==3&&!LoadCharmsMetadata(data_root,quest_census,player_start,player_start_yaw,
+                state.challenge.props,state.charms,&state.vertices))return false;
+            if(map_id==3)BindCharmsKnightTargets(state.challenge,quest_census,player_start,player_start_yaw);
+            if(map_id==3)RebuildChallengeCollision();
         }else if(map_id==2){
             if(!LoadBroomMetadata(data_root,quest_census,player_start,player_start_yaw,state.broom)||
                !LoadChallengeMetadata(quest_census,player_start,player_start_yaw,state.challenge,14))return false;
@@ -4204,7 +4430,8 @@ bool QuestScene::LoadFromOwnedData(const std::filesystem::path& data_root,const 
         const auto read_stats=package_reads.stats();
         if(!IsLoaded()){
             load_trace.Stage("CPU_LAYOUT_REJECTED");
-            HPVR_LOGE("[hpvr.quest.scene.data] status=CPU_LAYOUT_REJECTED map=%u",map_id);
+            HPVR_LOGE("[hpvr.quest.scene.data] status=CPU_LAYOUT_REJECTED map=%u characters=%zu doors=%zu scenes=%zu vertices=%zu layers=%u",
+                map_id,state.character_draws.size(),state.doors.size(),state.challenge.scenes.size(),state.vertices.size(),state.texture_layers);
             return false;
         }
         load_trace.Ready();
@@ -4239,6 +4466,7 @@ bool QuestScene::CreateGpu(const VkPhysicalDevice physical_device,
     state.queue_family = queue_family;
     const auto gpu_stage=[&](const char* name){SceneLoadTrace::Append(state.frontend.saves,state.map_id,name);};
     if(!state.reflections.Create(physical_device,device,queue,queue_family,width,height,color_format,depth_format)){DestroyGpu();return false;}
+    if(!state.mirror_target.Create(physical_device,device,state.map_id==3?width:1,state.map_id==3?height:1,color_format,depth_format,static_cast<unsigned>(state.mirrors.size()))){DestroyGpu();return false;}
     gpu_stage("GPU_REFLECTION_RESOURCES_READY");
 
     VkPhysicalDeviceProperties device_properties{};
@@ -4385,7 +4613,9 @@ bool QuestScene::CreateGpu(const VkPhysicalDevice physical_device,
                 static_cast<std::size_t>(glow_vertex_bytes));
     vkUnmapMemory(device, state.glow_vertex_memory);
 
-    const VkDeviceSize particle_vertex_bytes = sizeof(kParticleQuad)+state.target_marker.vertices.size()*sizeof(ParticleGpuVertex);
+    std::size_t marker_vertex_count=state.target_marker.vertices.size();
+    for(const auto& marker:state.charms_markers)marker_vertex_count+=marker.vertices.size();
+    const VkDeviceSize particle_vertex_bytes = sizeof(kParticleQuad)+marker_vertex_count*sizeof(ParticleGpuVertex);
     if (!CreateBuffer(physical_device, device, particle_vertex_bytes,
                       VK_BUFFER_USAGE_VERTEX_BUFFER_BIT,
                       VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
@@ -4410,6 +4640,9 @@ bool QuestScene::CreateGpu(const VkPhysicalDevice physical_device,
         const auto& v=state.target_marker.vertices[i];
         marker_vertices[i]={{v.position[0],v.position[1],v.position[2]},{v.texture_uv[0],v.texture_uv[1]}};
     }
+    marker_vertices+=state.target_marker.vertices.size();
+    for(const auto& marker:state.charms_markers)for(const auto& v:marker.vertices)
+        *marker_vertices++={{v.position[0],v.position[1],v.position[2]},{v.texture_uv[0],v.texture_uv[1]}};
     vkUnmapMemory(device, state.particle_vertex_memory);
 
     VkBuffer staging_buffer = VK_NULL_HANDLE;
@@ -4642,7 +4875,8 @@ bool QuestScene::CreateGpu(const VkPhysicalDevice physical_device,
     auto abyss_uniform = reflection_uniform;
     abyss_uniform.binding = 5;
     abyss_uniform.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC;
-    const std::array descriptor_bindings{texture_binding, lightmap_binding,reflection_color,reflection_depth,reflection_uniform,abyss_uniform};
+    auto mirror_texture=texture_binding;mirror_texture.binding=6;
+    const std::array descriptor_bindings{texture_binding, lightmap_binding,reflection_color,reflection_depth,reflection_uniform,abyss_uniform,mirror_texture};
     VkDescriptorSetLayoutCreateInfo set_layout_info{};
     set_layout_info.sType =
         VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
@@ -4658,7 +4892,7 @@ bool QuestScene::CreateGpu(const VkPhysicalDevice physical_device,
     }
     VkDescriptorPoolSize pool_size{};
     pool_size.type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-    pool_size.descriptorCount = 4;
+    pool_size.descriptorCount = 5;
     const std::array<VkDescriptorPoolSize,3> pool_sizes{{pool_size,{VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,1},{VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC,1}}};
     VkDescriptorPoolCreateInfo descriptor_pool_info{};
     descriptor_pool_info.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
@@ -4708,6 +4942,7 @@ bool QuestScene::CreateGpu(const VkPhysicalDevice physical_device,
         device, static_cast<std::uint32_t>(descriptor_writes.size()),
         descriptor_writes.data(), 0, nullptr);
     state.reflections.Bind(state.descriptor_set);
+    state.mirror_target.Bind(state.descriptor_set);
     const VkDescriptorBufferInfo abyss_buffer_info{state.abyss_uniform_buffer, 0, sizeof(AbyssFogUniform)};
     VkWriteDescriptorSet abyss_write{};
     abyss_write.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
@@ -4852,6 +5087,41 @@ bool QuestScene::CreateGpu(const VkPhysicalDevice physical_device,
     rasterization.cullMode=VK_CULL_MODE_BACK_BIT;
     const bool mover_ok=CheckVk(vkCreateGraphicsPipelines(device,VK_NULL_HANDLE,1,&pipeline_info,nullptr,&state.mover_pipeline),"vkCreateGraphicsPipelines(mover_sidedness)");
     rasterization.cullMode=VK_CULL_MODE_NONE;
+    bool mirror_ok=true;
+    if(state.map_id==3){
+        auto mirror_push=push_range;mirror_push.stageFlags=VK_SHADER_STAGE_VERTEX_BIT|VK_SHADER_STAGE_FRAGMENT_BIT;
+        auto mirror_layout_info=pipeline_layout_info;mirror_layout_info.pPushConstantRanges=&mirror_push;
+        mirror_ok=vkCreatePipelineLayout(device,&mirror_layout_info,nullptr,&state.mirror_layout)==VK_SUCCESS;
+        const auto mv=CreateShaderModule(device,kMirrorVertexSpirv,kMirrorVertexSpirvSize);
+        const auto mf=CreateShaderModule(device,kMirrorFragmentSpirv,kMirrorFragmentSpirvSize);
+        const auto mc=CreateShaderModule(device,kMirrorCaptureFragmentSpirv,kMirrorCaptureFragmentSpirvSize);
+        const auto veil=CreateShaderModule(device,kMirrorVeilFragmentSpirv,kMirrorVeilFragmentSpirvSize);
+        if(mirror_ok&&mv&&mf&&mc&&veil){
+            auto mirror_info=pipeline_info;
+            std::array<VkPipelineShaderStageCreateInfo,2> stages{shader_stages[0],shader_stages[1]};
+            stages[0].module=mv;stages[1].module=mc;mirror_info.pStages=stages.data();mirror_info.layout=state.mirror_layout;
+            mirror_info.renderPass=state.mirror_target.Pass();
+            mirror_ok=vkCreateGraphicsPipelines(device,VK_NULL_HANDLE,1,&mirror_info,nullptr,&state.mirror_capture_pipeline)==VK_SUCCESS;
+            mirror_info.renderPass=render_pass;
+            stages[1].module=mf;
+            auto composite_depth=depth;composite_depth.depthCompareOp=VK_COMPARE_OP_LESS_OR_EQUAL;mirror_info.pDepthStencilState=&composite_depth;
+            mirror_ok=(vkCreateGraphicsPipelines(device,VK_NULL_HANDLE,1,&mirror_info,nullptr,&state.mirror_composite_pipeline)==VK_SUCCESS)&&mirror_ok;
+            composite_depth.depthWriteEnable=VK_FALSE;
+            auto veil_attachment=blend_attachment;veil_attachment.blendEnable=VK_TRUE;
+            veil_attachment.srcColorBlendFactor=VK_BLEND_FACTOR_SRC_ALPHA;
+            veil_attachment.dstColorBlendFactor=VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
+            veil_attachment.colorBlendOp=VK_BLEND_OP_ADD;
+            veil_attachment.srcAlphaBlendFactor=VK_BLEND_FACTOR_ONE;
+            veil_attachment.dstAlphaBlendFactor=VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
+            veil_attachment.alphaBlendOp=VK_BLEND_OP_ADD;
+            auto veil_blend=blend;veil_blend.pAttachments=&veil_attachment;mirror_info.pColorBlendState=&veil_blend;
+            stages[1].module=veil;
+            mirror_ok=(vkCreateGraphicsPipelines(device,VK_NULL_HANDLE,1,&mirror_info,nullptr,&state.mirror_veil_pipeline)==VK_SUCCESS)&&mirror_ok;
+        }else mirror_ok=false;
+        if(mv)vkDestroyShaderModule(device,mv,nullptr);if(mf)vkDestroyShaderModule(device,mf,nullptr);
+        if(mc)vkDestroyShaderModule(device,mc,nullptr);
+        if(veil)vkDestroyShaderModule(device,veil,nullptr);
+    }
     depth.depthTestEnable=VK_FALSE;depth.depthWriteEnable=VK_FALSE;
     const bool frontend_ok=CheckVk(vkCreateGraphicsPipelines(device,VK_NULL_HANDLE,1,&pipeline_info,
         nullptr,&state.frontend_pipeline),"vkCreateGraphicsPipelines(frontend_no_depth)");
@@ -4868,7 +5138,7 @@ bool QuestScene::CreateGpu(const VkPhysicalDevice physical_device,
     depth.depthWriteEnable=VK_TRUE;blend_attachment.blendEnable=VK_FALSE;
     vkDestroyShaderModule(device, fragment_shader, nullptr);
     vkDestroyShaderModule(device, vertex_shader, nullptr);
-    if (!pipeline_ok || !mover_ok || !frontend_ok || !ghost_ok) {
+    if (!pipeline_ok || !mover_ok || !frontend_ok || !ghost_ok || !mirror_ok) {
         DestroyGpu();
         return false;
     }
@@ -5068,7 +5338,8 @@ bool QuestScene::CreateGpu(const VkPhysicalDevice physical_device,
     }
     const auto candle_count=std::count_if(state.flames.begin(),state.flames.end(),[](const auto& flame){return flame.scale<.5F;});
     state.candle_particle_capacity=static_cast<std::uint32_t>(std::clamp<std::ptrdiff_t>(candle_count,1,4096))*12+
-        static_cast<std::uint32_t>(std::min(state.ambient_emitters.size(),ambient::kMaximumAmbientEmitters)*ambient::kMaximumAmbientParticlesPerEmitter*6);
+        static_cast<std::uint32_t>((std::min(state.ambient_emitters.size(),ambient::kMaximumAmbientEmitters)+
+            std::min(state.lock_emitters.size(),ambient::kMaximumAmbientEmitters))*ambient::kMaximumAmbientParticlesPerEmitter*6);
     if(!CreateBuffer(physical_device,device,state.candle_particle_capacity*sizeof(ParticleGpuVertex),VK_BUFFER_USAGE_VERTEX_BUFFER_BIT,
         VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT|VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,&state.candle_particle_buffer,&state.candle_particle_memory)||
         vkMapMemory(device,state.candle_particle_memory,0,VK_WHOLE_SIZE,0,&state.candle_particle_mapped)!=VK_SUCCESS){
@@ -5109,6 +5380,7 @@ bool QuestScene::CreateGpu(const VkPhysicalDevice physical_device,
 
 void QuestScene::DestroyGpu() {
     state_->reflections.Destroy();
+    state_->mirror_target.Destroy();
     State& state = *state_;
     state.audio.Stop();
     if (state.device == VK_NULL_HANDLE) {
@@ -5123,6 +5395,11 @@ void QuestScene::DestroyGpu() {
         vkDestroyPipeline(state.device, state.pipeline, nullptr);
     }
     if(state.mover_pipeline)vkDestroyPipeline(state.device,state.mover_pipeline,nullptr);
+    if(state.mirror_capture_pipeline)vkDestroyPipeline(state.device,state.mirror_capture_pipeline,nullptr);
+    if(state.mirror_composite_pipeline)vkDestroyPipeline(state.device,state.mirror_composite_pipeline,nullptr);
+    if(state.mirror_veil_pipeline)vkDestroyPipeline(state.device,state.mirror_veil_pipeline,nullptr);
+    if(state.mirror_layout)vkDestroyPipelineLayout(state.device,state.mirror_layout,nullptr);
+    state.mirror_capture_pipeline=state.mirror_composite_pipeline=state.mirror_veil_pipeline=VK_NULL_HANDLE;state.mirror_layout=VK_NULL_HANDLE;
     if(state.death_pipeline)vkDestroyPipeline(state.device,state.death_pipeline,nullptr);
     state.mover_pipeline=state.death_pipeline=VK_NULL_HANDLE;
     if (state.wand_pipeline != VK_NULL_HANDLE) {
@@ -5297,6 +5574,7 @@ bool QuestScene::ReflectionCaptureEnabled()const{return IsGpuReady()&&state_->re
 void QuestScene::CaptureReflections(VkCommandBuffer command,VkImage color,VkImage depth,const Matrix4& matrix,unsigned width,unsigned height){
     if(IsGpuReady())state_->reflections.Capture(command,color,depth,matrix,width,height);
 }
+#include "quest_mirror_runtime.inl"
 void QuestScene::RecordDraw(
     const VkCommandBuffer command_buffer,
     const std::uint32_t width,
@@ -5337,7 +5615,7 @@ void QuestScene::RecordDraw(
     // Scene rendering continues behind world-anchored VR panels.
     const AuthoredDarkLightPush no_dark_lights{};
     auto map_lights=no_dark_lights;
-    if(state.map_id==2){
+    if(state.map_id==2||state.map_id==3){
         Matrix4 inverse{};
         auto eye=state.last_player;
         if(InvertReflectionMatrix(view_projection,inverse)&&std::abs(inverse[11])>1e-6F){
@@ -5353,20 +5631,38 @@ void QuestScene::RecordDraw(
                        VK_SHADER_STAGE_VERTEX_BIT, 0,
                        sizeof(float) * view_projection.size(),
                        view_projection.data());
-    vkCmdDraw(command_buffer, state.map_vertex_count, 1, 0, 0);
+    if(state.mirrors.empty())vkCmdDraw(command_buffer,state.map_vertex_count,1,0,0);
+    else{
+        std::vector<std::pair<unsigned,unsigned>> skip;
+        for(const auto& mirror:state.mirrors)skip.insert(skip.end(),mirror.ranges.begin(),mirror.ranges.end());
+        std::ranges::sort(skip);unsigned first=0;
+        for(const auto& range:skip){if(range.first>first)vkCmdDraw(command_buffer,range.first-first,1,first,0);first=range.first+range.second;}
+        if(first<state.map_vertex_count)vkCmdDraw(command_buffer,state.map_vertex_count-first,1,first,0);
+    }
     vkCmdPushConstants(command_buffer,state.pipeline_layout,VK_SHADER_STAGE_VERTEX_BIT,
         sizeof(float)*16,sizeof(no_dark_lights),&no_dark_lights);
     if(state.map_id!=0){
         for(const auto& prop:state.challenge.props){
             if(state.map_id==2&&state.broom.hoop_indices.contains(prop.reference))continue;
+            // These owned meshes have single-sided materials and coincident
+            // inner/outer faces. Drawing their backs produces depth fighting.
+            const bool single_sided=state.map_id==3&&(chest::IsChest(prop.name)||prop.name=="hprops.knight");
+            vkCmdBindPipeline(command_buffer,VK_PIPELINE_BIND_POINT_GRAPHICS,
+                single_sided?state.mover_pipeline:state.pipeline);
             const auto range=ChallengePropDrawRange(prop,ChallengeActivated(state.frontend.progress,prop.reference),state.bean_time);
             auto p=ChallengePropOffset(prop,state.bean_time);
+            if(state.map_id==3)if(const auto block=state.charms.blocks.find(prop.reference);block!=state.charms.blocks.end())p=AddVector(p,block->second.offset);
+            if(state.map_id==3)if(const auto attachment=state.charms.prop_attachments.find(prop.reference);attachment!=state.charms.prop_attachments.end())
+                for(const auto& mover:state.doors)if(mover.actor_reference==attachment->second){
+                    p=AddVector(p,SubtractVector(MoverPoint(mover,mover.pivot),mover.pivot));break;
+                }
             if(state.map_id==2)if(const auto offset=state.broom.prop_offsets.find(prop.reference);offset!=state.broom.prop_offsets.end())p=AddVector(p,offset->second);
             const Matrix4 transform{1,0,0,0,0,1,0,0,0,0,1,0,p[0],p[1],p[2],1};
             const auto mvp=MultiplyMatrices(view_projection,transform);
             vkCmdPushConstants(command_buffer,state.pipeline_layout,VK_SHADER_STAGE_VERTEX_BIT,0,sizeof(float)*mvp.size(),mvp.data());
             if(range.second)vkCmdDraw(command_buffer,range.second,1,range.first,0);
         }
+        vkCmdBindPipeline(command_buffer,VK_PIPELINE_BIND_POINT_GRAPHICS,state.pipeline);
     }else vkCmdDraw(command_buffer, state.knights.empty()?state.fixture_vertex_count:state.knights.front().first-state.map_vertex_count, 1,
               state.map_vertex_count, 0);
     for(const auto& knight:state.knights){
@@ -5376,6 +5672,7 @@ void QuestScene::RecordDraw(
     VkPipeline bound_mover=VK_NULL_HANDLE;
     for (const auto& door : state.doors) {
         if(door.collision_only)continue;
+        if(IsMirrorBlocker(door,state.mirrors))continue;
         const auto selected=door.two_sided?state.pipeline:state.mover_pipeline;
         if(selected!=bound_mover){vkCmdBindPipeline(command_buffer,VK_PIPELINE_BIND_POINT_GRAPHICS,selected);bound_mover=selected;}
         const auto origin=MoverPoint(door,{0,0,0});
@@ -5439,7 +5736,7 @@ void QuestScene::RecordDraw(
         if(state.map_id!=0?!state.character_draws[i].flying:state.character_draws[i].actor_reference!=3148)draw_character(i);
     for(const auto& bean:state.beans){
         if(bean.source_actor&&!ChallengeRewardsReady(state.challenge.props,bean.source_actor,state.frontend.progress))continue;
-        if(bean.kind==1&&state.frontend.progress.frog_taken)continue;
+        if(state.map_id==0&&bean.kind==1&&state.frontend.progress.frog_taken)continue;
         const bool collecting=(bean.kind==2||bean.kind==4)&&state.card_pickup.active()&&state.card_pickup.actor==bean.actor_reference;
         if(bean.kind==2&&(!state.frontend.progress.card_awarded||(state.frontend.progress.card_taken&&!collecting)))continue;
         if(!collecting&&std::ranges::binary_search(state.frontend.progress.collected_beans,bean.actor_reference))continue;
@@ -5501,6 +5798,7 @@ void QuestScene::RecordDraw(
         vkCmdDraw(command_buffer,avatar.vertex_count,1,frame*avatar.vertex_count,0);
         vkCmdBindVertexBuffers(command_buffer,0,1,&state.vertex_buffer,&offset);
     }
+    RecordMirrorComposite(command_buffer,view_projection,width,height);
     vkCmdBindPipeline(command_buffer,VK_PIPELINE_BIND_POINT_GRAPHICS,state.ghost_pipeline);
     for(std::size_t i=0;i<state.character_draws.size();++i)
         if(state.map_id!=0?state.character_draws[i].flying:state.character_draws[i].actor_reference==3148)draw_character(i);
@@ -5528,21 +5826,39 @@ void QuestScene::RecordFrontDraw(VkCommandBuffer command_buffer,const Matrix4& v
         vkCmdDraw(command_buffer,found->second.count,1,found->second.first,0);
         if(state.frontend.screen==FrontScreen::Vr){
             for(const auto& key:{"vr_scale_"+std::to_string(state.frontend.vr.render_scale),"vr_ssr_"+std::to_string(state.frontend.vr.ssr),"vr_hz_"+std::to_string(state.frontend.vr.refresh_rate),"vr_voice_status_"+std::to_string(state.voice_status),
-                "vr_turning_"+std::to_string(static_cast<int>(state.frontend.vr.turning_mode)),"vr_turn_speed_"+std::to_string(state.frontend.vr.smooth_turn_speed)}){
+                "vr_turning_"+std::to_string(static_cast<int>(state.frontend.vr.turning_mode)),"vr_turn_speed_"+std::to_string(state.frontend.vr.smooth_turn_speed),"vr_gpu_boost_"+std::to_string(int(state.frontend.vr.gpu_boost))}){
                 const auto value=state.front_draws.find(key);
                 if(value!=state.front_draws.end())vkCmdDraw(command_buffer,value->second.count,1,value->second.first,0);
             }
         }
         if(state.frontend.screen==FrontScreen::Pause||state.frontend.screen==FrontScreen::Report){
             const auto& p=state.frontend.progress;
-            const auto cards=std::ranges::count_if(state.beans,[&](const auto& b){return b.kind==4&&std::ranges::binary_search(p.collected_beans,b.actor_reference);});
-            const auto bean_count=p.banked_beans+p.collected_beans.size()-(state.map_id==1?p.challenge_stars:0U)-cards;
-            const auto counter=state.front_draws.find(std::string(state.frontend.screen==FrontScreen::Report?"report_beans_":"beans_")+
-                std::to_string(std::min<std::size_t>(512,bean_count)));
-            if(counter!=state.front_draws.end())vkCmdDraw(command_buffer,counter->second.count,1,counter->second.first,0);
-            if(state.map_id==1){
-                const auto stars=state.front_draws.find(std::string(state.frontend.screen==FrontScreen::Report?"report_stars_":"stars_")+std::to_string(p.challenge_stars));
-                if(stars!=state.front_draws.end())vkCmdDraw(command_buffer,stars->second.count,1,stars->second.first,0);
+            const auto nonbeans=static_cast<std::size_t>(std::ranges::count_if(state.beans,[&](const auto& b){
+                return b.kind!=0&&std::ranges::binary_search(p.collected_beans,b.actor_reference);
+            }));
+            const auto bean_count=p.banked_beans+p.collected_beans.size()-std::min(nonbeans,p.collected_beans.size());
+            const auto draw=[&](const std::string& key){
+                const auto value=state.front_draws.find(key);
+                if(value!=state.front_draws.end())vkCmdDraw(command_buffer,value->second.count,1,value->second.first,0);
+            };
+            if(IsWalkingChallenge(state.map_id))draw("stars_"+std::to_string(std::min(p.challenge_stars,state.map_id==3?6U:8U)));
+            for(unsigned house=0;house<4;++house)
+                draw("report_sand_"+std::to_string(house)+"_"+std::to_string(std::min(256U,p.house_points[house]*256U/400U)));
+            for(unsigned field=0;field<7;++field){
+                auto value=field==0?static_cast<unsigned>(std::min<std::size_t>(campaign::kPointLimit,bean_count)):
+                    state.frontend.ReportValue(field);
+                unsigned place=0;
+                do{draw("report_digit_"+std::to_string(field)+"_"+std::to_string(place++)+"_"+std::to_string(value%10));value/=10;}
+                while(value&&place<7);
+            }
+        }
+        if(state.frontend.screen==FrontScreen::Cards){
+            const auto mask=state.frontend.progress.earned_cards|(state.frontend.progress.card_taken?campaign::CardMask(101):0U);
+            for(unsigned local=0;local<4;++local){
+                const unsigned card=state.frontend.card_page*4+local;
+                if(card>=campaign::kCardIds.size()||!(mask&(1U<<card)))continue;
+                const auto range=state.front_draws.find("folio_card_"+std::to_string(card));
+                if(range!=state.front_draws.end())vkCmdDraw(command_buffer,range->second.count,1,range->second.first,0);
             }
         }
         if(state.frontend.screen==FrontScreen::Debug||pinned){
@@ -5553,22 +5869,37 @@ void QuestScene::RecordFrontDraw(VkCommandBuffer command_buffer,const Matrix4& v
 
 void QuestScene::RecordHudDraw(VkCommandBuffer command_buffer,const Matrix4& view_projection)const{
     const auto& state=*state_;
-    if(!IsGpuReady()||state.frontend.Visible()||IsCutscenePlaying())return;
+    if(!IsGpuReady()||state.frontend.Visible())return;
+    const bool cutscene=IsCutscenePlaying();
+    if(cutscene&&state.house_point_hud.remaining<=0&&state.star_hud_time<=0)return;
     const AuthoredDarkLightPush no_dark_lights{};
     vkCmdPushConstants(command_buffer, state.pipeline_layout, VK_SHADER_STAGE_VERTEX_BIT,
         sizeof(float) * 16, sizeof(no_dark_lights), &no_dark_lights);
     const auto key=std::string(state.health_flash_time>0&&std::fmod(state.health_flash_time,.4F)<.2F?"hurt_":"health_")+std::to_string(state.frontend.progress.health);
-    const auto found=state.front_draws.find(key);if(found==state.front_draws.end())return;
+    const auto found=state.front_draws.find(key);
     vkCmdBindPipeline(command_buffer,VK_PIPELINE_BIND_POINT_GRAPHICS,state.frontend_pipeline);
     vkCmdBindDescriptorSets(command_buffer,VK_PIPELINE_BIND_POINT_GRAPHICS,state.pipeline_layout,0,1,&state.descriptor_set,1,&state.abyss_disabled_offset);
     constexpr VkDeviceSize offset=0;vkCmdBindVertexBuffers(command_buffer,0,1,&state.vertex_buffer,&offset);
     const auto mvp=MultiplyMatrices(view_projection,state.hud_transform);
     vkCmdPushConstants(command_buffer,state.pipeline_layout,VK_SHADER_STAGE_VERTEX_BIT,0,sizeof(float)*mvp.size(),mvp.data());
-    vkCmdDraw(command_buffer,found->second.count,1,found->second.first,0);
+    if(!cutscene&&found!=state.front_draws.end())vkCmdDraw(command_buffer,found->second.count,1,found->second.first,0);
+    if(state.house_point_hud.remaining>0){
+        const auto draw=[&](const std::string& key){const auto range=state.front_draws.find(key);
+            if(range!=state.front_draws.end())vkCmdDraw(command_buffer,range->second.count,1,range->second.first,0);};
+        draw("house_points_badge");unsigned value=state.house_point_hud.Value(),place=0;
+        const auto digits=std::to_string(value).size();
+        do{draw("house_points_"+std::to_string(digits)+"_"+std::to_string(place++)+"_"+std::to_string(value%10));value/=10;}while(value);
+    }
+    if(state.star_hud_time>0&&state.house_point_hud.remaining<=0){
+        const auto star=state.front_draws.find("star_pickup_"+std::to_string(std::min(8U,state.frontend.progress.challenge_stars)));
+        if(star!=state.front_draws.end())vkCmdDraw(command_buffer,star->second.count,1,star->second.first,0);
+    }
+    if(cutscene)return;
     if(state.bean_hud_time>0){
         const auto& p=state.frontend.progress;
-        const auto cards=std::ranges::count_if(state.beans,[&](const auto& b){return b.kind==4&&std::ranges::binary_search(p.collected_beans,b.actor_reference);});
-        const auto bean_count=p.banked_beans+p.collected_beans.size()-(state.map_id==1?p.challenge_stars:0U)-cards;
+        const auto cards=std::ranges::count_if(state.beans,[&](const auto& b){return (b.kind==4||b.kind==1)&&std::ranges::binary_search(p.collected_beans,b.actor_reference);});
+        const auto nonbeans=static_cast<std::size_t>(cards)+(IsWalkingChallenge(state.map_id)?p.challenge_stars:0U);
+        const auto bean_count=p.banked_beans+p.collected_beans.size()-std::min(nonbeans,p.collected_beans.size());
         const auto beans=state.front_draws.find("hud_"+std::to_string(std::min<std::size_t>(512,bean_count)));
         if(beans!=state.front_draws.end())vkCmdDraw(command_buffer,beans->second.count,1,beans->second.first,0);
     }
@@ -5585,7 +5916,8 @@ void QuestScene::RecordHudDraw(VkCommandBuffer command_buffer,const Matrix4& vie
     }
     if(state.frontend.vr.voice_cast&&state.frontend.vr.voice_hints&&state.basic_cast.charging&&state.wand_lock_valid&&
        state.death_time<0){
-        const auto label=state.front_draws.find("voice_aim_"+std::to_string(state.voice_repeat.pending?5U:state.voice_status));
+        const auto label=state.front_draws.find(std::string(ActiveGestureSpell()==GestureSpell::Alohomora?"voice_aloho_":"voice_aim_")+
+            std::to_string(state.voice_repeat.pending?5U:state.voice_status));
         const auto placement=PlaceVoiceHint(state.aim_minimum,state.aim_maximum,state.last_player);
         if(label!=state.front_draws.end()&&label->second.count&&placement.valid){
             const auto& right=placement.right;
@@ -5701,6 +6033,25 @@ void QuestScene::RecordGestureGuideDraw(
     }
     record_polyline(guide.trail_points, kTrailRibbonWidthMeters, 0.0F,
                     trail_color);
+    if(state.feather_texture_layer&&ActiveGestureSpell()==GestureSpell::Wingardium&&!guide.trail_points.empty()){
+        vkCmdBindPipeline(command_buffer,VK_PIPELINE_BIND_POINT_GRAPHICS,state.particle_pipeline);
+        vkCmdBindDescriptorSets(command_buffer,VK_PIPELINE_BIND_POINT_GRAPHICS,state.particle_pipeline_layout,
+            0,1,&state.descriptor_set,1,&state.abyss_disabled_offset);
+        vkCmdBindVertexBuffers(command_buffer,0,1,&state.particle_vertex_buffer,&offset);
+        const float time=state.effects_clock.Seconds();
+        for(unsigned i=0;i<16;++i){
+            const float age=std::fmod(time+float(i)*.09375F,1.5F),phase=float(i)*2.39996F;
+            const auto index=guide.trail_points.size()-1-std::min<std::size_t>(i/2,guide.trail_points.size()-1);
+            auto center=guide.trail_points[index];
+            center=AddVector(center,{.055F*age*std::sin(phase+time),-.045F*age,.045F*age*std::cos(phase+time)});
+            const std::array<float,3> up{.5F*std::sin(time*2+phase),1,0};
+            Matrix4 model{};const float size=.035F+.035F*std::sin(phase)*std::sin(phase);
+            if(!BuildRibbonModel(AddVector(center,ScaleVector(up,-size*.5F)),AddVector(center,ScaleVector(up,size*.5F)),guide.plane_normal,size,0,&model))continue;
+            const ParticlePushConstants push{MultiplyMatrices(view_projection,model),{1,1,1,.7F*(1-age/1.5F)},state.feather_texture_layer,{}, {0,0,1,1}};
+            vkCmdPushConstants(command_buffer,state.particle_pipeline_layout,VK_SHADER_STAGE_VERTEX_BIT,0,sizeof(push),&push);
+            vkCmdDraw(command_buffer,static_cast<unsigned>(kParticleQuad.size()),1,0,0);
+        }
+    }
 }
 
 void QuestScene::RecordSpellDraw(
@@ -5711,8 +6062,8 @@ void QuestScene::RecordSpellDraw(
     const State& state = *state_;
     const float effect_seconds = state.effects_clock.Seconds();
     if (!state.frontend.WorldVisible() || !IsGpuReady() ||
-        (!state.broom.active && state.flames.empty() && state.glows.empty() && state.ambient_emitters.empty() &&
-         !state.basic_cast.charging && !state.basic_cast.flying &&
+        (!state.broom.active && state.flames.empty() && state.glows.empty() && state.ambient_emitters.empty() && state.lock_emitters.empty() &&
+         !state.charms.held_block && !state.basic_cast.charging && !state.basic_cast.flying &&
          !state.projectile.flying &&
          !state.projectile.impacting)) return;
     VkViewport viewport{};
@@ -5742,7 +6093,7 @@ void QuestScene::RecordSpellDraw(
     std::uint32_t candle_vertices=0;
     const std::array<float,3> effect_head{state.effect_view_transform[12],state.effect_view_transform[13],state.effect_view_transform[14]};
     const auto append_sprite=[&](const std::array<float,3>& center,float size,
-        const std::array<float,4>& color,bool core){
+        const std::array<float,4>& color,bool core,bool whole_texture=false){
         if(!candle_output||candle_vertices+6>state.candle_particle_capacity)return;
         const std::array<float,3> up{state.effect_view_transform[4],state.effect_view_transform[5],state.effect_view_transform[6]};
         const std::array<float,3> normal{state.effect_view_transform[8],state.effect_view_transform[9],state.effect_view_transform[10]};
@@ -5755,6 +6106,7 @@ void QuestScene::RecordSpellDraw(
                 model[8+axis]*v.position[2]+model[12+axis];
             out.texture_uv[0]=(core?.501953125F:.001953125F)+v.texture_uv[0]*.49609375F;
             out.texture_uv[1]=.501953125F+v.texture_uv[1]*.49609375F;
+            if(whole_texture)std::copy_n(v.texture_uv,2,out.texture_uv);
             std::copy(color.begin(),color.end(),out.color);
             candle_output[candle_vertices++]=out;
         }
@@ -5831,6 +6183,56 @@ void QuestScene::RecordSpellDraw(
         vkCmdDraw(command_buffer,candle_vertices,1,0,0);
         vkCmdBindVertexBuffers(command_buffer,0,1,&state.particle_vertex_buffer,&offset);
     }
+    if(!state.lock_emitters.empty()){
+        auto emitters=state.lock_emitters;
+        for(auto& e:emitters){
+            e.enabled=e.enabled&&!ChallengeActivated(state.frontend.progress,e.actor_reference);
+            if(const auto attached=state.charms.prop_attachments.find(e.actor_reference);attached!=state.charms.prop_attachments.end())
+                for(const auto& door:state.doors)if(door.actor_reference==attached->second){
+                    e.position=AddVector(e.position,SubtractVector(MoverPoint(door,door.pivot),door.pivot));break;
+                }
+        }
+        const auto first=candle_vertices;
+        const auto count=BuildAmbientParticles(emitters,effect_seconds,effect_head,ambient_particles.data(),ambient_particles.size());
+        for(std::size_t i=0;i<count;++i){const auto& p=ambient_particles[i];append_sprite(p.position,p.size_m,p.color,false,true);}
+        if(candle_vertices>first){
+            const ParticlePushConstants push{view_projection,{1,1,1,1},state.lock_texture_layer,{}, {0,0,1,1}};
+            vkCmdPushConstants(command_buffer,state.particle_pipeline_layout,VK_SHADER_STAGE_VERTEX_BIT,0,sizeof(push),&push);
+            vkCmdBindVertexBuffers(command_buffer,0,1,&state.candle_particle_buffer,&offset);
+            vkCmdDraw(command_buffer,candle_vertices-first,1,first,0);
+            vkCmdBindVertexBuffers(command_buffer,0,1,&state.particle_vertex_buffer,&offset);
+        }
+    }
+    if(state.feather_texture_layer&&state.charms.held_block){
+        const auto block=state.charms.blocks.find(state.charms.held_block);
+        if(block!=state.charms.blocks.end()){
+            AmbientParticleEmitter feathers;feathers.actor_reference=state.charms.held_block;
+            feathers.position=AddVector(ScaleVector(AddVector(block->second.minimum,block->second.maximum),.5F),block->second.offset);
+            feathers.radial=true;feathers.source_width_m=.2F;feathers.source_height_m=.2F;feathers.source_depth_m=.2F;
+            feathers.speed_mps=.6F;feathers.lifetime=1;feathers.lifetime_range=1;
+            feathers.size_m=.12F;feathers.size_range_m=.12F;feathers.size_end_scale=0;feathers.rate=20;
+            const auto first=candle_vertices;
+            const auto count=BuildAmbientParticles({feathers},effect_seconds,effect_head,ambient_particles.data(),16);
+            for(std::size_t i=0;i<count;++i){const auto& p=ambient_particles[i];append_sprite(p.position,p.size_m,p.color,false,true);}
+            const auto path=SubtractVector(feathers.position,state.charms.wand_tip);
+            const float length=std::sqrt(DotVector(path,path));
+            if(length>.05F)for(unsigned i=0;i<32;++i){
+                const float phase=std::fmod(effect_seconds*2.8F/std::max(.5F,length)+float(i)/32.0F,1.0F);
+                auto position=AddVector(state.charms.wand_tip,ScaleVector(path,phase));
+                const float flutter=std::sin(phase*kTau)*.055F;
+                position[0]+=flutter*std::sin(float(i)*2.4F+effect_seconds*5);
+                position[1]+=flutter*std::cos(float(i)*1.7F+effect_seconds*4);
+                append_sprite(position,.09F+.05F*std::sin(phase*kTau*.5F),{1,1,1,.85F},false,true);
+            }
+            if(candle_vertices>first){
+                const ParticlePushConstants push{view_projection,{1,1,1,1},state.feather_texture_layer,{}, {0,0,1,1}};
+                vkCmdPushConstants(command_buffer,state.particle_pipeline_layout,VK_SHADER_STAGE_VERTEX_BIT,0,sizeof(push),&push);
+                vkCmdBindVertexBuffers(command_buffer,0,1,&state.candle_particle_buffer,&offset);
+                vkCmdDraw(command_buffer,candle_vertices-first,1,first,0);
+                vkCmdBindVertexBuffers(command_buffer,0,1,&state.particle_vertex_buffer,&offset);
+            }
+        }
+    }
     // One batched, animated original-texture emitter; same placement for both eyes.
     if(state.map_id==2&&state.broom.active&&state.broom_particle_mapped){
         const auto count=BuildBroomHoopVertices(state.broom,state.broom_visuals,state.broom.seconds,state.effect_view_transform,
@@ -5844,6 +6246,11 @@ void QuestScene::RecordSpellDraw(
     // Keep ordinary depth testing so walls still occlude the target; the whole
     // marker plane is in front of the object's bounds instead of inside it.
     if(state.basic_cast.charging&&state.aim_actor>0&&state.target_marker.valid()){
+        const auto spell=static_cast<unsigned>(ActiveGestureSpell());
+        const auto& marker=spell?state.charms_markers[spell-1]:state.target_marker;
+        std::uint32_t marker_first=static_cast<std::uint32_t>(kParticleQuad.size());
+        if(spell)marker_first+=static_cast<std::uint32_t>(state.target_marker.vertices.size());
+        if(spell>1)marker_first+=static_cast<std::uint32_t>(state.charms_markers[0].vertices.size());
         const auto placement=PlaceTargetMarker(state.aim_minimum,state.aim_maximum,state.last_player);
         Matrix4 model{};
         if(placement.valid&&BuildRibbonModel(
@@ -5854,7 +6261,7 @@ void QuestScene::RecordSpellDraw(
                 {1.8F,1.65F,1.5F,.9F},state.target_marker_texture_layer};
             vkCmdPushConstants(command_buffer,state.particle_pipeline_layout,VK_SHADER_STAGE_VERTEX_BIT,0,sizeof(push),&push);
             vkCmdDraw(command_buffer,static_cast<std::uint32_t>(kTargetMarkerVerticesPerFrame),1,
-                static_cast<std::uint32_t>(kParticleQuad.size())+state.target_marker.first_vertex(effect_seconds),0);
+                marker_first+marker.first_vertex(effect_seconds),0);
         }
     }
     if((state.projectile.flying||state.projectile.impacting)&&state.spell_particle_mapped){
@@ -5960,6 +6367,7 @@ void QuestScene::RecordSpellDraw(
 bool QuestScene::IsFrontEndVisible() const {return state_->frontend.Visible();}
 bool QuestScene::IsWorldPaused() const {return state_->frontend.PausesWorld();}
 unsigned QuestScene::LessonRound() const {
+    if(state_->map_id==3&&state_->charms.active_lesson>=0)return state_->charms.lesson.round;
     return state_->map_id==0&&state_->frontend.progress.quest_stage==20?state_->frontend.progress.lesson_passes:0;
 }
 bool QuestScene::ConsumeCommunityRequest(){
@@ -6026,12 +6434,14 @@ bool QuestScene::CanCast() const{
     const auto& s=*state_;
     if(!MapAllowsSpellInput(s.map_id,SpellInputPath::Gesture))return false;
     if(s.death_time>=0)return false;
-    if(s.map_id==1)return s.tracking_active&&!s.challenge.complete&&!IsCutscenePlaying()&&!IsFrontEndVisible();
+    if(IsWalkingChallenge(s.map_id))return s.tracking_active&&!s.challenge.complete&&!IsCutscenePlaying()&&!IsFrontEndVisible()&&
+        (s.map_id!=3||s.charms.active_lesson<0||(s.charms.lesson_wait==0&&!s.charms.finish_pending&&!s.audio.DialogueBusy()));
     const bool lesson=s.frontend.progress.quest_stage==20&&s.lesson_intro_started&&
         s.lesson_wait==0&&!s.audio.DialogueBusy()&&!s.lesson_finish_pending&&s.frontend.progress.lesson_passes<4;
     return s.tracking_active&&(lesson||s.frontend.progress.quest_stage==23)&&!IsCutscenePlaying()&&!IsFrontEndVisible();
 }
-bool QuestScene::IsGestureLesson() const{return state_->map_id==0&&state_->frontend.progress.quest_stage==20;}
+bool QuestScene::IsGestureLesson() const{return (state_->map_id==0&&state_->frontend.progress.quest_stage==20)||
+    (state_->map_id==3&&state_->charms.active_lesson>=0);}
 bool QuestScene::WantsGesture() const{return CanCast()&&(IsGestureLesson()||UsesGestureCasting(state_->frontend.vr.casting_mode));}
 bool QuestScene::GestureTargetLocked() const{return CanCast()&&(IsGestureLesson()||(state_->wand_lock_valid&&!state_->wand_cast_consumed));}
 void QuestScene::SetVoiceStatus(unsigned status){
@@ -6044,7 +6454,9 @@ void QuestScene::SetVoiceStatus(unsigned status){
 bool QuestScene::VoiceCaptureAllowed() const{
     // Only the supported voice-casting map may keep input ready. CanCast
     // excludes death, completion, menus, cutscenes and inactive tracking.
-    return MapAllowsSpellInput(state_->map_id,SpellInputPath::Voice)&&CanCast();
+    return MapAllowsSpellInput(state_->map_id,SpellInputPath::Voice)&&CanCast()&&!IsGestureLesson()&&
+        (ActiveGestureSpell()==GestureSpell::Flipendo||ActiveGestureSpell()==GestureSpell::Alohomora||
+         ActiveGestureSpell()==GestureSpell::Wingardium);
 }
 std::int32_t QuestScene::VoiceTarget(std::array<float,3>* point) const{
     const auto& s=*state_;
@@ -6053,9 +6465,10 @@ std::int32_t QuestScene::VoiceTarget(std::array<float,3>* point) const{
     if(point)*point=s.wand_lock_valid?s.wand_lock_point:s.basic_cast.aim;
     return s.wand_lock_valid?s.wand_lock_actor:s.aim_actor;
 }
-bool QuestScene::DispatchVoiceCast(std::int32_t target,const std::array<float,3>& point,const ViewPose& wand){
+bool QuestScene::DispatchVoiceCast(std::int32_t target,const std::array<float,3>&,const ViewPose& wand){
     auto& s=*state_;Matrix4 model{};
-    if(!s.frontend.vr.voice_cast||target<=0||VoiceTarget()!=target||!BuildRigidTransform(wand,&model))return false;
+    std::array<float,3> point{};
+    if(!s.frontend.vr.voice_cast||target<=0||VoiceTarget(&point)!=target||!BuildRigidTransform(wand,&model))return false;
     const std::array<float,3> forward{-model[8],-model[9],-model[10]};
     const auto tip=AddVector({model[12],model[13],model[14]},ScaleVector(forward,.34F));
     std::array<float,3> direction{};if(!NormalizeVector(SubtractVector(point,tip),&direction))return false;
@@ -6066,7 +6479,9 @@ bool QuestScene::DispatchVoiceCast(std::int32_t target,const std::array<float,3>
     s.wand_lock_valid=true;s.wand_lock_actor=target;s.wand_lock_point=point;
     s.basic_cast.charging=true;s.basic_cast.require_release=false;s.wand_cast_consumed=true;
     s.voice_repeat.Begin();s.voice_cast_this_hold=true;
-    HPVR_LOGI("[hpvr.quest.voice] status=CAST keyword=FLIPENDO target=%d",target);
+    HPVR_LOGI("[hpvr.quest.voice] status=CAST keyword=%s target=%d",
+        ActiveGestureSpell()==GestureSpell::Alohomora?"ALOHOMORA":
+        ActiveGestureSpell()==GestureSpell::Wingardium?"WINGARDIUM":"FLIPENDO",target);
     return true;
 }
 void QuestScene::SetSupportedRefreshRates(const std::vector<int>& rates){
@@ -6096,6 +6511,7 @@ void QuestScene::StartTutorialScene(bool reward){
     s.audio.StopDialogue();SaveCheckpoint();
 }
 void QuestScene::RejectLessonGesture(){
+    if(state_->map_id==3){SubmitCharmsLesson(0);return;}
     auto& s=*state_;if(s.map_id!=0||s.frontend.progress.quest_stage!=20||s.lesson_wait>0)return;
     // The original lesson repeats tier one; later failures finish with the
     // tiers already earned. Relaxed practice may retry every tier instead.
@@ -6315,7 +6731,7 @@ void QuestScene::SaveCheckpoint(bool authored){
     State& state=*state_;auto& saved=state.frontend.progress;
     if(state.map_id==2){SaveBroomProgress();return;}
     if(state.death_time>=0)return;
-    if(state.map_id==1){
+    if(IsWalkingChallenge(state.map_id)){
         if(!state.challenge.graph.healthy())return;
         // A menu save persists the last book/level-start snapshot, never a
         // transient position on a moving platform or in front of a fall.
@@ -6329,7 +6745,8 @@ void QuestScene::SaveCheckpoint(bool authored){
             }
             return;
         }
-        saved.map_id=1;saved.phase=2;saved.page=14;
+        saved.map_id=state.map_id;saved.phase=2;saved.page=14;
+        if(state.map_id==3)saved.charms_state=SaveCharmsState(state.charms);
         saved.player=SafeCheckpointHead(state.last_player,state.climb,state.jump);saved.yaw=state.last_yaw;
         saved.graph_state=state.challenge.graph.Serialize();saved.challenge_stars=state.challenge.graph.star_count();
         std::ostringstream physical;physical<<"CHALLENGE_WORLD 3 "<<std::setprecision(9)<<state.doors.size()<<' ';
@@ -6371,6 +6788,7 @@ void QuestScene::SaveCheckpoint(bool authored){
 }
 #include "quest_challenge_runtime.inl"
 #include "quest_broom_runtime.inl"
+#include "quest_charms_runtime.inl"
 
 void QuestScene::SkipOpening(){
     State& state=*state_;
@@ -6398,18 +6816,34 @@ void QuestScene::UpdateFrontEnd(const LocomotionInput& input,bool confirm,bool b
     const auto action=front.Input(input.move_active?input.move_y:0,confirm,back,input.move_active?input.move_x:0);
     switch(action){
     case FrontAction::OpenCommunity:state.community_requested=true;break;
-    case FrontAction::StartSelectedLevel:
+    case FrontAction::StartSelectedLevel:{
+        const auto prior=campaign::PerfectPriorProgress(front.selected_map);
+        if(!prior){front.message="LEVEL PROGRESS PRESET IS NOT AVAILABLE";break;}
         state.travel_origin=old_progress;state.travel_progress={};
         state.travel_progress.map_id=front.selected_map;
         state.travel_progress.phase=front.selected_map!=0?2:1;state.travel_progress.page=14;
-        state.travel_progress.lesson_passes=front.selected_map!=0?4:0;
+        state.travel_progress.lesson_passes=prior->lesson_passes;
+        state.travel_progress.banked_beans=prior->banked_beans;
+        state.travel_progress.earned_cards=prior->earned_cards;
+        state.travel_progress.completed_maps=prior->completed_maps;
+        state.travel_progress.house_points=prior->house_points;
+        state.travel_progress.lesson_best=prior->lesson_best;
+        state.travel_progress.lesson_points=prior->lesson_points;
+        state.travel_progress.card_awarded=prior->card_awarded;
+        state.travel_progress.card_taken=prior->card_taken;
         state.travel_slot=front.slot;state.travel_pending=true;state.travel_blocked=false;
         state.audio.StopDialogue();
-        break;
+        break;}
     case FrontAction::BeginLevel:
         front.BeginGame();state.audio.SelectMusic(state.map_id==0?2:front.assets.level_music_index);
         if(state.map_id==1&&front.progress.quest_stage==0&&!ChallengeActivated(front.progress,3606))StartChallengeScene(3606);
         if(state.map_id==2&&state.broom.phase==0&&!state.intro_cutscene.playing)StartBroomScene("intro",0);
+        if(state.map_id==3&&front.progress.quest_stage==0){
+            front.progress.quest_stage=1;
+            for(const auto& [ref,scene]:state.challenge.scenes)if(scene.play_on_load&&!ChallengeActivated(front.progress,ref)){
+                StartChallengeScene(ref);break;
+            }
+        }
         break;
     case FrontAction::NewGame:
         if(state.map_id!=0){
@@ -6446,6 +6880,11 @@ void QuestScene::UpdateFrontEnd(const LocomotionInput& input,bool confirm,bool b
     if(front.Visible()&&!was_visible)state.front_anchor_valid=false;
     if(!front.Visible()&&!front.debug_pinned)state.front_anchor_valid=false;
     state.audio.SetPresentationAudio(front.WorldVisible(),front.PausesAudio());
+    if(state.map_id==3){
+        const auto distance=SubtractVector(state.last_player,state.ambient_position);
+        const float gain=state.ambient_radius>0?std::clamp(1-std::sqrt(DotVector(distance,distance))/state.ambient_radius,0.0F,1.0F):0;
+        state.audio.SetAmbientLoopGain(gain*gain*state.ambient_volume);
+    }
 }
 
 void QuestScene::UpdateFrontPresentation(const ViewPose& rendered_head,const ViewPose* cinematic_rig,bool first_person,bool recapture){
@@ -6502,9 +6941,10 @@ void QuestScene::UpdateBasicCast(const ViewPose& wand,bool tracked,bool held,flo
         state.challenge.impact_actor=0;state.audio.SetWandDrawing(false);
         return;
     }
-    const bool active=state.death_time<0&&BasicSpellGameplayAllowed(state.map_id,state.frontend.progress.quest_stage,state.challenge.complete)&&tracked&&state.tracking_active&&!state.frontend.Visible()&&!IsCutscenePlaying()&&BuildRigidTransform(wand,&model);
+    const bool active=state.death_time<0&&!IsGestureLesson()&&BasicSpellGameplayAllowed(state.map_id,state.frontend.progress.quest_stage,state.challenge.complete)&&tracked&&state.tracking_active&&!state.frontend.Visible()&&!IsCutscenePlaying()&&BuildRigidTransform(wand,&model);
     const std::array<float,3> direction{-model[8],-model[9],-model[10]};
     const auto tip=AddVector({model[12],model[13],model[14]},ScaleVector(direction,0.34F));
+    if(state.map_id==3)UpdateCharmsWand(tip,direction,active,held);
     const bool manual=UsesGestureCasting(state.frontend.vr.casting_mode)&&CanCast();
     // Retain a target for the release frame: gesture dispatch follows this update.
     if(!state.wand_was_held&&!held){
@@ -6522,7 +6962,13 @@ void QuestScene::UpdateBasicCast(const ViewPose& wand,bool tracked,bool held,flo
         state.wand_cast_consumed=false;
     // Speech must survive ordinary hand drift: retain the chosen target for
     // this held trigger, just as gesture casting does. Release selects anew.
-    const bool capture_target=manual||(state.frontend.vr.voice_cast&&state.map_id==1&&CanCast());
+    const bool capture_target=manual||(state.frontend.vr.voice_cast&&IsWalkingChallenge(state.map_id)&&CanCast());
+    if(state.wand_lock_valid)for(const auto& actor:state.character_draws)if(actor.actor_reference==state.wand_lock_actor){
+        if(!actor.enabled||actor.collision_disabled){state.wand_lock_valid=false;state.aim_actor=0;break;}
+        FollowTargetOffset(state.wand_lock_point,state.aim_minimum,state.aim_maximum,
+                           state.wand_lock_actor_offset,actor.cutscene_offset);
+        break;
+    }
     const bool locked=capture_target&&state.wand_lock_valid;
     float distance=24;
     if(!active){state.aim_actor=0;state.wand_lock_valid=false;state.wand_cast_consumed=held;}
@@ -6531,7 +6977,7 @@ void QuestScene::UpdateBasicCast(const ViewPose& wand,bool tracked,bool held,flo
         distance=BasicRayDistance(state.collision_triangles,tip,direction);
         if(state.map_id==0)distance=std::min(distance,BasicRayDistance(state.prop_aim_triangles,tip,direction));
         for(const auto& actor:state.character_draws){
-            if(!actor.enabled||actor.child_template||actor.actor_reference==kHarryActorReference)continue;
+            if(!actor.enabled||actor.child_template||actor.player)continue;
             auto center=AddVector(actor.collision_center,actor.cutscene_offset);
             const std::array<float,3> low{center[0]-actor.collision_radius,
                 actor.collision_min_y+actor.cutscene_offset[1],center[2]-actor.collision_radius};
@@ -6546,7 +6992,7 @@ void QuestScene::UpdateBasicCast(const ViewPose& wand,bool tracked,bool held,flo
             if(hit&&far>=near&&far>0)distance=std::min(distance,near);
         }
     }
-    if(active&&held&&!locked&&!state.wand_cast_consumed&&state.map_id==1){
+    if(active&&held&&!locked&&!state.wand_cast_consumed&&IsWalkingChallenge(state.map_id)&&!state.charms.held_block){
         float target_distance=24;
         const auto target=FindChallengeSpellTarget(tip,direction,&target_distance,&state.aim_minimum,&state.aim_maximum);
         if(target&&target_distance<=distance+.03F){state.aim_actor=target;distance=target_distance;}
@@ -6558,12 +7004,16 @@ void QuestScene::UpdateBasicCast(const ViewPose& wand,bool tracked,bool held,flo
     if(active&&capture_target&&held&&!locked&&!state.wand_cast_consumed&&
        !state.basic_cast.require_release&&state.aim_actor>0){
         state.wand_lock_valid=true;state.wand_lock_actor=state.aim_actor;state.wand_lock_point=aim;
+        state.wand_lock_actor_offset={};
+        for(const auto& actor:state.character_draws)if(actor.actor_reference==state.aim_actor){
+            state.wand_lock_actor_offset=actor.cutscene_offset;break;
+        }
     }
     if(state.basic_cast.Observe(active,held,tip,aim,seconds)){
         if(state.wand_cast_consumed||state.voice_cast_this_hold||(manual&&state.wand_lock_valid)){
             state.basic_cast.flying=false;return;
         }
-        if(state.map_id==1&&state.aim_actor){
+        if(IsWalkingChallenge(state.map_id)&&state.aim_actor){
             std::array<float,3> launch_direction{};
             if(NormalizeVector(SubtractVector(state.basic_cast.destination,tip),&launch_direction))
                 LaunchChallengeSpell(tip,launch_direction,tip,++state.automatic_cast_serial);
@@ -6746,6 +7196,14 @@ void QuestScene::AdvanceIntroCutscene(const float delta_seconds) {
                 continue;
             }
             if (op == "release") {
+                if(state.map_id==3&&scene.object_name=="cutscene5"&&track.actor_reference==state.harry_actor){
+                    const float wait=CloseCharmsEntryDoors(state.doors);
+                    if(wait>0){track.next_command=command_index;track.delay_seconds=wait;break;}
+                    // The first-person entry performed both one-shot contacts.
+                    // Do not replay their toggles when player control returns.
+                    RememberChallengeEvent(state.frontend.progress,1539);
+                    RememberChallengeEvent(state.frontend.progress,1485);
+                }
                 if (track.camera) scene.camera_active = false;
                 if(track.actor_reference==state.harry_actor)scene.harry_released=true;
                 continue;
@@ -6861,7 +7319,7 @@ void QuestScene::AdvanceIntroCutscene(const float delta_seconds) {
             }
             if (op == "trigger") {
                 if(state.map_id==2){DispatchBroomEvent(argument);continue;}
-                if(state.map_id==1){(void)state.challenge.graph.Dispatch(argument);continue;}
+                if(IsWalkingChallenge(state.map_id)){(void)state.challenge.graph.Dispatch(argument);continue;}
                 if(AsciiFold(argument)=="spawnwizardcard"){
                     state.frontend.progress.card_awarded=true;SaveCheckpoint();
                     HPVR_LOGI("[hpvr.quest.reward] status=CARD_AWARDED beans_required=25");
@@ -6880,7 +7338,7 @@ void QuestScene::AdvanceIntroCutscene(const float delta_seconds) {
                 scene.cues.insert("cutend");scene.harry_released=true;scene.camera_active=false;
                 track.finished=true;
                 if(auto* actor=character_for(track.actor_reference))actor->active_clip="breathe";
-                if(state.map_id==1)state.challenge.complete=true;
+                if(IsWalkingChallenge(state.map_id))state.challenge.complete=true;
                 if(state.map_id==2)state.broom.complete=true;
                 HPVR_LOGI("[hpvr.quest.lesson] status=LEARNED next_map=%s travel=%s",argument.c_str(),state.map_id==0?"QUEUED_AFTER_SCENE":"NEXT_MAP_BOUNDARY");
                 break;
@@ -6961,6 +7419,9 @@ void QuestScene::AdvanceIntroCutscene(const float delta_seconds) {
 
 void QuestScene::Advance(const float delta_seconds) {
     State& state = *state_;
+    if(!state.frontend.WorldVisible())state.house_point_hud.Reset(state.frontend.progress.house_points[campaign::kGryffindor]);
+    else state.house_point_hud.Advance(state.frontend.progress.house_points[campaign::kGryffindor],delta_seconds,
+        !state.tracking_active||state.frontend.PausesWorld());
     // Tick before map-specific early returns. A VR panel over gameplay is live.
     state.effects_clock.Advance(delta_seconds,
         state.tracking_active && !state.frontend.PausesWorld());
@@ -6981,6 +7442,7 @@ void QuestScene::Advance(const float delta_seconds) {
         return;
     }
     if(state.map_id==1){AdvanceChallenge(delta_seconds);return;}
+    if(state.map_id==3){AdvanceCharms(delta_seconds);return;}
     if(state.map_id==2){AdvanceBroom(delta_seconds);return;}
     state.spell_targets.Advance(delta_seconds);
     if (std::isfinite(delta_seconds) && delta_seconds > 0.0F) {
@@ -7128,6 +7590,7 @@ void QuestScene::Advance(const float delta_seconds) {
                             (void)state.audio.PlayWorldEffect(state.frog_sound,.8F);
                         }else{
                             state.frontend.progress.card_taken=true;
+                            state.frontend.progress.earned_cards|=campaign::CardMask(101);
                             state.card_pickup={bean.actor_reference,0,
                                 std::clamp(state.audio.DialogueDurationSeconds(state.card_sound),.5F,8.0F),
                                 state.bean_time*1.8F+bean.actor_reference};
@@ -7349,11 +7812,12 @@ bool QuestScene::ResolvePlayerMovement(
     State& state = *state_;
     if(state.death_time>=0){*output={};return true;}
     if(state.map_id==2)return ResolveBroomMovement(capsule_center,output);
+    if(state.map_id==3&&state.charms.active_lesson>=0){*output={};return true;}
     const float climb_distance=std::hypot(requested_displacement[0],requested_displacement[2])*0.65F;
     const float mantle_step=std::clamp(state.physics_step,0.0F,.05F)*1.6F;
     if(state.jump_pending){state.jump_pending=false;
         if(StartJump(state.collision_triangles,capsule_center,state.jump))HPVR_LOGI("[hpvr.quest.jump] status=STARTED button=A");}
-    if(state.map_id==1&&!state.jump.active&&!state.climb.active){
+    if(IsWalkingChallenge(state.map_id)&&!state.jump.active&&!state.climb.active){
         const auto next=AddVector(capsule_center,{requested_displacement[0],0,requested_displacement[2]});float ground=0;
         if(!FindCollisionGroundHeight(state.collision_triangles,next[0],next[2],capsule_center[1]-kPlayerCapsuleHalfHeightMeters,&ground)&&
             ClearCapsuleSegment(state.collision_triangles,capsule_center,next)){
@@ -7363,7 +7827,7 @@ bool QuestScene::ResolvePlayerMovement(
     }
     if(state.jump.active){
         if(state.jump.elapsed>6.0F){
-            if(state.map_id==1){BeginChallengeDeath("FALL_WATCHDOG");*output={};return true;}
+            if(IsWalkingChallenge(state.map_id)){BeginChallengeDeath("FALL_WATCHDOG");*output={};return true;}
             state.placement=state.frontend.progress;state.placement.player=state.jump.safe_origin;
             state.placement.player[1]+=kPlayerEyeHeightMeters;state.placement.yaw=state.last_yaw;
             state.restore_pending=true;state.jump={};*output={};return true;
@@ -7384,10 +7848,14 @@ bool QuestScene::ResolvePlayerMovement(
     }
     if(state.climb.active){
         if(StepClimb(state.collision_triangles,state.climb,capsule_center,mantle_step,output))return true;
+        if(state.map_id==3){
+            SceneLoadTrace::Event(state.frontend.saves,state.map_id,"MANTLE_CANCELLED resume=FALL_IN_PLACE");
+            state.climb={};state.jump={true,0,0,capsule_center};*output={};return true;
+        }
         // A moving column can interrupt a captured mantle. Its start may be
         // the last book, so rewinding only Harry would retain closed doors and
         // consumed triggers on the far side of that checkpoint.
-        if(state.map_id==1){BeginChallengeDeath("MANTLE_INTERRUPTED");*output={};return true;}
+        if(IsWalkingChallenge(state.map_id)){BeginChallengeDeath("MANTLE_INTERRUPTED");*output={};return true;}
         state.placement=state.frontend.progress;state.placement.player=state.climb.start;
         state.placement.player[1]+=kPlayerEyeHeightMeters;state.placement.yaw=state.last_yaw;
         state.restore_pending=true;*output={};return true;
@@ -7398,7 +7866,7 @@ bool QuestScene::ResolvePlayerMovement(
         return false;
     }
     const auto stage=state.frontend.progress.quest_stage;
-    if(state.map_id==1&&output->blocked_substeps&&std::hypot(requested_displacement[0],requested_displacement[2])>.0001F){
+    if(IsWalkingChallenge(state.map_id)&&output->blocked_substeps&&std::hypot(requested_displacement[0],requested_displacement[2])>.0001F){
         for(std::size_t i=0;i<state.doors.size();++i){const auto& d=state.doors[i];
             if(!d.grid||std::hypot(d.grid_target[0]-d.grid_offset[0],d.grid_target[2]-d.grid_offset[2])>.005F)continue;
             std::array<float,3> low{1e9F,1e9F,1e9F},high{-1e9F,-1e9F,-1e9F};
@@ -7414,7 +7882,7 @@ bool QuestScene::ResolvePlayerMovement(
     const bool lesson_room=InClimbLesson(state.twins_intro,state.next_room,capsule_center)||
         (stage>=10&&InClimbLesson(state.next_room,state.jump_finish,capsule_center))||
         (stage>=12&&InClimbLesson(state.jump_finish,state.story_encounters[3],capsule_center));
-    if((state.map_id==1||(stage>=6&&lesson_room))&&output->blocked_substeps&&
+    if((IsWalkingChallenge(state.map_id)||(stage>=6&&lesson_room))&&output->blocked_substeps&&
         std::hypot(output->displacement[0],output->displacement[2])<climb_distance*0.25F&&
         BeginClimb(state.collision_triangles,capsule_center,requested_displacement,&state.climb))
         return StepClimb(state.collision_triangles,state.climb,capsule_center,mantle_step,output);
@@ -7466,12 +7934,17 @@ std::int32_t QuestScene::FindChallengeSpellTarget(const std::array<float,3>& ori
             if(bounds_min)*bounds_min=low;if(bounds_max)*bounds_max=high;}
     };
     for(const auto& zone:state.challenge.spatial)if(zone.spell){
+        if(state.map_id==3&&zone.spell_name=="spellaloho"&&!state.frontend.progress.lesson_best[1])continue;
         const auto* node=state.challenge.graph.Find(zone.reference);if(!node||!node->active||node->consumed)continue;
         test(zone.reference,AddVector(zone.position,{-zone.radius,-zone.height,-zone.radius}),
         AddVector(zone.position,{zone.radius,zone.height,zone.radius}));
     }
-    for(const auto& prop:state.challenge.props)if(prop.spell_target&&!ChallengeActivated(state.frontend.progress,prop.reference))
+    for(const auto& prop:state.challenge.props)if(prop.spell_target&&!ChallengeActivated(state.frontend.progress,prop.reference)){
+        if(state.map_id==3&&chest::IsChest(prop.name)&&!state.frontend.progress.lesson_best[1])continue;
         test(prop.reference,prop.minimum,prop.maximum);
+    }
+    if(state.map_id==3&&state.frontend.progress.lesson_best[2])for(const auto& [ref,block]:state.charms.blocks)
+        if(!block.plate)test(ref,AddVector(block.minimum,block.offset),AddVector(block.maximum,block.offset));
     for(const auto& a:state.character_draws)if(a.enabled&&!a.player&&!a.flying){
         const auto cls=AsciiFold(a.class_name);if(cls!="tut1.tut1gnome"&&cls!="tut1.flipbarrel")continue;
         if(cls=="tut1.tut1gnome"&&state.challenge.gnome_hits.contains(a.actor_reference)&&state.challenge.gnome_hits.at(a.actor_reference)>0)continue;
@@ -7503,25 +7976,38 @@ std::int32_t QuestScene::FindChallengeSpellTarget(const std::array<float,3>& ori
 void QuestScene::LaunchChallengeSpell(const std::array<float,3>& origin,const std::array<float,3>& direction,
     const std::array<float,3>& tip,std::uint64_t serial){
     auto& state=*state_;
-    if(state.map_id!=kFlipendoChallengeMapId||!CanCast())return;
+    if(!IsWalkingChallenge(state.map_id)||!CanCast())return;
     float distance=24;
     auto target=FindChallengeSpellTarget(origin,direction,&distance);
     auto destination=AddVector(origin,ScaleVector(direction,distance));
     if(state.wand_lock_valid){
         target=state.wand_lock_actor;destination=state.wand_lock_point;state.wand_lock_valid=false;
     }
+    if(state.map_id==3)if(const auto block=state.charms.blocks.find(target);block!=state.charms.blocks.end()){
+        state.charms.held_block=target;state.charms.hold_release_armed=state.wand_was_held;
+        const auto center=AddVector(ScaleVector(AddVector(block->second.minimum,block->second.maximum),.5F),block->second.offset);
+        const auto delta=SubtractVector(center,tip);state.charms.hold_distance=std::clamp(std::sqrt(DotVector(delta,delta)),1.2F,8.0F);
+        // Keep the initial grab point: aiming at a low face must not pin the
+        // centre into the floor. Start with a small, collision-swept lift.
+        state.charms.hold_offset=SubtractVector(AddVector(center,{0,.45F,0}),
+            AddVector(state.charms.wand_tip,ScaleVector(state.charms.wand_direction,state.charms.hold_distance)));
+        HPVR_LOGI("[hpvr.quest.charms.block] status=GRABBED ref=%d plate=%d distance=%.3f",target,block->second.plate,state.charms.hold_distance);
+        state.wand_cast_consumed=true;state.basic_cast.flying=false;state.aim_actor=0;state.audio.PlaySpellCast(false);return;
+    }
     std::array<float,3> flight{};const auto delta=SubtractVector(destination,tip);
     if(!NormalizeVector(delta,&flight))return;
     state.challenge.impact_actor=target;state.projectile={};state.projectile.origin=tip;
     state.projectile.direction=flight;state.projectile.target.serial=serial;
     state.projectile.terminal_distance_m=std::max(.02F,std::sqrt(DotVector(delta,delta)));
-    state.projectile.flying=true;state.basic_cast.flying=false;state.wand_cast_consumed=true;state.audio.PlaySpellCast();
+    state.projectile.flying=true;state.basic_cast.flying=false;state.wand_cast_consumed=true;state.audio.PlaySpellCast(ActiveGestureSpell()==GestureSpell::Flipendo);
     HPVR_LOGI("[hpvr.quest.challenge.spell] serial=%llu target=%d distance=%.3f",static_cast<unsigned long long>(serial),target,state.projectile.terminal_distance_m);
 }
 bool QuestScene::DispatchFlipendo(const FlipendoEvent& event) {
     if(!CanCast())return true;
     auto& state=*state_;
-    if(state.map_id==1){
+    if(state.map_id==3&&state.charms.active_lesson>=0){SubmitCharmsLesson(event.score);return true;}
+    if(IsWalkingChallenge(state.map_id)){
+        if(event.spell!=ActiveGestureSpell())return true;
         SpellTargetResult validation{};
         if(!state.spell_targets.Consume(event,&validation))return false;
         std::array<float,3> direction{};if(!NormalizeVector(event.locked_direction,&direction))return false;
@@ -7532,7 +8018,13 @@ bool QuestScene::DispatchFlipendo(const FlipendoEvent& event) {
         if(state.lesson_wait>0||state.audio.DialogueBusy())return true;
         auto& passes=state.frontend.progress.lesson_passes;
         if(passes>=4)return true;
-        ++passes;SaveCheckpoint();state.audio.PlaySpellCast();
+        ++passes;
+        auto& progress=state.frontend.progress;
+        (void)campaign::RaiseLessonPoints(progress.lesson_points,progress.house_points,
+            campaign::kFlipendoLesson,campaign::LessonPoints(passes),static_cast<std::uint32_t>(event.serial));
+        if(std::isfinite(event.score))progress.lesson_best[campaign::kFlipendoLesson]=std::max(
+            progress.lesson_best[campaign::kFlipendoLesson],static_cast<unsigned>(std::clamp(event.score*100.0F,0.0F,100.0F)));
+        SaveCheckpoint();state.audio.PlaySpellCast();
         const std::array<const char*,4> lines{"quirrell_lesson_118","quirrell_lesson_154","quirrell_lesson_171","quirrell_lesson_76"};
         if(auto i=GameplayDialogueIndex(state.frontend.assets,lines[passes-1])){
             (void)state.audio.PlayDialogue(*i);state.lesson_wait=state.audio.DialogueDurationSeconds(*i)+.4F;
@@ -7591,7 +8083,8 @@ bool QuestScene::IsLoaded() const {
        !ValidateAnimatedVertexLayout(state.character_draws,state.beans,expected_vertices,
            state.vertices.size()-state.front_vertex_count))return false;
     expected_vertices=state.vertices.size();
-    const bool map_specific=state.map_id==2?
+    const bool map_specific=state.map_id==3?
+        ValidateCharmsSceneLayout(state.challenge,state.charms,state.doors.size(),state.fixture_actor_count,state.character_draws):state.map_id==2?
         (state.broom.lesson.valid&&state.challenge.graph.healthy()&&state.challenge.scenes.size()==14&&
          state.fixture_actor_count>0&&state.character_draws.size()==7):state.map_id==1?
         (state.challenge.graph.healthy()&&state.doors.size()==67&&state.challenge.scenes.size()==15&&

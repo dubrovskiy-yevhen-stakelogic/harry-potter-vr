@@ -881,7 +881,7 @@ Hp1TexturedBspScene build_hp1_textured_bsp_scene(
             if (target.target_kind != Hp1ImportTargetKind::export_object ||
                 target.target_reference <= 0 ||
                 !(ascii_equal_fold(target.qualified_class_name, "Engine.Texture") ||
-                  (outdoor_lesson && ascii_equal_fold(target.qualified_class_name,"Fire.WetTexture")))) {
+                  ascii_equal_fold(target.qualified_class_name,"Fire.WetTexture"))) {
                 continue;
             }
             const auto path = package_paths.find(
@@ -890,6 +890,11 @@ Hp1TexturedBspScene build_hp1_textured_bsp_scene(
                 result.error = "linked BSP texture package has no file path";
                 return result;
             }
+            // These authored gate brushes lost PF_Masked. Decode palette-zero
+            // coverage from the named gate asset, never from pixel brightness.
+            if(ascii_fold(map_package.stem().string())=="lev_tut3"&&
+               !target.target_object_path.empty()&&ascii_fold(target.target_object_path.back())=="irongate")
+                material.masked=true;
             auto texture = load_hp1_p8_texture(
                 path->second, target.target_reference,material.masked);
             if (texture.status != Hp1ProfileStatus::ok ||

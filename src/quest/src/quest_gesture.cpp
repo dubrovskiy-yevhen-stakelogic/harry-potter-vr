@@ -48,6 +48,8 @@ float CoverageScore(const SampledShape& drawn, const SampledShape& pattern,
     const double expected_length=PolylineLength(pattern);
     const double length=PolylineLength(drawn);
     if(length<expected_length*.65 || length>expected_length*1.6) return 0;
+    const bool closed=std::hypot(pattern.front()[0]-pattern.back()[0],
+        pattern.front()[1]-pattern.back()[1])<=radius*2;
     double best_ordered=0;
     for(bool reversed : {false,true}) {
         unsigned covered=0, inside=0;
@@ -62,7 +64,11 @@ float CoverageScore(const SampledShape& drawn, const SampledShape& pattern,
             }
             if(best<=radius*radius) {
                 ++inside;
-                const double position=double(nearest)/double(pattern.size()-1);
+                double position=double(nearest)/double(pattern.size()-1);
+                // A closed contour shares its start and end. Jitter at that
+                // seam is not a backwards traversal of the entire symbol.
+                if(closed&&i<drawn.size()/8&&position>.875)position-=1;
+                if(closed&&i>=drawn.size()*7/8&&position<.125)position+=1;
                 if(last>=0 && position<last-.05) regress+=last-position;
                 last=position;
             }
@@ -83,6 +89,26 @@ float CoverageScore(const SampledShape& drawn, const SampledShape& pattern,
     return static_cast<float>(best_ordered);
 }
 
+float ClosedContourOrderScore(const SampledShape& drawn,const SampledShape& pattern,double radius){
+    double best=std::numeric_limits<double>::infinity();
+    for(bool reverse:{false,true}){
+        std::array<double,kShapeSamples+1> previous,current;
+        previous.fill(1e20);previous[0]=0;
+        for(std::size_t i=1;i<=kShapeSamples;++i){
+            current.fill(1e20);
+            for(std::size_t j=1;j<=kShapeSamples;++j){
+                if(i>j+12||j>i+12)continue;
+                const auto& target=pattern[reverse?kShapeSamples-j:j-1];
+                const double distance=std::hypot(drawn[i-1][0]-target[0],drawn[i-1][1]-target[1]);
+                const double penalty=std::clamp(distance/radius-1.0,0.0,1.0);
+                current[j]=penalty+std::min({previous[j-1],previous[j],current[j-1]});
+            }
+            previous=current;
+        }
+        best=std::min(best,previous.back());
+    }
+    return static_cast<float>(std::clamp(1.0-best/double(kShapeSamples),0.0,1.0));
+}
 float AspectCoverageScore(const SampledShape& drawn,const SampledShape& pattern,
                           float radius,bool fit_scale) {
     ShapePoint pattern_min{1e20,1e20},pattern_max{-1e20,-1e20};
@@ -127,7 +153,9 @@ float AspectCoverageScore(const SampledShape& drawn,const SampledShape& pattern,
             }
             error=std::min(error,sum);
         }
-        const float ordered=static_cast<float>(std::clamp(1.0-std::sqrt(error/double(candidate.size()))/(2.0*radius),0.0,1.0));
+        float ordered=static_cast<float>(std::clamp(1.0-std::sqrt(error/double(candidate.size()))/(2.0*radius),0.0,1.0));
+        if(coverage>.4F&&std::hypot(pattern.front()[0]-pattern.back()[0],pattern.front()[1]-pattern.back()[1])<=radius*2)
+            ordered=std::max(ordered,ClosedContourOrderScore(candidate,pattern,radius));
         best=std::max(best,coverage*(.5F+.5F*ordered));
         if(best>=.999F)break;
     }
@@ -309,6 +337,90 @@ bool IsSingleCurl(const CurlStructure& curl) {
 }
 }  // namespace
 
+GestureShapeMatch CompareGameplayWingardiumShape(std::span<const std::array<float,2>> drawn) {
+    SampledShape points{}; double energy=0;
+    if(!SampleShape(drawn,&points,&energy))return {};
+    if(points.back()[0]<points.front()[0])std::reverse(points.begin(),points.end());
+    const double angle=std::atan2(points.back()[1]-points.front()[1],points.back()[0]-points.front()[0]);
+    if(std::abs(angle)>.7854)return {true,0};
+    const double c=std::cos(angle),s=std::sin(angle);
+    ShapePoint low{1e20,1e20},high{-1e20,-1e20};
+    for(auto& p:points){p={c*p[0]+s*p[1],-s*p[0]+c*p[1]};
+        for(unsigned a=0;a<2;++a){low[a]=std::min(low[a],p[a]);high[a]=std::max(high[a],p[a]);}}
+    const double width=high[0]-low[0],height=high[1]-low[1];
+    if(width<1e-6||height<width*.15||height>width*3)return {true,0};
+    for(auto& p:points){p[0]=(p[0]-low[0])/width;p[1]=(p[1]-low[1])/height;}
+    // Count substantial vertical reversals, not every corner in a curved or
+    // shaky stroke. Screen coordinates put the two valleys at positive Y.
+    std::vector<ShapePoint> corners{points.front()};
+    auto extreme=points.front();bool descending=true;
+    double backwards=0;
+    for(std::size_t i=1;i<points.size();++i){
+        backwards+=std::max(0.0,points[i-1][0]-points[i][0]);
+        const double change=points[i][1]-extreme[1];
+        if(descending?change>=0:change<=0)extreme=points[i];
+        else if(std::abs(change)>.24){corners.push_back(extreme);descending=!descending;extreme=points[i];}
+    }
+    corners.push_back(points.back());
+    if(backwards>.45)return {true,0};
+    if(corners.size()!=5)return {true,0};
+    for(unsigned i=1;i<5;++i){
+        if(corners[i][0]-corners[i-1][0]<.035)return {true,0};
+        const double down=corners[i][1]-corners[i-1][1];
+        if((i%2?down:-down)<.25)return {true,0};
+    }
+    return {true,1};
+}
+
+GestureShapeMatch CompareGameplayAlohomoraShape(std::span<const std::array<float,2>> drawn,
+                                               std::span<const std::array<float,2>> pattern){
+    SampledShape a{},b{};double energy_a=0,energy_b=0;
+    if(!SampleShape(drawn,&a,&energy_a)||!SampleShape(pattern,&b,&energy_b))return {};
+    const auto normalize=[](SampledShape& shape){
+        ShapePoint low{1e20,1e20},high{-1e20,-1e20};
+        for(const auto& p:shape)for(unsigned axis=0;axis<2;++axis){low[axis]=std::min(low[axis],p[axis]);high[axis]=std::max(high[axis],p[axis]);}
+        const double width=high[0]-low[0],height=high[1]-low[1];
+        if(width<.02||height<.02||width>height*5||height>width*5)return false;
+        for(auto& p:shape)for(unsigned axis=0;axis<2;++axis)p[axis]=(p[axis]-low[axis])/(high[axis]-low[axis]);
+        return true;
+    };
+    if(!normalize(b))return {true,0};
+    // A closed keyhole has no mandatory starting point. Keep traversal order,
+    // but allow the seam to move and the neck/base to be drawn unevenly.
+    for(unsigned turn=0;turn<24;++turn){
+        auto rotated=a;const double angle=turn*6.283185307179586/24,c=std::cos(angle),s=std::sin(angle);
+        for(auto& p:rotated)p={c*p[0]-s*p[1],s*p[0]+c*p[1]};
+        if(!normalize(rotated))continue;
+        const double ratio=PolylineLength(rotated)/PolylineLength(b);
+        if(ratio<.60||ratio>1.6)continue;
+        if(std::hypot(rotated.front()[0]-rotated.back()[0],rotated.front()[1]-rotated.back()[1])>.45)continue;
+        const auto width_at=[&](double y){
+            double low=1e20,high=-1e20;
+            for(unsigned i=0;i<kShapeSamples;++i){
+                const auto& p=rotated[i];const auto& q=rotated[(i+1)%kShapeSamples];
+                if(std::abs(q[1]-p[1])<1e-8||y<std::min(p[1],q[1])||y>std::max(p[1],q[1]))continue;
+                const double x=p[0]+(q[0]-p[0])*(y-p[1])/(q[1]-p[1]);
+                low=std::min(low,x);high=std::max(high,x);
+            }
+            return std::max(0.0,high-low);
+        };
+        // Unlike a keyhole, a convex circle/square/triangle cannot have a neck
+        // narrower than sections both above and below it.
+        bool neck=false;
+        for(double y:{.48,.56,.64,.72}){
+            const double upper=width_at(y-.25),middle=width_at(y),lower=width_at(std::min(.94,y+.25));
+            if(upper>.5&&lower>.4&&middle>.06&&middle<.85*std::min(upper,lower)){neck=true;break;}
+        }
+        if(!neck)continue;
+        for(unsigned seam=0;seam<kShapeSamples;seam+=4){
+            SampledShape shifted{};
+            for(unsigned i=0;i<kShapeSamples;++i)shifted[i]=b[(i+seam)%kShapeSamples];
+            if(ClosedContourOrderScore(rotated,shifted,.18)>=.74F)return {true,1};
+        }
+    }
+    return {true,0};
+}
+
 GestureShapeMatch CompareGestureShape(
     std::span<const std::array<float, 2>> drawn,
     std::span<const std::array<float, 2>> pattern,
@@ -364,9 +476,14 @@ GestureShapeMatch CompareGameplayGestureShape(
 }
 
 struct QuestGesture::State {
-    std::vector<hpvr_wand_vec2> template_points;
-    std::vector<std::array<float, 2>> shape_template;
-    hpvr_hp1_spell_profile_report profile{};
+    struct Profile {
+        std::vector<hpvr_wand_vec2> template_points;
+        std::vector<std::array<float, 2>> shape_template;
+        hpvr_hp1_spell_profile_report report{};
+    };
+    std::array<Profile, 3> profiles;
+    GestureSpell selected = GestureSpell::Flipendo;
+    const Profile& CurrentProfile() const { return profiles[static_cast<unsigned>(selected)]; }
     std::vector<hpvr_wand_tracked_tip_sample> raw_samples;
     std::vector<hpvr_wand_vec2> feedback_points;
     hpvr_wand_lesson_plane plane{};
@@ -425,43 +542,73 @@ QuestGesture::QuestGesture() : state_(std::make_unique<State>()) {
 QuestGesture::~QuestGesture() = default;
 
 bool QuestGesture::LoadFlipendoProfile(const std::filesystem::path& data_root) {
+    return LoadProfiles(data_root, false);
+}
+
+bool QuestGesture::LoadProfiles(const std::filesystem::path& data_root, bool include_charms) {
     State& state = *state_;
     const std::string base = (data_root / "system" / "HPBase.u").string();
-    const std::string lesson = (data_root / "Maps" / "Lev_Tut1.unr").string();
-    std::vector<hpvr_wand_vec2> points(HPVR_HP1_GESTURE_MAX_TEMPLATE_POINTS);
-    std::vector<std::int32_t> segments(HPVR_HP1_GESTURE_MAX_SEGMENTS);
-    hpvr_hp1_spell_profile_report report{};
-    const std::uint32_t status = hpvr_hp1_load_spell_profile_utf8(
-        base.c_str(), lesson.c_str(), "FlipPattern", "spellFlip",
-        points.data(), static_cast<std::uint32_t>(points.size()),
-        segments.data(), static_cast<std::uint32_t>(segments.size()), &report);
-    if (status != HPVR_HP1_PROFILE_OK || report.status != status ||
-        report.abi_version != HPVR_HP1_GESTURE_ABI_VERSION ||
-        report.template_point_count < 2 ||
-        report.template_point_count > points.size() ||
-        report.pass_mark_count == 0 ||
-        report.pass_mark_count > HPVR_HP1_PASS_MARK_COUNT ||
-        !std::isfinite(report.accuracy_radius) ||
-        report.accuracy_radius <= 0.0F ||
-        !std::isfinite(report.draw_time_seconds) ||
-        report.draw_time_seconds <= 0.0F) return false;
-    for (std::uint32_t index = 0; index < report.pass_mark_count; ++index) {
-        if (!std::isfinite(report.pass_marks[index]) ||
-            report.pass_marks[index] < 0.0F || report.pass_marks[index] > 1.0F)
-            return false;
+    std::array<State::Profile, 3> profiles;
+    const std::array<const char*, 3> patterns{"FlipPattern", "AlohoPattern", "LevPattern"};
+    const std::array<const char*, 3> spells{"spellFlip", "spellAloho", "SPELLLEV"};
+    for (unsigned profile_index = 0; profile_index < (include_charms ? 3U : 1U); ++profile_index) {
+        const std::string lesson = (data_root / "Maps" /
+            (profile_index == 0 ? "Lev_Tut1.unr" : "Lev_Tut3.unr")).string();
+        std::vector<hpvr_wand_vec2> points(HPVR_HP1_GESTURE_MAX_TEMPLATE_POINTS);
+        std::vector<std::int32_t> segments(HPVR_HP1_GESTURE_MAX_SEGMENTS);
+        hpvr_hp1_spell_profile_report report{};
+        const std::uint32_t status = hpvr_hp1_load_spell_profile_utf8(
+            base.c_str(), lesson.c_str(), patterns[profile_index], spells[profile_index],
+            points.data(), static_cast<std::uint32_t>(points.size()),
+            segments.data(), static_cast<std::uint32_t>(segments.size()), &report);
+        if (status != HPVR_HP1_PROFILE_OK || report.status != status ||
+            report.abi_version != HPVR_HP1_GESTURE_ABI_VERSION ||
+            report.template_point_count < 2 ||
+            report.template_point_count > points.size() ||
+            report.pass_mark_count == 0 ||
+            report.pass_mark_count > HPVR_HP1_PASS_MARK_COUNT ||
+            !std::isfinite(report.accuracy_radius) ||
+            report.accuracy_radius <= 0.0F ||
+            !std::isfinite(report.draw_time_seconds) ||
+            report.draw_time_seconds <= 0.0F) return false;
+        for (std::uint32_t index = 0; index < report.pass_mark_count; ++index) {
+            if (!std::isfinite(report.pass_marks[index]) ||
+                report.pass_marks[index] < 0.0F || report.pass_marks[index] > 1.0F)
+                return false;
+        }
+        points.resize(report.template_point_count);
+        if (std::any_of(points.begin(), points.end(), [](const auto& point) {
+                return !std::isfinite(point.x) || !std::isfinite(point.y);
+            })) return false;
+        auto& profile = profiles[profile_index];
+        profile.template_points = std::move(points);
+        profile.shape_template.reserve(profile.template_points.size());
+        for (const auto& point : profile.template_points)
+            profile.shape_template.push_back({point.x, point.y});
+        profile.report = report;
     }
-    points.resize(report.template_point_count);
-    if (std::any_of(points.begin(), points.end(), [](const auto& point) {
-            return !std::isfinite(point.x) || !std::isfinite(point.y);
-        })) return false;
-    state.template_points = std::move(points);
-    state.shape_template.clear();
-    state.shape_template.reserve(state.template_points.size());
-    for (const auto& point : state.template_points) state.shape_template.push_back({point.x, point.y});
-    state.profile = report;
     Reset();
+    state.profiles = std::move(profiles);
+    state.selected = GestureSpell::Flipendo;
+    state.lesson_round = 0;
     return true;
 }
+
+bool QuestGesture::SelectSpell(GestureSpell spell) {
+    const auto index = static_cast<unsigned>(spell);
+    if (index >= state_->profiles.size() || state_->profiles[index].template_points.empty()) return false;
+    if (spell == state_->selected) return true;
+    const bool armed = !state_->blocked_until_release && !state_->trigger_held &&
+        !state_->active && !state_->event_pending;
+    Reset();
+    state_->blocked_until_release = !armed;
+    state_->selected = spell;
+    state_->lesson_round = 0;
+    state_->last_score = 0;
+    return true;
+}
+
+GestureSpell QuestGesture::selected_spell() const { return state_->selected; }
 
 void QuestGesture::SetLessonDifficulty(const bool relaxed) {
     if (state_->relaxed == relaxed) return;
@@ -546,7 +693,7 @@ bool QuestGesture::Observe(const GestureSample& sample) {
         state.feedback_points.clear();
         state.locked_origin = sample.tip;
         state.locked_direction = direction;
-        const hpvr_wand_vec2 anchor = state.template_points.front();
+        const hpvr_wand_vec2 anchor = state.CurrentProfile().template_points.front();
         if (!BuildAimFacingPlane(sample.tip, direction, anchor, &state.plane)) {
             state.blocked_until_release = true;
             return true;
@@ -590,7 +737,7 @@ bool QuestGesture::Observe(const GestureSample& sample) {
     bool timed_out = false;
     if (!state.gameplay && !state.relaxed && !state.raw_samples.empty()) {
         const std::int64_t duration_ns = static_cast<std::int64_t>(
-            static_cast<double>(state.profile.draw_time_seconds) * 1.0e9);
+            static_cast<double>(state.CurrentProfile().report.draw_time_seconds) * 1.0e9);
         const std::int64_t start = state.raw_samples.front().predicted_display_time_ns;
         const std::int64_t elapsed = point.predicted_display_time_ns - start;
         if (elapsed >= duration_ns) {
@@ -656,9 +803,12 @@ bool QuestGesture::Observe(const GestureSample& sample) {
         if(filtered.empty() || i+1==projected.size() ||
            std::hypot(projected[i][0]-filtered.back()[0],projected[i][1]-filtered.back()[1])>=kJitterMeters/kGestureExtentMeters)
             filtered.push_back(projected[i]);
-    const auto score = state.gameplay ?
-        CompareGameplayGestureShape(filtered,state.shape_template) :
-        CompareGestureShape(filtered,state.shape_template,effective_accuracy(),state.relaxed);
+    const auto& pattern = state.CurrentProfile().shape_template;
+    const auto score = state.gameplay && state.selected == GestureSpell::Wingardium ?
+        CompareGameplayWingardiumShape(filtered) : state.gameplay && state.selected == GestureSpell::Flipendo ?
+        CompareGameplayGestureShape(filtered,pattern) :
+        state.gameplay&&state.selected==GestureSpell::Alohomora ? CompareGameplayAlohomoraShape(filtered,pattern) :
+        CompareGestureShape(filtered,pattern,effective_accuracy(),state.gameplay || state.relaxed);
     state.last_score = score.score;
     state.feedback_seconds = kFeedbackSeconds;
     const float required_score = threshold();
@@ -673,6 +823,7 @@ bool QuestGesture::Observe(const GestureSample& sample) {
                                state.locked_direction, score.score,
                                required_score};
         state.event_pending = true;
+        state.pending_event.spell = state.selected;
     } else {
         state.visual = GestureVisualState::Rejected;
         ++state.rejected;
@@ -703,8 +854,8 @@ bool QuestGesture::BuildGuide(GestureGuide* const output) const {
     plane = state.plane;
     normal = state.locked_direction;
     output->plane_normal = normal;
-    output->template_points.reserve(state.template_points.size());
-    for (const auto point : state.template_points) {
+    output->template_points.reserve(state.CurrentProfile().template_points.size());
+    for (const auto point : state.CurrentProfile().template_points) {
         output->template_points.push_back(GuidePoint(plane, point));
     }
 
@@ -734,25 +885,26 @@ bool QuestGesture::BuildGuide(GestureGuide* const output) const {
     output->visible = output->template_points.size() >= 2;
     return true;
 }
-bool QuestGesture::IsLoaded() const { return !state_->template_points.empty(); }
+bool QuestGesture::IsLoaded() const { return !state_->CurrentProfile().template_points.empty(); }
 GestureVisualState QuestGesture::visual_state() const { return state_->visual; }
 float QuestGesture::last_score() const { return state_->last_score; }
 float QuestGesture::threshold() const {
     if (!IsLoaded()) return 0.0F;
     const std::uint32_t index = state_->relaxed || state_->gameplay ? 0 :
-        std::min(state_->lesson_round, state_->profile.pass_mark_count - 1);
-    return state_->profile.pass_marks[index];
+        std::min(state_->lesson_round, state_->CurrentProfile().report.pass_mark_count - 1);
+    return state_->CurrentProfile().report.pass_marks[index];
 }
 float QuestGesture::authored_accuracy() const {
-    return IsLoaded() ? state_->profile.accuracy_radius : 0.0F;
+    return IsLoaded() ? state_->CurrentProfile().report.accuracy_radius : 0.0F;
 }
 float QuestGesture::effective_accuracy() const {
-    return authored_accuracy() * (state_->relaxed ? kRelaxedAssistMultiplier : 1.0F);
+    const float vr_trace_scale=state_->selected==GestureSpell::Alohomora?1.75F:1.0F;
+    return authored_accuracy()*vr_trace_scale*(state_->relaxed||state_->gameplay?kRelaxedAssistMultiplier:1.0F);
 }
 bool QuestGesture::relaxed_difficulty() const { return state_->relaxed; }
 std::uint32_t QuestGesture::lesson_round() const { return state_->lesson_round; }
 float QuestGesture::time_limit_seconds() const {
-    return IsLoaded() && !state_->relaxed && !state_->gameplay ? state_->profile.draw_time_seconds : 0.0F;
+    return IsLoaded() && !state_->relaxed && !state_->gameplay ? state_->CurrentProfile().report.draw_time_seconds : 0.0F;
 }
 std::uint32_t QuestGesture::attempt_count() const { return state_->attempts; }
 std::uint32_t QuestGesture::accepted_count() const { return state_->accepted; }

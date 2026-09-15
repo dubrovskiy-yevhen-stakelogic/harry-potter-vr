@@ -26,9 +26,14 @@ bool RestoreBroomSky(const std::filesystem::path& map,
             vertex.polygon_flags=(vertex.polygon_flags&~(1U|128U))|kBroomSkyFlag|kPolyNotSolid;
             vertex.has_lightmap=0;
             sky_layers.insert(vertex.texture_layer);++sky_vertices;
-        } else if((vertex.polygon_flags&128U)!=0) {
-            // Invisible, not non-solid: keep the original flight boundary.
-            vertex.polygon_flags|=1U;++backdrop_vertices;
+        } else {
+            // This renderer-reserved bit can also occur in retail surface flags.
+            // Only vertices in the actual sky zone may become eye-relative.
+            vertex.polygon_flags&=~kBroomSkyFlag;
+            if((vertex.polygon_flags&128U)!=0){
+                // Invisible, not non-solid: keep the original flight boundary.
+                vertex.polygon_flags|=1U;++backdrop_vertices;
+            }
         }
     }
     HPVR_LOGI("[hpvr.quest.broom.environment] sky_vertices=%zu sky_faces=%zu backdrop_vertices=%zu",

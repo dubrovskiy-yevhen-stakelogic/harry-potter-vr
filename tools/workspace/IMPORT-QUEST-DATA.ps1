@@ -6,6 +6,7 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
+. (Join-Path $PSScriptRoot '../release/INSTALL-HPVR.ps1') -LibraryOnly
 $SourceRoot = [System.IO.Path]::GetFullPath($SourceRoot)
 $adb = 'C:\Dev\android-toolchain\sdk\platform-tools\adb.exe'
 $packageName = 'io.github.hpvr.quest'
@@ -131,6 +132,9 @@ foreach ($relativePath in $requiredRelativePaths) {
     Write-Host "[hpvr.quest.data.verify] path=$relativePath sha256=$localHash status=MATCH"
 }
 
+Set-HpvrDataPermissions $adb $deviceArgs @($files | ForEach-Object {
+    [System.IO.Path]::GetRelativePath($SourceRoot, $_.FullName) -replace '\\', '/'
+})
 Write-Host '[hpvr.quest.data.import] status=PASS'
 Write-Host "[hpvr.quest.data.import] device=$DeviceSerial files=$($files.Count) bytes=$totalBytes"
 Write-Host '[hpvr.quest.data.import] apk_install=NOT_PERFORMED app_launch=NOT_PERFORMED'

@@ -3,6 +3,7 @@
 #include "hpvr/quest_vr_settings.h"
 #include "hpvr/quest_demo.h"
 #include "hpvr/quest_maps.h"
+#include "hpvr/quest_house_point_hud.h"
 #include <array>
 #include <filesystem>
 #include <string>
@@ -10,6 +11,11 @@
 #include <cstdint>
 namespace hpvr::quest {
 struct FrontTexture { std::string name; std::vector<std::uint8_t> rgba; };
+struct ReportSandArt {
+    std::uint32_t texture{};
+    unsigned x{},y{},width{},height{};
+    unsigned source_x{},source_y{};
+};
 struct StoryPage {
     std::array<std::uint32_t,4> tiles{};
     std::string dialogue_name, subtitle;
@@ -29,12 +35,14 @@ struct FrontAssets {
     std::vector<FrontTexture> textures;
     std::array<std::uint32_t,6> menu{}, paper{};
     std::array<std::uint32_t,2> logo{};
-    std::array<std::uint32_t,6> book{}, folio{}, folio_secret{}, report{};
+    std::array<std::uint32_t,6> book{}, folio_secret{}, report{};
+    std::array<ReportSandArt,4> report_sand{};
+    std::array<std::uint32_t,7> card_atlas{};
     std::array<std::uint32_t,3> tabs{};
     std::array<std::uint32_t,4> bean_pile{};
-    std::uint32_t health_full{},health_empty{},bean_counter{},bean_badge{},card_badge{};
+    std::uint32_t health_full{},health_empty{},bean_counter{},point_badge{},star_icon{};
     float health_top=0,health_bottom=1; // Alpha bounds of owned lightning art.
-    std::uint32_t missing_big{},missing_small{},arrow_left{},arrow_right{};
+    std::uint32_t missing_small{},arrow_left{},arrow_right{};
     std::uint32_t font{}, white{}, smoke{},card_face{};
     std::vector<StoryPage> story;
     std::vector<wand::Hp1MpegSound> music;
@@ -64,10 +72,14 @@ struct ProgressSave {
     std::array<float,2> doors{};
     unsigned map_id=kIntroductionMapId; // Stable QuestMapDescriptor ID; actor references are map-local.
     unsigned banked_beans=0; // Beans collected on completed maps.
+    std::uint32_t earned_cards=0,completed_maps=0;
+    std::array<unsigned,4> house_points{}; // Ravenclaw, Hufflepuff, Slytherin, Gryffindor.
+    std::array<unsigned,8> lesson_best{},lesson_points{};
     std::vector<std::int32_t> activated_events; // Sorted unique map-local one-shot references.
     unsigned challenge_stars=0;
     std::string graph_state; // Up to 16 KiB of event-reducer state, never executable script.
     std::string world_state; // Up to 32 KiB of map-local actor and mover state.
+    std::string charms_state; // Map-local levitation blocks and lesson state.
 };
 bool TutorialRewardReady(const ProgressSave& progress);
 void ApplyTutorialDamage(ProgressSave& progress);
@@ -83,8 +95,9 @@ enum class FrontAction { None, NewGame, Continue, StoryDone, SaveMenu, SkipScene
 inline constexpr unsigned kVrTurningRow=9;
 inline constexpr unsigned kVrTurnSpeedRow=10;
 inline constexpr unsigned kVrControlsRow=11;
-inline constexpr unsigned kVrMenuRowCount=13;
-inline constexpr unsigned kControlsPageCount=5;
+inline constexpr unsigned kVrGpuBoostRow=12;
+inline constexpr unsigned kVrMenuRowCount=14;
+inline constexpr unsigned kControlsPageCount=6;
 inline constexpr float VrMenuRowY(unsigned row){return 110.0F+20.0F*float(row);}
 struct FrontQuad {
     float x=0,y=0,w=0,h=0,u=0,v=0,uw=1,vh=1;
@@ -115,9 +128,10 @@ public:
     std::vector<FrontQuad> VrValueQuads(int value,bool scale) const;
     std::vector<FrontQuad> VrRefreshQuads(int hz) const;
     std::vector<FrontQuad> VrTurningQuads(bool smooth) const;
+    std::vector<FrontQuad> VrGpuBoostQuads(bool enabled) const;
     std::vector<FrontQuad> VrTurnSpeedQuads(int degrees) const;
     std::vector<FrontQuad> VrVoiceStatusQuads(unsigned status) const;
-    std::vector<FrontQuad> VoiceAimQuads(unsigned status) const;
+    std::vector<FrontQuad> VoiceAimQuads(unsigned status, bool alohomora=false) const;
     std::string message;
     void RefreshSlots();
     FrontAction Input(float move_y,bool confirm,bool back,float move_x=0);
@@ -135,13 +149,19 @@ public:
         const auto underlying=VrPanel()?vr_return:screen;
         return underlying==FrontScreen::Pause||underlying==FrontScreen::Cards||underlying==FrontScreen::Report;
     }
-    std::vector<FrontQuad> Quads() const;
+    std::vector<FrontQuad> Quads(bool include_report_values=true) const;
+    unsigned ReportValue(unsigned field) const;
+    std::vector<FrontQuad> ReportDigitQuads(unsigned digit,unsigned field,unsigned place) const;
+    std::vector<FrontQuad> ReportSandQuads(unsigned fill_pixels,unsigned house) const;
+    std::vector<FrontQuad> FolioCardQuads(unsigned card_index) const;
     std::vector<FrontQuad> BeanCounterQuads(unsigned count) const;
+    std::vector<FrontQuad> HousePointQuads(int digit=-1,unsigned place=0,unsigned digits=1) const;
     std::vector<FrontQuad> ChallengeStarQuads(unsigned count,bool report=false) const;
     std::vector<FrontQuad> BroomLabelQuads() const;
     // Fields: 0 hoop hits, 1 remaining seconds, 2 stage. Independently cached.
     std::vector<FrontQuad> BroomNumberQuads(unsigned value,unsigned field) const;
     std::vector<FrontQuad> HudQuads(unsigned count,bool show_beans) const;
+    std::vector<FrontQuad> StarPickupQuads(unsigned count) const;
     std::vector<FrontQuad> LessonQuads(unsigned passes,bool ready) const;
     std::string DrawKey() const;
 private:

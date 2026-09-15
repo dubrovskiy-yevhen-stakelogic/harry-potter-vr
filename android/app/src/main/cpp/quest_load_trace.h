@@ -23,14 +23,21 @@ class SceneLoadTrace {
                status=="TRANSFER_CPU_FAILED"||status=="FAILED_OR_EXCEPTION";
     }
 public:
+    static void Event(const std::filesystem::path& saves,unsigned map,const std::string& message){
+        if(saves.empty())return;
+        const auto path=saves.parent_path()/("scene-events-"+std::to_string(map)+".log");
+        std::lock_guard lock(epochs_mutex_);std::error_code ec;
+        const auto size=std::filesystem::file_size(path,ec);
+        std::ofstream out(path,!ec&&size>65536?std::ios::trunc:std::ios::app);
+        out<<std::chrono::duration<double>(Clock::now().time_since_epoch()).count()<<' '<<message<<'\n';
+    }
     static std::filesystem::path Path(const std::filesystem::path& saves,unsigned map){
         return saves.parent_path()/("scene-load-"+std::to_string(map)+".log");
     }
     SceneLoadTrace(const std::filesystem::path& saves,unsigned map):path_(Path(saves,map)){
         {
             std::lock_guard lock(epochs_mutex_);
-            // Only two maps are currently playable. Bound abandoned journals
-            // as well, without retaining any game data between loads.
+            // Bound abandoned journals without retaining game data between loads.
             if(!epochs_.contains(path_)&&epochs_.size()>=8){
                 auto oldest=epochs_.begin();
                 for(auto i=epochs_.begin();i!=epochs_.end();++i)

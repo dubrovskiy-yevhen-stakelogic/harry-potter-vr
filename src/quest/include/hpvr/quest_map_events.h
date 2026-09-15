@@ -72,7 +72,7 @@ private:
     };
     bool Queue(std::string_view tag, double due);
     bool Pump();
-    bool Activate(std::size_t index, bool touch);
+    bool Activate(std::size_t index, bool touch, bool spell=false);
     bool Emit(MapEventKind kind, const MapEventNode& node, bool enabled = true);
     std::vector<MapEventNode> nodes_;
     std::map<std::int32_t, std::size_t> by_reference_;
@@ -80,6 +80,7 @@ private:
     std::vector<Pending> pending_;
     std::vector<MapEventEffect> effects_;
     std::uint64_t fingerprint_{}, order_{};
+    std::uint64_t legacy_fingerprint_{};
     double clock_{};
     std::uint32_t stars_{};
     bool healthy_{true};

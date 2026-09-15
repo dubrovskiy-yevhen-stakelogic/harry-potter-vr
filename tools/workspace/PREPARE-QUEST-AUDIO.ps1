@@ -4,7 +4,7 @@ param(
     [string]$Ffmpeg = 'C:\Program Files\Virtual Desktop Streamer\ffmpeg.exe'
 )
 $ErrorActionPreference = 'Stop'
-$repo = Split-Path -Parent $MyInvocation.MyCommand.Path
+$repo = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '../..'))
 $probe = Join-Path $repo 'build\src\wand\Release\hpvr_hp1_sound_probe.exe'
 $cache = Join-Path $repo 'local\quest-owned-audio'
 foreach ($required in @($probe, $Ffmpeg, (Join-Path $DataRoot 'Sounds\AllDialog.uax'))) {

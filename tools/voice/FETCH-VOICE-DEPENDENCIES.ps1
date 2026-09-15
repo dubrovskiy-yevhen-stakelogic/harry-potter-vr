@@ -136,7 +136,9 @@ if (Test-Path -LiteralPath $keywordTarget) {
         # user edits and unknown keyword files retain the strict no-replace rule.
         if (@('AF2C96A1130127BD9A7A82002BFC307D5E9A555D980AF58D96CEB0927495564C',
               '2A832EEA7B6F8791E5B510E9D3DC982A29840640157C6D3C4141CBFBCE6B91D2',
-              'B772267DFCED642A7C3010EA368487BD43C4A3CBFD394DC543D6A66DE3FF00AF') -cnotcontains $previousKeywordHash) {
+              'B772267DFCED642A7C3010EA368487BD43C4A3CBFD394DC543D6A66DE3FF00AF',
+              '39FBFEA65B04CCA27F5F8672338AB79AA64086D67C5D0DF96517E72CA51E0DAB',
+              '01C6D9162DF6564E6214328D9198744F39D656EE3567A898592014747698B5B6') -cnotcontains $previousKeywordHash) {
             throw 'Unknown staged keyword file; preserve and inspect it before updating.'
         }
         $keywordBackup = Join-Path $root ('keyword-history/' + $previousKeywordHash + '.keywords')

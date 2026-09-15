@@ -54,8 +54,10 @@ int main(int argc,char** argv){try{
     front.Input(0,false,false,1);Check(front.card_page==1,"right page input");
     front.Input(0,false,false,1);Check(front.card_page==1,"held stick repeats pages");
     front.Input(0,false,true);Check(front.screen==FrontScreen::Pause,"album back exited game book");
+    front.progress.house_points={78,46,113,90};
+    Check(front.ReportValue(2)==90&&front.ReportValue(3)==78&&!front.Quads().empty(),"pause displays the live original house report");
     front.Input(0,false,false);front.selection=4;front.Input(0,true,false);
-    Check(front.screen==FrontScreen::Report,"report inaccessible");
+    Check(front.screen==FrontScreen::Vr&&front.vr_return==FrontScreen::Pause,"original Options orb opens settings");
     front.Input(0,false,false);front.Input(0,false,true);front.Input(0,false,false);
     Check(front.Input(0,false,true)==FrontAction::Resume&&!front.Visible(),"book close failed");
     const auto health=front.HudQuads(0,false),beans=front.HudQuads(14,true);

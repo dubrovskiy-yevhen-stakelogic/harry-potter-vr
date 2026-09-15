@@ -22,10 +22,10 @@ namespace {
 }  // namespace
 
 int main(int argc, char** argv) {
-    if (argc != 5 && argc != 6) {
+    if (argc != 5 && argc != 6 && argc != 7) {
         std::cerr << "usage: hpvr_hp1_textured_bsp_probe "
                      "<data-root> <map-package> <meters-per-unit> "
-                     "<max-triangles>\n";
+                     "<max-triangles> [brush-reference [authored-polys]]\n";
         return EXIT_FAILURE;
     }
     try {
@@ -39,7 +39,7 @@ int main(int argc, char** argv) {
             std::filesystem::path(argv[2]),
             scale,
             static_cast<std::uint32_t>(parsed_limit),
-            argc == 6 ? std::stoi(argv[5]) : 0);
+            argc >= 6 ? std::stoi(argv[5]) : 0, nullptr, argc == 7);
         if (scene.status != hpvr::wand::Hp1ProfileStatus::ok) {
             std::cerr << "textured_bsp_status="
                       << static_cast<int>(scene.status)
@@ -47,6 +47,18 @@ int main(int argc, char** argv) {
             return EXIT_FAILURE;
         }
         std::uint8_t lightmap_min = 255;
+        for(std::size_t layer=1;layer<scene.texture_layer_names.size();++layer){
+            std::uint32_t flags=0;std::size_t holes=0;
+            for(const auto& v:scene.vertices)if(v.texture_layer==layer)flags|=v.polygon_flags;
+            const auto texels=std::size_t(scene.texture_layer_width)*scene.texture_layer_height;
+            for(std::size_t i=0;i<texels;++i)holes+=scene.texture_rgba8[(layer*texels+i)*4+3]==0;
+            std::cout<<"material="<<scene.texture_layer_names[layer]<<" flags="<<flags<<" holes="<<holes<<'\n';
+            if(scene.texture_layer_names[layer]=="mirrorblur"||(flags&0x04000000U)){
+                std::size_t printed=0;
+                for(const auto& v:scene.vertices)if(v.texture_layer==layer&&(scene.texture_layer_names[layer]=="mirrorblur"||((v.polygon_flags&0x04000001U)==0x04000000U))&&printed++<96)
+                    std::cout<<"surface_sample="<<scene.texture_layer_names[layer]<<" position="<<v.position_m.x<<','<<v.position_m.y<<','<<v.position_m.z<<" flags="<<v.polygon_flags<<'\n';
+            }
+        }
         std::uint8_t lightmap_max = 0;
         std::uint64_t lightmap_sum = 0;
         std::size_t lightmap_samples = 0;

@@ -252,7 +252,7 @@ struct QuestVoiceCast::State {
                 // AAudio may still have queued input from the previous target
                 // or Harry's own incantation. Do not give it to the new stream.
                 attempt_first_frame = AAudioStream_getFramesWritten(microphone.get());
-                if (!decoder.Begin()) {
+                if (!decoder.Begin(arm.spell)) {
                     decoder_errors.fetch_add(1, std::memory_order_relaxed);
                     retry_capture(arm, true); continue;
                 }
@@ -329,7 +329,7 @@ struct QuestVoiceCast::State {
             VoiceCastEvent accepted;
             if (matched && command.load(std::memory_order_acquire) == observed &&
                 revision.load(std::memory_order_acquire) == observed_revision &&
-                gate.Accept(arm, active_generation, "flipendo", duration, &accepted)) {
+                gate.Accept(arm, active_generation, VoiceKeyword(arm.spell), duration, &accepted)) {
                 accepted_events.fetch_add(1, std::memory_order_relaxed);
                 const auto centiseconds = static_cast<std::uint64_t>(std::lround(duration * 100));
                 event_revision.store(observed_revision, std::memory_order_release);
@@ -342,7 +342,7 @@ struct QuestVoiceCast::State {
 #if defined(HPVR_VOICE_DIAGNOSTICS) && HPVR_VOICE_DIAGNOSTICS
                 diagnostic.Boundary();
 #endif
-                if (!decoder.Begin()) {
+                if (!decoder.Begin(arm.spell)) {
                     decoder_errors.fetch_add(1, std::memory_order_relaxed);
                     retry_capture(arm, true);
                 } else rejected_at_start = decoder.Stats().duration_rejects;

@@ -17,7 +17,7 @@ public:
     XrVulkanSmoke& operator=(const XrVulkanSmoke&) = delete;
 
     [[nodiscard]] bool InitializeGraphics(XrInstance instance,
-                                          XrSystemId system_id,bool metrics_extension=false);
+                                          XrSystemId system_id,bool metrics_extension=false,bool performance_extension=false);
     [[nodiscard]] bool LoadHogwarts(
         const std::filesystem::path& data_root,const std::filesystem::path& save_root);
     [[nodiscard]] bool PumpHogwartsLoad();

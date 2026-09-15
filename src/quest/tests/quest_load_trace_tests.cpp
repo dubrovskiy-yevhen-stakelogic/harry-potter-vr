@@ -52,6 +52,12 @@ int main(){
         std::ifstream unknown(SceneLoadTrace::Path(saves,2));std::string line;std::getline(unknown,line);
         Check(line=="ADOPTED elapsed=unavailable","missing epoch never invents elapsed time");
         unknown.close();
+        SceneLoadTrace::Event(saves,3,"DEATH reason=MANTLE_INTERRUPTED");
+        {SceneLoadTrace restart(saves,3);restart.Ready();}
+        SceneLoadTrace::Event(saves,3,"CUTSCENE_START ref=1526");
+        std::ifstream events(temporary/"scene-events-3.log");
+        std::string all((std::istreambuf_iterator<char>(events)),{});events.close();
+        Check(all.find("MANTLE_INTERRUPTED")!=std::string::npos&&all.find("ref=1526")!=std::string::npos,"event journal survives scene reload");
         std::filesystem::remove_all(temporary);
         std::cout<<"LOAD_TRACE_TESTS=PASS\n";return 0;
     }catch(const std::exception& e){

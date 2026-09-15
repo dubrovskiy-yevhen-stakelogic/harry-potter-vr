@@ -52,6 +52,11 @@ int main(){try{
           !defaults.welcome_seen&&defaults.refresh_rate==90,"existing defaults preserved");
     Check(!std::filesystem::exists(untouched),"reading absent settings does not create files");
     Check(defaults.turning_mode==TurningMode::Snap&&defaults.smooth_turn_speed==90,"turning preserves snap by default");
+    Check(defaults.gpu_boost,"GPU boost defaults on");
+    for(bool enabled:{false,true}){
+        auto boost=defaults;boost.gpu_boost=enabled;
+        Check(WriteVrSettings(temporary.path/"boost",boost)&&ReadVrSettings(temporary.path/"boost").gpu_boost==enabled,"GPU boost choice round-trips");
+    }
     Check(!UsesGestureCasting(CastingMode::Classic)&&!ShowsGestureTrace(CastingMode::Classic),"classic gesture policy");
     Check(UsesGestureCasting(CastingMode::VisibleGesture)&&ShowsGestureTrace(CastingMode::VisibleGesture),"visible gesture policy");
     Check(UsesGestureCasting(CastingMode::Gesture)&&!ShowsGestureTrace(CastingMode::Gesture),"unassisted gesture policy");
@@ -67,7 +72,7 @@ int main(){try{
               !migrated.first_person_cutscenes&&migrated.refresh_rate==120,"VR4 unrelated choices preserved");
         Check(WriteVrSettings(root,migrated)&&migrated.generation==13,"migrated settings write new generation");
         std::ifstream saved(root/"vr-settings.1");std::string magic;saved>>magic;
-        Check(magic=="HPVR_VR7","migrated save upgrades to VR7");
+        Check(magic=="HPVR_VR8","migrated save upgrades to VR8");
         Check(ReadVrSettings(root).casting_mode==migrated.casting_mode,"migration survives second read");
     }
     for(int version=1;version<=3;++version){
@@ -114,6 +119,13 @@ int main(){try{
         Check(WriteVrSettings(root,migrated)&&ReadVrSettings(root).generation==43,"legacy turning migration round-trips");
     }
     const auto turn_round_trip=temporary.path/"turn-round-trip";
+    {
+        const auto root=temporary.path/"boost-migration";
+        Fixture(root,0,Record("HPVR_VR7","145:55:42:0:1:0:2:120:1:1:1:60"));
+        auto v=ReadVrSettings(root);
+        Check(v.generation==42&&v.gpu_boost&&v.turning_mode==TurningMode::Smooth&&v.smooth_turn_speed==60&&v.voice_cast,"VR7 enables boost without resetting established preferences");
+        v.gpu_boost=false;Check(WriteVrSettings(root,v)&&!ReadVrSettings(root).gpu_boost,"migrated boost can be persistently disabled");
+    }
     VrSettings turning;turning.voice_cast=true;turning.voice_hints=true;turning.casting_mode=CastingMode::VisibleGesture;
     for(auto mode:{TurningMode::Snap,TurningMode::Smooth})for(int speed=30;speed<=180;speed+=30){
         turning.turning_mode=mode;turning.smooth_turn_speed=speed;
@@ -223,6 +235,10 @@ int main(){try{
     Check(front.VrValueQuads(175,true).front().y==VrMenuRowY(0)&&front.VrValueQuads(30,false).front().y==VrMenuRowY(1)&&
           front.VrRefreshQuads(90).front().y==VrMenuRowY(6),"live numeric overlays align with compact rows");
     front.selection=kVrTurningRow;front.vr.turning_mode=TurningMode::Snap;
+    front.selection=kVrGpuBoostRow;front.vr.gpu_boost=true;Press(front);
+    Check(!front.vr.gpu_boost&&!ReadVrSettings(front.saves.parent_path()).gpu_boost,"GPU boost disables and saves live");
+    Check(front.VrGpuBoostQuads(false).size()==3&&front.VrGpuBoostQuads(true).size()==2,"both boost value overlays are available");
+    front.selection=kVrTurningRow;
     const auto turn_key=front.DrawKey();Press(front);
     Check(front.vr.turning_mode==TurningMode::Smooth&&ReadVrSettings(front.saves.parent_path()).turning_mode==TurningMode::Smooth,
           "smooth turning enables and saves immediately");
@@ -246,7 +262,7 @@ int main(){try{
         Check(quad.x+quad.w<600&&quad.y==VrMenuRowY(kVrTurnSpeedRow)&&quad.y+quad.h<VrMenuRowY(kVrTurnSpeedRow+1),
               "every turn speed overlay fits without overlap");
     front.selection=0;front.Input(0,false,false);front.Input(1,false,false);
-    Check(kVrMenuRowCount==13&&front.selection==12,"selection wraps through all thirteen rows");
+    Check(kVrMenuRowCount==14&&front.selection==13,"selection wraps through all fourteen rows");
     Press(front);Check(front.screen==FrontScreen::Game,"return row closes VR menu");
     const auto settings_generation=ReadVrSettings(front.saves.parent_path()).generation;
     front.page=11;front.progress.page=11;
@@ -269,9 +285,12 @@ int main(){try{
             Check(TextAt(front,347)=="INLESSONS,FOLLOWTHESHOWNPATTERN.","lesson precision distinguished from gameplay");
         }
         if(page==3)Check(TextAt(front,263)=="KEEPHOLDINGTOCASTAGAINBYVOICE."&&
-                         TextAt(front,319)=="EXPERIMENTAL-LIMITEDPLAYERTESTING.","voice repeat and experimental warning");
+                         TextAt(front,319)=="EXPERIMENTAL-ONLYTESTEDBYTHEAUTHOR.","voice repeat and experimental warning");
         if(page==4)Check(TextAt(front,207)=="RIGHTSTICKUP/DOWN-ASCEND/DESCEND."&&
                          TextAt(front,235)=="RELEASETHELEFTSTICKTOBRAKE.","broom controls explain height and braking");
+        if(page==5)Check(TextAt(front,207)=="LOCKSUSEALOHOMORA;BLOCKSUSEWINGARDIUM."&&
+                         TextAt(front,291)=="AFTERLIFTINGABLOCK,HOLDRIGHTTRIGGER."&&
+                         TextAt(front,347)=="RELEASETODROP.VOICECASTISFLIPENDOONLY.","charms help explains spell selection, holding and voice limitation");
         Press(front);
     }
     Check(front.controls_page==0,"controls next wraps to basics");
@@ -293,9 +312,9 @@ int main(){try{
     Check(front.WorldVisible()&&front.PausesWorld(),"controls opened over welcome retains notice pause");
     front.ToggleVrMenu();
     Check(front.screen==FrontScreen::Welcome,"controls closes back to welcome without dismissing it");
-    Check(TextAt(front,78)=="0.1.2.1ALPHA-WELCOME"&&TextAt(front,122)=="VERYEARLYALPHA-EXPECTBUGS."&&
-          TextAt(front,194)=="LIMITEDPLAYERTESTINGSOFAR.","welcome states alpha status and limited voice testing");
-    for(unsigned map:{0U,1U,2U})for(auto screen:{FrontScreen::Welcome,FrontScreen::DemoEnd})for(unsigned row:{0U,1U}){
+    Check(TextAt(front,78)=="0.1.3ALPHATEST-WELCOME"&&TextAt(front,122)=="VERYEARLYALPHA-EXPECTBUGS."&&
+          TextAt(front,194)=="ITHASONLYBEENTESTEDBYTHEAUTHOR.","welcome states alpha status and author-only voice testing");
+    for(unsigned map:{0U,1U,2U,3U})for(auto screen:{FrontScreen::Welcome,FrontScreen::DemoEnd})for(unsigned row:{0U,1U}){
         front.assets.map_id=map;front.screen=screen;front.selection=row;
         for(const auto& quad:front.Quads())Check(quad.x>=0&&quad.y>=0&&quad.x+quad.w<=640&&quad.y+quad.h<=480,
                                               "notice text and both actions fit on both maps");

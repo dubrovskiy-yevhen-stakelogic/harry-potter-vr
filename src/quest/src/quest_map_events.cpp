@@ -65,7 +65,7 @@ std::string Asset(const wand::Hp1ActorVisual& actor, std::string_view name) {
 bool IsMover(std::string_view name) {
     return name == "engine.mover" || name == "engine.loopmover" ||
         name == "engine.gradualmover" || name == "engine.gridmover" ||
-        name == "engine.assertmover" || name == "engine.mixmover";
+        name == "engine.assertmover" || name == "engine.mixmover" || name == "engine.attachmover";
 }
 void Hash(std::uint64_t& hash, std::string_view value) {
     for (const auto c : value) { hash ^= static_cast<unsigned char>(c); hash *= 1099511628211ULL; }
@@ -78,6 +78,7 @@ bool MapEventGraph::Load(const wand::Hp1ActorVisualCensus& census) {
     if (census.status != wand::Hp1ProfileStatus::ok) return false;
     MapEventGraph graph;
     graph.fingerprint_ = 14695981039346656037ULL;
+    graph.legacy_fingerprint_=graph.fingerprint_;
     for (const auto& actor : census.actors) {
         const auto name = Fold(actor.qualified_class_name);
         MapEventNode node;
@@ -95,7 +96,8 @@ bool MapEventGraph::Load(const wand::Hp1ActorVisualCensus& census) {
         else if (name == "hpbase.starstrigger") node.kind = MapEventNodeKind::stars_trigger;
         else if (name == "tut1.flipbarrel" || name == "tut1.tut1gnome" ||
                  name.starts_with("hprops.flipendovase") || name == "hprops.bronzecauldron" ||
-                 name == "engine.triggerlight" || !actor.event.empty()) node.kind = MapEventNodeKind::actor;
+                 name == "hprops.bronzechest" || name == "hprops.ironchest" ||
+                 name == "engine.triggerlight" || name == "hpbase.spawnthingy" || name == "hprops.padlock" || !actor.event.empty()) node.kind = MapEventNodeKind::actor;
         else continue;
         if (actor.actor_reference <= 0 || graph.nodes_.size() >= kMaximumNodes ||
             graph.by_reference_.contains(actor.actor_reference)) return false;
@@ -110,6 +112,8 @@ bool MapEventGraph::Load(const wand::Hp1ActorVisualCensus& census) {
         if (node.tag == "none") node.tag.clear();
         if (node.event == "none") node.event.clear();
         node.initial_active = Boolean(actor, "bInitiallyActive", true);
+        if(node.kind==MapEventNodeKind::spell_trigger)
+            node.initial_active=node.initial_active&&Boolean(actor,"bProjTarget",true);
         if (node.kind == MapEventNodeKind::cutscene) node.initial_active = Boolean(actor, "bCanPlay", true);
         node.active = node.initial_active;
         node.once = Boolean(actor, "bTriggerOnceOnly", false);
@@ -145,18 +149,19 @@ bool MapEventGraph::Load(const wand::Hp1ActorVisualCensus& census) {
                 }
             }
         }
-        Hash(graph.fingerprint_, std::to_string(actor.actor_reference));
-        Hash(graph.fingerprint_, actor.object_name);
-        Hash(graph.fingerprint_, actor.qualified_class_name);
-        Hash(graph.fingerprint_, node.tag);
-        Hash(graph.fingerprint_, node.event);
-        for (const auto& property : actor.serialized_properties) {
-            Hash(graph.fingerprint_, property.name);
-            Hash(graph.fingerprint_, std::to_string(property.array_index));
-            Hash(graph.fingerprint_, property.text_value);
-            Hash(graph.fingerprint_, property.boolean_value ? "1" : "0");
-            for (const auto byte : property.value) { graph.fingerprint_ ^= byte; graph.fingerprint_ *= 1099511628211ULL; }
-        }
+        const auto hash_actor=[&](std::uint64_t& hash){
+            Hash(hash,std::to_string(actor.actor_reference));Hash(hash,actor.object_name);
+            Hash(hash,actor.qualified_class_name);Hash(hash,node.tag);Hash(hash,node.event);
+            for(const auto& property:actor.serialized_properties){
+                Hash(hash,property.name);Hash(hash,std::to_string(property.array_index));
+                Hash(hash,property.text_value);Hash(hash,property.boolean_value?"1":"0");
+                for(const auto byte:property.value){hash^=byte;hash*=1099511628211ULL;}
+            }
+        };
+        hash_actor(graph.fingerprint_);
+        // These formerly omitted receivers add no serialized state to an old save.
+        if(!((name=="hpbase.spawnthingy"||name=="hprops.padlock")&&actor.event.empty()))
+            hash_actor(graph.legacy_fingerprint_);
         const auto index = graph.nodes_.size();
         graph.by_reference_[node.actor_reference] = index;
         if (!node.tag.empty()) graph.by_tag_[node.tag].push_back(index);
@@ -187,11 +192,11 @@ bool MapEventGraph::Emit(MapEventKind kind, const MapEventNode& node, bool enabl
     return true;
 }
 
-bool MapEventGraph::Activate(std::size_t index, bool touch) {
+bool MapEventGraph::Activate(std::size_t index, bool touch, bool spell) {
     auto& node = nodes_[index];
     if (touch && !node.touch_enabled) return true;
-    if (!touch && !node.trigger_enabled) return true;
-    if (!touch && node.kind == MapEventNodeKind::trigger) {
+    if (!touch && !spell && !node.trigger_enabled) return true;
+    if (!touch && !spell && (node.kind == MapEventNodeKind::trigger || node.kind == MapEventNodeKind::spell_trigger)) {
         if (node.state == "othertriggertoggles") node.active = !node.active;
         else if (node.state == "othertriggerturnson") node.active = true;
         else if (node.state == "othertriggerturnsoff") node.active = false;
@@ -277,7 +282,7 @@ bool MapEventGraph::Spell(std::int32_t reference) {
     if (!healthy_ || found == by_reference_.end()) return false;
     auto& node = nodes_[found->second];
     if (!node.active || node.consumed) return false;
-    if (node.kind == MapEventNodeKind::spell_trigger) return Activate(found->second, false) && Pump();
+    if (node.kind == MapEventNodeKind::spell_trigger) return Activate(found->second, false, true) && Pump();
     if (node.kind == MapEventNodeKind::mover && node.class_name == "engine.gridmover")
         return Activate(found->second, false) && Pump();
     if (node.kind != MapEventNodeKind::actor) return false;
@@ -359,7 +364,8 @@ bool MapEventGraph::Restore(std::string_view state) {
     std::uint64_t fingerprint = 0;
     std::uint32_t stars = 0;
     std::size_t changes = 0, pending_count = 0;
-    if (!(input >> magic >> fingerprint >> stars >> changes) || (magic != "ME1" && magic != "ME2") || fingerprint != fingerprint_ ||
+    if (!(input >> magic >> fingerprint >> stars >> changes) || (magic != "ME1" && magic != "ME2") ||
+        (fingerprint != fingerprint_ && fingerprint != legacy_fingerprint_) ||
         changes > nodes_.size() || stars > nodes_.size()) return false;
     auto nodes = nodes_;
     for (auto& node : nodes) {

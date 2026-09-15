@@ -5,24 +5,27 @@ param(
     [string]$WorkRoot,
     [string]$HostBuildDirectory = 'build',
     [string]$FfmpegPath,
-    [switch]$LibraryOnly
+    [switch]$LibraryOnly,
+    [ValidateSet(2,3)][int]$MapId = 2
 )
 
 # Development preparation only. This never installs an APK, contacts a device,
 # launches the game, or changes the released demo's installer and map selection.
 $hpvrBroomArguments = @{
-    GamePath=$GamePath; WorkRoot=$WorkRoot; HostBuildDirectory=$HostBuildDirectory; FfmpegPath=$FfmpegPath
+    GamePath=$GamePath; WorkRoot=$WorkRoot; HostBuildDirectory=$HostBuildDirectory; FfmpegPath=$FfmpegPath; MapId=$MapId
 }
 $hpvrBroomLibraryOnly = $LibraryOnly
-$hpvrBroomRepository = $PSScriptRoot
-. (Join-Path $PSScriptRoot 'tools/release/INSTALL-HPVR.ps1') -LibraryOnly
+$hpvrBroomRepository = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '../..'))
+. (Join-Path $PSScriptRoot '../release/INSTALL-HPVR.ps1') -LibraryOnly
 
-function Get-HpvrBroomDependencies([string]$Root, [string]$GraphProbe) {
-    $base = Get-HpvrDependencySet $Root $GraphProbe $true
+function Get-HpvrBroomDependencies([string]$Root, [string]$GraphProbe, [ValidateSet(2,3)][int]$MapId = 2) {
+    $base = if ($MapId -eq 3) { Get-HpvrBroomDependencies $Root $GraphProbe 2 }
+        else { Get-HpvrDependencySet $Root $GraphProbe $true }
     $inputs = @{}
     foreach ($inputFile in $base.Inputs) { $inputs[$inputFile.Relative] = $inputFile }
-    $map = Get-HpvrOwnedInput $Root (Join-Path $Root 'Maps/Lev_Tut2.unr')
-    $lines = @(Invoke-HpvrChecked $GraphProbe @($Root, $map.Source) 'Owned broomstick map dependency scan')
+    $mapFile = if ($MapId -eq 3) { 'Maps/Lev_Tut3.unr' } else { 'Maps/Lev_Tut2.unr' }
+    $map = Get-HpvrOwnedInput $Root (Join-Path $Root $mapFile)
+    $lines = @(Invoke-HpvrChecked $GraphProbe @($Root, $map.Source) "Owned map $MapId dependency scan")
     $count = 0
     foreach ($line in $lines) {
         if ($line -match '^package=\S+ kind=data path=(.+) version=\d+ direct_dependencies=\d+ native_companion=[01]$') {
@@ -32,7 +35,7 @@ function Get-HpvrBroomDependencies([string]$Root, [string]$GraphProbe) {
         }
     }
     if ($count -lt 3 -or -not $inputs.ContainsKey($map.Relative)) {
-        throw 'The owned broomstick map dependency scan is incomplete.'
+        throw "The owned map $MapId dependency scan is incomplete."
     }
     return [pscustomobject]@{ Inputs=@($inputs.Values | Sort-Object Relative); Report=@($base.Report) + $lines }
 }
@@ -55,13 +58,17 @@ function Assert-HpvrBroomOutput([string]$Output, [string]$OwnedRoot, [string]$Re
 }
 
 function Invoke-HpvrBroomPreparation([string]$GamePath, [string]$WorkRoot,
-                                    [string]$HostBuildDirectory, [string]$FfmpegPath) {
+                                    [string]$HostBuildDirectory, [string]$FfmpegPath, [ValidateSet(2,3)][int]$MapId = 2) {
     if ([string]::IsNullOrWhiteSpace($GamePath)) { throw 'Pass -GamePath with your own installed US PC game folder.' }
     $ownedRoot = Get-HpvrFullPath $GamePath
     if (-not (Test-Path -LiteralPath $ownedRoot -PathType Container)) { throw 'GamePath must be an existing folder.' }
-    if ([string]::IsNullOrWhiteSpace($WorkRoot)) { $WorkRoot = Join-Path $hpvrBroomRepository 'local/broom-preparation' }
+    $levelName = if ($MapId -eq 3) { 'charms' } else { 'broom' }
+    if ([string]::IsNullOrWhiteSpace($WorkRoot)) { $WorkRoot = Join-Path $hpvrBroomRepository "local/$levelName-preparation" }
     $privateRoot = Get-HpvrFullPath $WorkRoot
     Assert-HpvrBroomOutput $privateRoot $ownedRoot $hpvrBroomRepository
+    if ($MapId -eq 3 -and -not (Test-HpvrWithin $privateRoot (Join-Path $hpvrBroomRepository 'local'))) {
+        throw 'Charms development data must remain inside ignored local/.'
+    }
     $buildRoot = if ([IO.Path]::IsPathRooted($HostBuildDirectory)) { Get-HpvrFullPath $HostBuildDirectory }
         else { Get-HpvrFullPath (Join-Path $hpvrBroomRepository $HostBuildDirectory) }
     $tools = @{
@@ -87,8 +94,8 @@ function Invoke-HpvrBroomPreparation([string]$GamePath, [string]$WorkRoot,
     Assert-HpvrNoLinks $ffmpeg
     $ffmpegHash = (Get-FileHash -LiteralPath $ffmpeg -Algorithm SHA256).Hash
     & $assertTool Graph
-    $dependencies = Get-HpvrBroomDependencies $ownedRoot $tools.Graph
-    $privateRun = Join-Path $privateRoot ('broom-' + [DateTime]::UtcNow.ToString('yyyyMMdd-HHmmss') + '-' + [Guid]::NewGuid().ToString('N'))
+    $dependencies = Get-HpvrBroomDependencies $ownedRoot $tools.Graph $MapId
+    $privateRun = Join-Path $privateRoot ($levelName + '-' + [DateTime]::UtcNow.ToString('yyyyMMdd-HHmmss') + '-' + [Guid]::NewGuid().ToString('N'))
     if (Test-Path -LiteralPath $privateRun) { throw 'Private preparation directory already exists.' }
     $stage = Join-Path $privateRun 'HP'
     $audio = Join-Path $stage 'Cache/Audio'
@@ -97,7 +104,7 @@ function Invoke-HpvrBroomPreparation([string]$GamePath, [string]$WorkRoot,
     $cache = Join-Path $stage 'Cache/Scenes'
     New-Item -ItemType Directory -Path $audio, $encoded, $prepared, $cache -Force | Out-Null
     Write-Host "Private data: $privateRun"
-    Write-Host 'Original game data is read-only. This development helper prepares map 2 without changing the public demo.'
+    Write-Host "Original game data is read-only. This development helper prepares map $MapId without changing the public demo."
     $dependencies.Report | Set-Content -LiteralPath (Join-Path $privateRun 'dependency-report.txt') -Encoding UTF8
     $manifest = [Collections.Generic.List[object]]::new()
     foreach ($inputFile in $dependencies.Inputs) {
@@ -111,7 +118,7 @@ function Invoke-HpvrBroomPreparation([string]$GamePath, [string]$WorkRoot,
         $manifest.Add([pscustomobject]@{path=$inputFile.Relative;sha256=$hash;bytes=(Get-Item -LiteralPath $destination).Length})
     }
     $plan = @{}
-    foreach ($map in @(0,1,2)) {
+    foreach ($map in @(0..$MapId)) {
         $mapEncoded = Join-Path $privateRun "encoded-map-$map"
         & $assertTool Frontend
         Invoke-HpvrChecked $tools.Frontend @($stage,$mapEncoded,'--map',[string]$map) 'Owned frontend/audio extraction' |
@@ -147,20 +154,20 @@ function Invoke-HpvrBroomPreparation([string]$GamePath, [string]$WorkRoot,
         $manifest.Add([pscustomobject]@{path='Cache/Audio/'+$key;sha256=(Get-FileHash -LiteralPath $pcm -Algorithm SHA256).Hash;bytes=(Get-Item -LiteralPath $pcm).Length})
     }
     Write-Progress -Activity 'Preparing original music and speech' -Completed
-    $prepareArguments=@($stage,'--output',$prepared,'--map','2')
+    $prepareArguments=@($stage,'--output',$prepared,'--map',[string]$MapId)
     & $assertTool Prepare
-    Invoke-HpvrChecked $tools.Prepare $prepareArguments 'Broomstick scene preparation' |
-        Tee-Object -FilePath (Join-Path $privateRun 'prepared-scene-2.txt') | ForEach-Object { Write-Host $_ }
+    Invoke-HpvrChecked $tools.Prepare $prepareArguments "Map $MapId scene preparation" |
+        Tee-Object -FilePath (Join-Path $privateRun "prepared-scene-$MapId.txt") | ForEach-Object { Write-Host $_ }
     & $assertTool Prepare
-    Invoke-HpvrChecked $tools.Prepare ($prepareArguments+'--verify') 'Broomstick prepared-scene verification' |
-        Tee-Object -FilePath (Join-Path $privateRun 'prepared-scene-2-verify.txt') | ForEach-Object { Write-Host $_ }
-    $preparedFile=Join-Path $prepared 'map-2.hpvc'
+    Invoke-HpvrChecked $tools.Prepare ($prepareArguments+'--verify') "Map $MapId prepared-scene verification" |
+        Tee-Object -FilePath (Join-Path $privateRun "prepared-scene-$MapId-verify.txt") | ForEach-Object { Write-Host $_ }
+    $preparedFile=Join-Path $prepared "map-$MapId.hpvc"
     Assert-HpvrNoLinks $preparedFile
     $preparedHash=(Get-FileHash -LiteralPath $preparedFile -Algorithm SHA256).Hash
-    $destination=Join-Path $cache 'map-2.hpvc'
+    $destination=Join-Path $cache "map-$MapId.hpvc"
     Copy-Item -LiteralPath $preparedFile -Destination $destination
     if ((Get-FileHash -LiteralPath $destination -Algorithm SHA256).Hash -ne $preparedHash) { throw 'Prepared scene copy failed.' }
-    $manifest.Add([pscustomobject]@{path='Cache/Scenes/map-2.hpvc';sha256=$preparedHash;bytes=(Get-Item -LiteralPath $destination).Length})
+    $manifest.Add([pscustomobject]@{path="Cache/Scenes/map-$MapId.hpvc";sha256=$preparedHash;bytes=(Get-Item -LiteralPath $destination).Length})
     foreach ($entry in $manifest) {
         Assert-HpvrSafeRelative $entry.path
         $file=Join-Path $stage $entry.path
@@ -173,7 +180,7 @@ function Invoke-HpvrBroomPreparation([string]$GamePath, [string]$WorkRoot,
         if ((Get-FileHash -LiteralPath $inputFile.Source -Algorithm SHA256).Hash -ne $entry.sha256) { throw "Original input changed during preparation: $($inputFile.Relative)" }
     }
     $manifest | ConvertTo-Json -Depth 4 | Set-Content -LiteralPath (Join-Path $privateRun 'PRIVATE-owned-data-manifest.json') -Encoding UTF8
-    Write-Host "BROOM_PREPARE=PASS map=2 files=$($manifest.Count) audio_clips=$($plan.Count) private_path=$privateRun"
+    Write-Host "$($levelName.ToUpperInvariant())_PREPARE=PASS map=$MapId files=$($manifest.Count) audio_clips=$($plan.Count) private_path=$privateRun"
     Write-Host 'APK_INSTALL=NOT_PERFORMED DATA_PUSH=NOT_PERFORMED APP_LAUNCH=NOT_PERFORMED'
     Write-Host 'Do not publish the private HP tree, encoded audio, prepared caches or private manifest.'
 }

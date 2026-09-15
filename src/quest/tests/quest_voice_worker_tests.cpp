@@ -82,7 +82,7 @@ struct QuestVoiceDecoder::State { bool loaded = false; VoiceDecoderStats stats; 
 QuestVoiceDecoder::QuestVoiceDecoder() : state_(std::make_unique<State>()) {}
 QuestVoiceDecoder::~QuestVoiceDecoder() = default;
 bool QuestVoiceDecoder::Load(const std::filesystem::path&, double) { ++model_loads; state_->loaded = true; return true; }
-bool QuestVoiceDecoder::Begin() { ++decoder_begins; return state_->loaded; }
+bool QuestVoiceDecoder::Begin(VoiceSpell) { ++decoder_begins; return state_->loaded; }
 void QuestVoiceDecoder::End() {}
 bool QuestVoiceDecoder::loaded() const noexcept { return state_->loaded; }
 bool QuestVoiceDecoder::failed() const noexcept { return false; }

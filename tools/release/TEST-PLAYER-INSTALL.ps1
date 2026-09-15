@@ -55,6 +55,10 @@ $broomMaps = @(Get-HpvrMapInputs $owned $true $true)
 Assert-HpvrTest ($broomMaps.Count -eq 3 -and $broomMaps[2].Relative -eq 'Maps/Lev_Tut2.unr') 'Three-map selection includes exact broom map'
 Assert-HpvrReject { Get-HpvrMapInputs $owned $false $true } 'Broom map requires preceding challenge selection'
 Assert-HpvrTest (@(Get-HpvrMapInputs $owned $true).Count -eq 2) 'Broom file presence does not expand older release selection'
+Assert-HpvrReject { Get-HpvrMapInputs $owned $true $true $true } 'Missing Charms map rejected'
+[IO.File]::WriteAllBytes((Join-Path $owned 'Maps/Lev_Tut3.unr'), [byte[]](10,11,12))
+Assert-HpvrTest (@(Get-HpvrMapInputs $owned $true $true $true).Count -eq 4) 'Four-map selection includes Charms'
+Assert-HpvrReject { Get-HpvrMapInputs $owned $true $false $true } 'Charms cannot bypass broom map'
 [IO.File]::WriteAllBytes((Join-Path $owned 'system\HP.exe'), [byte[]](77,90))
 $inputData = Get-HpvrOwnedInput $owned (Join-Path $owned 'system\test.u')
 Assert-HpvrTest ($inputData.Relative -eq 'system/test.u') 'Owned package accepted'
@@ -111,6 +115,8 @@ Assert-HpvrTest (($broomMapIds -join ',') -eq '0,1,2') 'Three-map release select
 Assert-HpvrTest ((@(Get-HpvrReleaseMapIds $verifiedBroom -IncludeChallenge) -join ',') -eq '0,1,2') 'Legacy challenge flag cannot remove the declared broom map'
 Assert-HpvrReject { Get-HpvrReleaseMapIds ([pscustomobject]@{versionCode=56;mapIds=@(0,1,2)}) } 'Development APK cannot claim the new public three-map contract'
 Assert-HpvrTest (@(Get-HpvrReleaseMapIds ([pscustomobject]@{versionCode=57})).Count -eq 1) 'New version alone cannot silently expand a legacy manifest'
+Assert-HpvrTest ((@(Get-HpvrReleaseMapIds ([pscustomobject]@{versionCode=71;mapIds=@(0,1,2,3)})) -join ',') -eq '0,1,2,3') 'Current release supports four maps'
+Assert-HpvrReject { Get-HpvrReleaseMapIds ([pscustomobject]@{versionCode=70;mapIds=@(0,1,2,3)}) } 'Old APK cannot claim four-map installer contract'
 foreach ($badMaps in @(@(0,1,1), @(0,2,1), @(0,1,3), @(0,1,2,3))) {
     Assert-HpvrReject { Get-HpvrReleaseMapIds ([pscustomobject]@{versionCode=57;mapIds=$badMaps}) } 'Three-map release rejects duplicate, reordered, or unsupported maps'
 }
@@ -269,15 +275,20 @@ function Invoke-HpvrChecked([string]$Executable,[string[]]$Arguments,[string]$La
     if($script:sceneMode -eq 'extra'){[IO.File]::WriteAllBytes((Join-Path $Arguments[2] 'unexpected.hpvc'),[byte[]](1))}
     'SCENE_PREPARE=PASS'
 }
-function New-HpvrSceneFixture([bool]$Challenge=$true, [bool]$Broom=$false){
+function New-HpvrSceneFixture([bool]$Challenge=$true, [bool]$Broom=$false, [bool]$Charms=$false){
     $run=Join-Path $fixture ('private-'+[Guid]::NewGuid().ToString('N'))
     $stage=Join-Path $run 'HP'
     New-Item -ItemType Directory -Path (Join-Path $stage 'Maps') | Out-Null
     [IO.File]::WriteAllBytes((Join-Path $stage 'Maps/Lev_Tut1.unr'),[byte[]](1,2,3))
     if($Challenge){[IO.File]::WriteAllBytes((Join-Path $stage 'Maps/Lev_Tut1b.unr'),[byte[]](4,5,6))}
     if($Broom){[IO.File]::WriteAllBytes((Join-Path $stage 'Maps/Lev_Tut2.unr'),[byte[]](7,8,9))}
+    if($Charms){[IO.File]::WriteAllBytes((Join-Path $stage 'Maps/Lev_Tut3.unr'),[byte[]](10,11,12))}
     return [pscustomobject]@{Run=$run;Stage=$stage}
 }
+$testScene=New-HpvrSceneFixture $true $true $true
+$prepared=@(Invoke-HpvrScenePreparation $sceneToolPath $testScene.Stage $owned $kit $testScene.Run $true $true $true)
+Assert-HpvrTest ($prepared.Count -eq 4 -and $prepared[3].path -eq 'Cache/Scenes/map-3.hpvc' -and $script:sceneCalls.Count -eq 8) 'All four maps are prepared and verified'
+$script:sceneCalls.Clear()
 $testScene=New-HpvrSceneFixture
 $prepared=@(Invoke-HpvrScenePreparation $sceneToolPath $testScene.Stage $owned $kit $testScene.Run)
 Assert-HpvrTest ($prepared.Count -eq 1 -and $prepared[0].path -eq 'Cache/Scenes/map-0.hpvc') 'Default installer prepares only map zero despite map one being present'
@@ -358,7 +369,7 @@ Assert-HpvrTest ($installerSource.Contains('Get-HpvrFrontendAudioPlan $stagedGam
 Assert-HpvrTest ($installerSource.Contains('Invoke-HpvrScenePreparation $scenePreparationTool $stagedGame $ownedRoot $bundleRoot $privateRun $withChallenge $withBroom')) 'Prepared scenes use the same resolved map selection'
 # Evaluate only the packager's mapIds value expression, never its executable
 # script body. In particular, PowerShell must not unwrap a single-map array.
-$packagePath=Join-Path $PSScriptRoot '../../PACKAGE-QUEST-PLAYER.ps1'
+$packagePath=Join-Path $PSScriptRoot '../workspace/PACKAGE-QUEST-PLAYER.ps1'
 $packageTokens=$null
 $packageErrors=$null
 $packageAst=[Management.Automation.Language.Parser]::ParseFile($packagePath,[ref]$packageTokens,[ref]$packageErrors)
@@ -370,10 +381,10 @@ $mapTables=@($packageAst.FindAll({param($node)
 Assert-HpvrTest ($mapTables.Count -eq 1) 'Packager has one explicit release map declaration'
 $mapValue=@($mapTables[0].KeyValuePairs | Where-Object {$_.Item1.Extent.Text -eq 'mapIds'})[0].Item2.Extent.Text
 $mapEvaluator=[scriptblock]::Create('[pscustomobject]@{ mapIds = ' + $mapValue + ' }')
-foreach($code in @(37,54,56,57)) {
+foreach($code in @(37,54,56,57,71)) {
     $hpvrMetadata=[pscustomobject]@{versionCode=$code}
     $roundtrip=(& $mapEvaluator | ConvertTo-Json -Depth 4) | ConvertFrom-Json
-    $expectedCount=if($code -eq 37){1}elseif($code -ge 57){3}else{2}
+    $expectedCount=if($code -eq 37){1}elseif($code -ge 71){4}elseif($code -ge 57){3}else{2}
     Assert-HpvrTest ($roundtrip.mapIds -is [Array] -and $roundtrip.mapIds.Count -eq $expectedCount -and $roundtrip.mapIds[0] -eq 0) ("Packager C$code map declaration survives JSON as an array")
     if($code -eq 54){Assert-HpvrTest ($roundtrip.mapIds[1] -eq 1) 'Packager alpha includes challenge map one'}
     if($code -eq 57){Assert-HpvrTest ($roundtrip.mapIds[1] -eq 1 -and $roundtrip.mapIds[2] -eq 2) 'Packager new alpha includes challenge and broom maps'}
@@ -433,4 +444,33 @@ foreach ($mode in @('truncated', 'duplicate', 'unsafe-name', 'channel-mismatch',
     Assert-HpvrReject { Get-HpvrFrontendAudioPlan $owned 'synthetic-audio.exe' $audioFixture.Encoded $audioFixture.Run $true $true } ("Invalid audio union fails closed: $mode")
 }
 Assert-HpvrReject { Get-HpvrFrontendAudioPlan $owned 'synthetic-audio.exe' $audioFixture.Encoded $audioFixture.Run $false $true } 'Broom audio cannot bypass the preceding map'
+$script:audioMode = 'valid'
+$script:audioCalls.Clear()
+$audioFixture = New-HpvrAudioFixture
+$plan = Get-HpvrFrontendAudioPlan $owned 'synthetic-audio.exe' $audioFixture.Encoded $audioFixture.Run $true $true $true
+Assert-HpvrTest ($plan.Count -eq 24 -and $script:audioCalls.Count -eq 4 -and $script:audioCalls[3].Arguments[-1] -eq '3') 'Charms audio is included and deduplicated'
+
+$permissionCommands = @(Get-HpvrDataPermissionCommands @('system/HPBase.u','Cache/Audio/test.s16','Cache/Scenes/map-3.hpvc'))
+$permissionText = $permissionCommands -join "`n"
+Assert-HpvrTest ($permissionCommands.Count -eq 2) 'Permission repair batches directories before files'
+foreach ($suffix in @('/HP', '/HP/system', '/HP/Cache', '/HP/Cache/Audio', '/HP/Cache/Scenes')) {
+    Assert-HpvrTest ($permissionCommands[0].Contains("$suffix'")) "Permission repair includes parent $suffix"
+}
+Assert-HpvrTest ($permissionCommands[0].Contains('chmod o+rx') -and $permissionCommands[1].Contains('chmod o+r')) 'Minimal read and directory traverse rights'
+Assert-HpvrTest ($permissionText.Contains('stat -c %a') -and $permissionText.Contains('DATA_PERMISSION_FAILURE')) 'Modes are read back, not inferred from successful chmod'
+Assert-HpvrTest ((@(Get-HpvrDataPermissionCommands @('Maps/test.unr') $true) -join '') -notmatch 'stat -c') 'Current APK uses actual application reads on masked storage'
+Assert-HpvrTest ($installerSource.Contains('HPVR_DATA_ACCESS=PASS files=') -and $installerSource.Contains('Broadcast completed: result=-1')) 'Application probe must explicitly succeed'
+Assert-HpvrTest ($permissionText.Contains('test ! -L') -and -not $permissionText.Contains('chmod -R') -and -not $permissionText.Contains('777')) 'No recursive or world-write permission changes'
+foreach ($unsafe in @('saves/slot.sav','../Maps/map.unr',"Maps/bad'file",'/sdcard/other','Cache/../outside')) {
+    Assert-HpvrReject { Get-HpvrDataPermissionCommands @($unsafe) } 'Unsafe permission target rejected'
+}
+Assert-HpvrReject { Get-HpvrDataPermissionCommands @() } 'Empty permission import rejected'
+$script:permissionCalls = 0
+function Invoke-HpvrChecked([string]$Executable,[string[]]$Arguments,[string]$Label) {
+    ++$script:permissionCalls
+    throw 'Synthetic chmod/readback failure'
+}
+Assert-HpvrReject { Set-HpvrDataPermissions 'synthetic-adb' @('-s','test') @('Maps/test.unr') } 'Permission failure prevents success'
+Assert-HpvrTest ($script:permissionCalls -eq 1) 'Stop at first failed permission batch'
+Assert-HpvrTest ($installerSource.IndexOf('Set-HpvrDataPermissions $adb') -lt $installerSource.IndexOf('INSTALL=PASS')) 'Access verification precedes installation success'
 Write-Output "PLAYER_INSTALL_TESTS=PASS checks=$script:checks device_actions=0 native_tools_executed=0 fixtures=$fixture"

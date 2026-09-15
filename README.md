@@ -1,21 +1,28 @@
-# Harry Potter VR — 0.1.2.1 Alpha
+# Harry Potter VR
 
 An unofficial native VR port of *Harry Potter and the Sorcerer's Stone*
 (PC, 2001) for **Meta Quest 3**. Runs standalone, without a PC or Quest Link.
 
+## Want to play?
+
+Download the **player release archive**, not GitHub's **Source code ZIP**.
+Start with the [release page](https://github.com/dubrovskiy-yevhen-stakelogic/harry-potter-vr-source-kit/releases)
+or the author's release announcement. You need a Quest 3 and your own US PC game data.
+
+This repository is for source code. Its `INSTALL.bat` asks for your extracted
+player release folder and runs the installer with verified data permissions.
+It does not ask players to build the game or download development tools.
+
+For compiling or contributing, see the [build guide](docs/BUILDING.md).
+Build, packaging and data-preparation scripts live in `tools/workspace/`.
+
+## Included levels
+
 This early alpha includes the opening Hogwarts tutorials, the first Flipendo
-lesson, **Flipendo Challenge** and **Broomstick Training**. A user-owned US PC
-copy is required.
+lesson, **Flipendo Challenge**, **Broomstick Training**, and the restored
+**Alohomora / Charms level**. A user-owned US PC copy is required.
 Original maps, textures, models, music and dialogue are not included in the
 download.
-
-## Changes in 0.1.2.1
-
-- Expanded offline Flipendo recognition for additional pronunciations, including
-  different syllable timing and stress.
-- Voice-only hotfix for 0.1.2: the same three maps, with no new level content.
-
-Voice casting remains experimental; support for every accent is not guaranteed.
 
 ## Features
 
@@ -26,15 +33,16 @@ Voice casting remains experimental; support for every accent is not guaranteed.
 - **Screen-space reflections (SSR)** with adjustable strength.
 - **Three casting modes:** CLASSIC, VISIBLE GESTURE and GESTURE. Gameplay gestures
   accept rotated and reversed strokes without requiring precise tracing.
-- **Optional offline voice casting:** aim at a Flipendo target and say
-  “Flipendo”; repeat while holding the trigger. Voice hints are optional.
-- **Three playable maps:** the opening tutorials, Flipendo Challenge and
-  Broomstick Training, with timed hoop routes and a hidden wizard card.
+- **Optional offline voice casting:** aim at a compatible target and pronounce
+  Flipendo, Alohomora or Wingardium Leviosa while holding the trigger.
+  Voice hints are optional; recognition varies by speaker.
+- **Four implemented maps:** the opening tutorials, Flipendo Challenge,
+  Broomstick Training, and the Alohomora / Charms level.
 - **VR movement:** smooth locomotion, toggle sprint, snap or smooth turning, jumping,
   automatic ledge climbing and L3 + R3 height recentering.
 - **Live VR menu**, accessible during gameplay and cutscenes, with saved settings.
 - **Graphics controls:** render scale, reflection strength, supported headset
-  refresh rates and an optional performance overlay.
+  refresh rates, GPU boost (enabled by default), and an optional performance overlay.
 - Original character animations, dialogue and music; animated fireplaces,
   candle flames and glows, dark abyss fog and pickup effects.
 - Animated tipping pots, persistent broken vases, collectible beans, wizard
@@ -52,7 +60,7 @@ Voice casting remains experimental; support for every accent is not guaranteed.
 
 The installer downloads and caches FFmpeg and Android Platform Tools when
 missing; the first ADB download asks you to accept the Android SDK terms.
-It prepares all three maps and their audio on the PC for faster headset loading.
+It prepares the release's selected maps and audio on the PC for faster headset loading.
 It does not modify or launch the original game.
 
 See the [installation guide](tools/release/PLAYER-INSTALL.md) for requirements,
@@ -107,10 +115,8 @@ implemented. Original PC saves cannot be imported.
 Fountain water uses the original texture; its original procedural ripple
 simulation is not implemented yet.
 
-**Voice casting is experimental, with limited player testing.**
-Recorded examples from a small number of speakers do not establish support for
-every accent or headset microphone. Some pronunciations may be missed;
-similar-sounding phrases can trigger a spell
+**Voice casting is experimental and has only been tested by the author.**
+Some pronunciations may be missed; similar-sounding phrases can trigger a spell
 while aiming. Recognition runs locally, without uploading or saving your voice.
 No internet connection or personal voice training is needed.
 
@@ -124,7 +130,7 @@ News and feedback: [Discord](https://discord.com/channels/747967102895390741/154
 
 ## Development
 
-- [Source layout and build instructions](SOURCE-KIT-README.md)
+- [Source layout and build instructions](docs/BUILDING.md)
 - [Release APK builds](docs/RELEASE-BUILD.md)
 - [Runtime architecture](docs/architecture.md)
 - [Casting and challenge interactions](docs/CLASSIC-CASTING-AND-CHALLENGE.md)

@@ -36,12 +36,13 @@ public:
                         const std::filesystem::path& cache);
     void SelectMusic(unsigned index);
     void SetPresentationAudio(bool ambient, bool paused);
+    void SetAmbientLoopGain(float gain);
     void StopDialogue();
     bool DialogueBusy() const { return dialogue_cursor_.load()!=kIdleCursor; }
     bool SpeechBusy() const { return DialogueBusy() || incantation_cursor_.load()!=kIdleCursor; }
     void Stop();
     void SetWandDrawing(bool drawing);
-    void PlaySpellCast();
+    void PlaySpellCast(bool speak_flipendo=true);
     void PlayBasicCast();
     void PlaySpellHit();
     [[nodiscard]] bool PlayDialogue(std::size_t index);
@@ -81,6 +82,7 @@ private:
     unsigned music_current_=~0U;
     std::size_t music_cursor_=0;
     std::atomic<bool> ambient_enabled_{false}, narrative_paused_{false};
+    std::atomic<float> ambient_loop_gain_{1};
     std::uint64_t ambient_cursor_ = 0;
     std::uint64_t wand_trace_cursor_ = 0;
     std::atomic<std::uint64_t> wand_start_cursor_{kIdleCursor};

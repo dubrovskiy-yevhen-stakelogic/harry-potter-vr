@@ -51,6 +51,10 @@ hpvr_embed_shader(wand.vert wand_vert kWandVertexSpirv vertex)
 hpvr_embed_shader(wand.frag wand_frag kWandFragmentSpirv fragment)
 hpvr_embed_shader(particle.vert particle_vert kParticleVertexSpirv vertex)
 hpvr_embed_shader(particle.frag particle_frag kParticleFragmentSpirv fragment)
+hpvr_embed_shader(mirror.vert mirror_vert kMirrorVertexSpirv vertex)
+hpvr_embed_shader(mirror.frag mirror_frag kMirrorFragmentSpirv fragment)
+hpvr_embed_shader(mirror_veil.frag mirror_veil_frag kMirrorVeilFragmentSpirv fragment)
+hpvr_embed_shader(mirror_capture.frag mirror_capture_frag kMirrorCaptureFragmentSpirv fragment)
 
 set(BUILD_TESTING OFF CACHE BOOL "" FORCE)
 add_subdirectory("${HPVR_ROOT}/src/wand" "${CMAKE_CURRENT_BINARY_DIR}/hpvr_wand")
@@ -82,6 +86,7 @@ add_library(hpvr_quest SHARED
     android_main.cpp
     quest_audio.cpp
     quest_reflections.cpp
+    quest_planar_mirror.cpp
     quest_scene.cpp
     ${HPVR_GENERATED_SHADER_HEADERS}
     xr_vulkan_smoke.cpp)

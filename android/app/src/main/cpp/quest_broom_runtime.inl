@@ -182,7 +182,7 @@ void QuestScene::RestoreBroomProgress() {
     s.projectile={};s.basic_cast={};s.card_pickup={};s.pickup_flights.clear();s.exit_return={};
     s.audio.StopDialogue();s.audio.SelectMusic(s.frontend.assets.level_music_index);
     s.audio.SetPresentationAudio(true,false);s.front_anchor_valid=false;
-    if(b.phase==5){s.frontend.ShowDemoNotice(true);return;}
+    if(b.phase==5){b.phase=4;RequestBroomTravel();return;}
     if(fresh){s.frontend.screen=FrontScreen::Objective;s.frontend.selection=0;return;}
     s.frontend.BeginGame();
     const bool restoring=s.restoring;s.restoring=true;
@@ -195,6 +195,10 @@ void QuestScene::RequestBroomTravel() {
     if(s.map_id==1){
         if(s.travel_pending||s.travel_blocked)return;
         s.travel_origin=s.frontend.progress;auto next=s.frontend.progress;
+        if(!(next.completed_maps&(1U<<kFlipendoChallengeMapId)))
+            campaign::AddHousePoints(next.house_points,campaign::ChallengePoints(next.challenge_stars),
+                static_cast<std::uint32_t>(next.generation));
+        next.completed_maps|=1U<<kFlipendoChallengeMapId;
         next.map_id=2;next.phase=2;next.page=14;next.quest_stage=0;
         next.banked_beans+=static_cast<unsigned>(next.collected_beans.size())-std::min<unsigned>(next.challenge_stars,static_cast<unsigned>(next.collected_beans.size()));
         next.collected_beans.clear();next.activated_events.clear();next.challenge_stars=0;
@@ -203,10 +207,19 @@ void QuestScene::RequestBroomTravel() {
         HPVR_LOGI("[hpvr.quest.travel] status=REQUESTED from=Lev_Tut1b to=Lev_Tut2");return;
     }
     if(s.map_id!=2||b.phase==5)return;
+    s.frontend.progress.completed_maps|=1U<<kBroomstickTrainingMapId;
     b.active=false;b.complete=true;b.phase=5;broom::ResetFlight(b.motion);
     s.intro_cutscene.playing=false;s.intro_cutscene.camera_active=false;s.challenge.active_scene=0;
-    s.audio.StopDialogue();SaveBroomProgress();s.frontend.ShowDemoNotice(true);s.front_anchor_valid=false;
-    HPVR_LOGI("[hpvr.quest.broom] status=COMPLETE next_map=Lev_Tut3 boundary=NOT_PREPARED");
+    s.audio.StopDialogue();SaveBroomProgress();
+    if(s.travel_pending||s.travel_blocked)return;
+    s.travel_origin=s.frontend.progress;auto next=s.frontend.progress;
+    next.map_id=kCharmsTrainingMapId;next.phase=2;next.page=14;next.quest_stage=0;
+    for(const auto& bean:s.beans)if(bean.kind!=4&&std::binary_search(next.collected_beans.begin(),next.collected_beans.end(),bean.actor_reference))++next.banked_beans;
+    next.collected_beans.clear();next.activated_events.clear();next.challenge_stars=0;
+    next.graph_state.clear();next.world_state.clear();next.charms_state.clear();
+    next.player={0,kPlayerEyeHeightMeters,0};next.yaw=0;
+    s.travel_progress=std::move(next);s.travel_slot=s.frontend.slot;s.travel_pending=true;
+    HPVR_LOGI("[hpvr.quest.travel] status=REQUESTED from=Lev_Tut2 to=Lev_Tut3");
 }
 
 void QuestScene::AdvanceBroom(float seconds) {
@@ -330,6 +343,12 @@ void QuestScene::AdvanceBroom(float seconds) {
     if(update.finished){
         b.active=false;broom::ResetFlight(b.motion);
         const auto result=b.session.result;
+        auto& progress=s.frontend.progress;
+        const unsigned lesson=campaign::kBroomLesson+std::min(b.path,1U);
+        (void)campaign::RaiseLessonPoints(progress.lesson_points,progress.house_points,lesson,result.house_points,
+            static_cast<std::uint32_t>(progress.generation));
+        if(b.session.total_hoops)progress.lesson_best[lesson]=std::max(progress.lesson_best[lesson],
+            static_cast<unsigned>(std::min<std::size_t>(100,b.session.hits*100/b.session.total_hoops)));
         HPVR_LOGI("[hpvr.quest.broom] result=%s hits=%u points=%u",broom::SessionResultTag(result.grade),b.hits,result.house_points);
         StartBroomScene(broom::SessionResultTag(result.grade),result.passed?2:3);return;
     }
@@ -346,6 +365,7 @@ void QuestScene::AdvanceBroom(float seconds) {
         if(pickup.kind==4){
             if(!TakeBroomCard(s.frontend.progress,s.card_pickup,pickup,s.bean_time,
                 s.audio.DialogueDurationSeconds(s.card_sound)))continue;
+            s.frontend.progress.earned_cards|=campaign::CardMask(1);
             (void)s.audio.PlayWorldEffect(s.card_sound,.9F);
             SaveBroomProgress();
             HPVR_LOGI("[hpvr.quest.broom.reward] status=CARD_COLLECTED actor=%d",pickup.actor_reference);

@@ -16,8 +16,9 @@ struct ChallengeProp {
 };
 std::pair<std::uint32_t,std::uint32_t> ChallengePropDrawRange(const ChallengeProp& prop,bool activated,float scene_time){
     if(prop.savebook&&activated)return {0,0};
+    if(prop.name=="hprops.padlock"&&activated)return {0,0};
     if(prop.breakable&&activated)return {prop.broken_first,prop.broken_count};
-    if(prop.cauldron&&activated){
+    if((prop.cauldron||(prop.spell_target&&chest::IsChest(prop.name)))&&activated){
         if(prop.activation_time>=0&&prop.activation_time<prop.animation_duration&&prop.animation_frames){
             const auto frame=std::min(prop.animation_frames-1,static_cast<unsigned>(prop.activation_time/prop.animation_duration*prop.animation_frames));
             return {prop.animation_first+frame*prop.count,prop.count};
@@ -41,6 +42,7 @@ struct ChallengeSpatial {
     float radius=.6F,height=.7F;
     bool spell=false,inside=false,checkpoint=false;
     float arm_time=1;bool armed=false; // SavePoint's initial proximity guard; not checkpoint data.
+    std::string spell_name="spellflip",proximity_class;
 };
 // CutScene50 swaps Quirrell4 into the offstage OutQ mark and places
 // AfterBridgeQ (Quirrell1) at NewQLoc. Do not ground the retired clone
@@ -87,7 +89,7 @@ bool ChallengeRewardsReady(const std::vector<ChallengeProp>& props,std::int32_t 
     if(!source)return true;
     if(!ChallengeActivated(progress,source))return false;
     const auto prop=std::ranges::find_if(props,[&](const auto& p){return p.reference==source;});
-    return prop==props.end()||!prop->cauldron||prop->activation_time>=prop->animation_duration;
+    return prop==props.end()||(!prop->cauldron&&!chest::IsChest(prop->name))||prop->activation_time>=prop->animation_duration;
 }
 float ChallengeBeanSweepFraction(const std::vector<CollisionTriangle>& collision,const ChallengeProp& source,
     const std::array<float,3>& from,const std::array<float,3>& to){
@@ -121,11 +123,46 @@ float ChallengeBeanSweepFraction(const std::vector<CollisionTriangle>& collision
     }
     return fraction;
 }
+ChallengeProp BeanSpawnerSource(const BeanDraw& bean,const std::vector<ChallengeProp>& props){
+    for(const auto& prop:props)if(prop.name=="hprops.knight"){
+        bool contains=true;
+        for(unsigned axis=0;axis<3;++axis)
+            if(bean.emission[axis]<prop.minimum[axis]-.3F||bean.emission[axis]>prop.maximum[axis]+.3F)contains=false;
+        if(contains)return prop;
+    }
+    ChallengeProp source;source.minimum=source.maximum=bean.emission;return source;
+}
 void PrepareChallengeBeanEmission(BeanDraw& bean,const ChallengeProp& source,const std::vector<CollisionTriangle>& collision,
     const std::array<float,3>* approach=nullptr){
     auto anchor=ScaleVector(AddVector(source.minimum,source.maximum),.5F);
     anchor[1]=std::clamp(bean.emission[1],source.minimum[1]+.12F,std::max(source.minimum[1]+.12F,source.maximum[1]));
     auto desired_origin=bean.emission,desired_landing=bean.position;
+    if((source.name=="hprops.knight"&&approach)||chest::IsChest(source.name)){
+        auto direction=SubtractVector(approach?*approach:bean.position,anchor);direction[1]=0;
+        float length=std::hypot(direction[0],direction[2]);
+        if(!approach||length>8||length<.01F||ChallengeBeanSweepFraction(collision,source,*approach,anchor)<.99F){
+            // A restored checkpoint can be behind a wall, far from the knight.
+            // Choose a clear exit instead of aiming its recovered reward there.
+            float best=-std::numeric_limits<float>::infinity();
+            const auto preferred=length>.01F?ScaleVector(direction,1/length):std::array<float,3>{0,0,1};
+            for(const auto& candidate:std::array<std::array<float,3>,4>{{{0,0,1},{0,0,-1},{1,0,0},{-1,0,0}}}){
+                const auto probe=AddVector(anchor,ScaleVector(candidate,2));
+                const float score=DotVector(candidate,preferred);
+                if(score>best&&ChallengeBeanSweepFraction(collision,source,probe,anchor)>.99F){best=score;direction=candidate;length=1;}
+            }
+        }
+        if(length>.01F){
+            direction=ScaleVector(direction,1/length);
+            const float radius=.5F*std::hypot(source.maximum[0]-source.minimum[0],source.maximum[2]-source.minimum[2]);
+            desired_landing=AddVector(anchor,ScaleVector(direction,radius+.5F));
+            if(chest::IsChest(source.name)){
+                // Scatter from the rim toward accessible floor, not behind the chest.
+                desired_origin=AddVector(anchor,ScaleVector(direction,.15F));
+                const float spread=(float((static_cast<unsigned>(bean.actor_reference)*17U)%7U)-3)*.055F;
+                desired_landing=AddVector(desired_landing,{-direction[2]*spread,0,direction[0]*spread});
+            }
+        }
+    }
     if(source.cauldron&&source.cauldron_tip_valid){
         anchor=source.cauldron_mouth;
         auto lateral=SubtractVector(bean.emission,anchor);lateral[1]=0;
@@ -137,7 +174,7 @@ void PrepareChallengeBeanEmission(BeanDraw& bean,const ChallengeProp& source,con
         desired_landing=AddVector(desired_origin,travel);
     }
     const auto sweep=[&](const auto& a,const auto& b){return ChallengeBeanSweepFraction(collision,source,a,b);};
-    if(approach){
+    if(approach&&source.name!="hprops.knight"){
         const auto toward=SubtractVector(anchor,*approach);
         if(DotVector(toward,toward)<64){
             const float fraction=sweep(*approach,anchor);
@@ -146,9 +183,18 @@ void PrepareChallengeBeanEmission(BeanDraw& bean,const ChallengeProp& source,con
     }
     const auto origin=AddVector(anchor,ScaleVector(SubtractVector(desired_origin,anchor),sweep(anchor,desired_origin)));
     const auto ground=[&](const auto& point){
-        auto result=point;float floor=0;
-        if(FindPropGroundBelow(collision,AddVector(point,{0,.05F,0}),&floor)&&floor<=point[1]&&floor>=point[1]-4)
-            result[1]=std::min(point[1],floor+.18F);
+        auto result=point;float floor=-std::numeric_limits<float>::infinity();
+        for(const auto& triangle:collision){
+            if(std::abs(triangle.normal[1])<kWalkableNormalY)continue;
+            bool inside_source=true;
+            for(unsigned axis=0;axis<3;++axis)
+                if(triangle.minimum[axis]<source.minimum[axis]-.002F||triangle.maximum[axis]>source.maximum[axis]+.002F)inside_source=false;
+            if(inside_source)continue;
+            float height=0;
+            if(CollisionTriangleHeightAtXZ(triangle,point[0],point[2],&height)&&height<=point[1]&&height>=point[1]-30)
+                floor=std::max(floor,height);
+        }
+        if(std::isfinite(floor))result[1]=std::min(point[1],floor+.18F);
         return result;
     };
     // Cached reward Y may have been grounded on the old wall-facing side.
@@ -170,6 +216,12 @@ bool LoadChallengeProps(const std::filesystem::path& root,const std::filesystem:
     std::vector<FlameEmitter>& flames,std::vector<GlowEmitter>& glows){
     const auto manifest=wand::build_hp1_character_manifest(root,map,0,{},true);
     if(manifest.status!=wand::Hp1ProfileStatus::ok)return false;
+    std::vector<CollisionTriangle> visible_support;
+    if(AsciiFold(map.stem().string())=="lev_tut3"){
+        auto visible=vertices;
+        for(auto& vertex:visible)if(vertex.polygon_flags&1U)vertex.polygon_flags|=kPolyNotSolid;
+        visible_support=BuildCollisionTriangles(visible,static_cast<std::uint32_t>(visible.size()));
+    }
     broom::LessonMetadata flight;
     if(AsciiFold(map.stem().string())=="lev_tut2"){
         flight=broom::LoadLessonMetadata(root,wand::inspect_hp1_actor_visuals(map));
@@ -180,7 +232,7 @@ bool LoadChallengeProps(const std::filesystem::path& root,const std::filesystem:
     auto ordered=manifest.actors;
     const auto support_rank=[](const auto& actor){
         const auto cls=AsciiFold(actor.qualified_class_name);
-        if(cls.ends_with("table"))return 0;
+        if(cls.ends_with("table")||cls=="harrypotter.transteachersdesk")return 0;
         if(cls.find("candle")!=std::string::npos||cls.find("book")!=std::string::npos)return 2;
         return 1;
     };
@@ -188,8 +240,10 @@ bool LoadChallengeProps(const std::filesystem::path& root,const std::filesystem:
     for(const auto& a:ordered){
         const auto cls=AsciiFold(a.qualified_class_name);
         const bool savebook=cls=="harrypotter.savepoint";
-        if((!cls.starts_with("hprops.")&&!savebook)||cls.ends_with("bean")||cls=="hprops.star"||
-           (flight.valid&&cls=="hprops.wcmerlin"))continue;
+        const bool chest=AsciiFold(map.stem().string())=="lev_tut3"&&chest::IsChest(cls);
+        const bool teachers_desk=AsciiFold(map.stem().string())=="lev_tut3"&&cls=="harrypotter.transteachersdesk";
+        if((!cls.starts_with("hprops.")&&!savebook&&!teachers_desk)||cls.ends_with("bean")||cls=="hprops.star"||
+           cls.starts_with("hprops.wc"))continue;
         std::vector<std::string> key{a.mesh_package.string(),std::to_string(a.mesh_reference)};
         for(const auto& skin:a.skins){
             key.push_back(std::to_string(skin.material_slot));
@@ -197,6 +251,8 @@ bool LoadChallengeProps(const std::filesystem::path& root,const std::filesystem:
         }
         if(!meshes.contains(key)){
             LoadedStaticMesh mesh;if(!LoadStaticMesh(a.mesh_package.string(),a.mesh_reference,layers,&mesh))return false;
+            if(AsciiFold(map.stem().string())=="lev_tut3"&&(chest||cls=="hprops.knight"))
+                if(!PoseStaticMesh(a.mesh_package,a.mesh_reference,chest?"start":"idle",mesh))return false;
             for(const auto& skin:a.skins){
                 if(skin.material_slot>=mesh.report.texture_layer_count)return false;
                 const bool masked=std::ranges::any_of(mesh.vertices,[&](const auto& v){
@@ -225,14 +281,28 @@ bool LoadChallengeProps(const std::filesystem::path& root,const std::filesystem:
         const bool flying_hoop=hoop!=flight.hoops.end();
         const float draw_scale=flying_hoop?hoop->play_scale:a.draw_scale;
         float ground=0;
-        if(!chandelier&&!savebook&&!flying_hoop&&FindPropGroundBelow(collision,origin,&ground))
+        const auto& support=cls=="hprops.knight"&&!visible_support.empty()?visible_support:collision;
+        if(!chandelier&&!savebook&&!flying_hoop&&cls!="hprops.padlock"&&FindPropGroundBelow(support,origin,&ground))
             origin[1]=ground-mesh.report.bounds_min_m[1]*a.draw_scale;
-        const float angle=yaw+a.rotation_units[1]*kTau/65536.0F;
-        const auto transform=[&](const std::array<float,3>& p){return AddVector(origin,RotateYaw(ScaleVector(p,draw_scale),angle));};
+        float vertical_scale=draw_scale;
+        if(teachers_desk){
+            // The lesson stands on an authored BSP support brush. Fit the desk
+            // between that top and its floor without moving the books or cast.
+            const float height=(mesh.report.bounds_max_m[1]-mesh.report.bounds_min_m[1])*draw_scale;
+            auto probe=origin;probe[1]=ground+height;float top=0;
+            if(height>.01F&&FindPropGroundBelow(collision,probe,&top)&&top>ground+height&&top<ground+height+.30F){
+                vertical_scale=draw_scale*(top-ground)/height;
+                origin[1]=ground-mesh.report.bounds_min_m[1]*vertical_scale;
+            }
+        }
+        if(chest)origin[1]+=.012F; // Separate the original zero-thickness bottom from the floor.
+        const float angle=AsciiFold(map.stem().string())=="lev_tut3"&&(savebook||chest||cls=="hprops.knight"||cls=="hprops.padlock")?
+            yaw+kTau*.5F-a.rotation_units[1]*kTau/65536.0F:yaw+a.rotation_units[1]*kTau/65536.0F;
+        const auto transform=[&](const std::array<float,3>& p){return AddVector(origin,RotateYaw({p[0]*draw_scale,p[1]*vertical_scale,p[2]*draw_scale},angle));};
         ChallengeProp prop;prop.reference=a.actor_reference;prop.name=cls;
         prop.breakable=cls.starts_with("hprops.flipendovase");
         prop.cauldron=cls=="hprops.bronzecauldron";prop.savebook=savebook;
-        prop.spell_target=prop.breakable||prop.cauldron;
+        prop.spell_target=prop.breakable||prop.cauldron||chest;
         prop.first=static_cast<std::uint32_t>(vertices.size());
         prop.minimum={10000,10000,10000};prop.maximum={-10000,-10000,-10000};
         for(const auto& v:mesh.vertices){
@@ -242,12 +312,12 @@ bool LoadChallengeProps(const std::filesystem::path& root,const std::filesystem:
                 mesh.layer_base+v.texture_layer,v.polygon_flags,0,PackAuthoredLighting(p,lights)});
         }
         prop.count=static_cast<std::uint32_t>(vertices.size())-prop.first;
-        if(!chandelier&&!prop.breakable&&!savebook&&!flying_hoop&&
+        if(!chandelier&&!prop.breakable&&!savebook&&!flying_hoop&&cls!="hprops.padlock"&&cls!="hprops.wingardiumblock"&&
            !(flight.valid&&cls=="hprops.rememberallbroom")){
             std::vector<GpuVertex> solid(vertices.begin()+prop.first,vertices.begin()+prop.first+prop.count);
             auto extra=BuildCollisionTriangles(solid,prop.count);collision.insert(collision.end(),extra.begin(),extra.end());
         }
-        if(prop.cauldron){
+        if(prop.cauldron||chest){
             if(!animations.contains(key)){
                 auto skin=wand::load_hp1_skeletal_skin(a.mesh_package,a.mesh_reference);
                 if(skin.status!=wand::Hp1ProfileStatus::ok)return false;
@@ -257,7 +327,8 @@ bool LoadChallengeProps(const std::filesystem::path& root,const std::filesystem:
             }
             const auto& [skin,animation]=animations.at(key);
             for(const bool settled:{false,true}){
-                const auto found=std::ranges::find_if(animation.sequences,[&](const auto& sequence){return AsciiFold(sequence.name)==(settled?"tipped":"tipover");});
+                const auto found=std::ranges::find_if(animation.sequences,[&](const auto& sequence){
+                    return AsciiFold(sequence.name)==(chest?(settled?"end":"open"):(settled?"tipped":"tipover"));});
                 if(found==animation.sequences.end())return false;
                 const auto sequence=static_cast<std::size_t>(found-animation.sequences.begin());
                 if(sequence>=animation.moves.size()||found->frame_count<=0||found->frame_count>256)return false;
@@ -332,7 +403,7 @@ bool LoadChallengeProps(const std::filesystem::path& root,const std::filesystem:
 }
 bool LoadChallengeStars(const std::filesystem::path& root,const std::filesystem::path& map,
     const hpvr_hp1_player_start_report& start,float yaw,
-    std::vector<GpuVertex>& vertices,std::vector<std::uint8_t>& pixels,std::uint32_t& layers,std::vector<BeanDraw>& pickups){
+    std::vector<GpuVertex>& vertices,std::vector<std::uint8_t>& pixels,std::uint32_t& layers,std::vector<BeanDraw>& pickups,unsigned expected_stars=8){
     const auto manifest=wand::build_hp1_character_manifest(root,map,0,{},true);
     if(manifest.status!=wand::Hp1ProfileStatus::ok)return false;
     LoadedStaticMesh mesh;bool loaded=false;unsigned stars=0;
@@ -347,7 +418,7 @@ bool LoadChallengeStars(const std::filesystem::path& root,const std::filesystem:
             {v.texture_uv[0],v.texture_uv[1]},{0,0},mesh.layer_base+v.texture_layer,v.polygon_flags,0,0xffffff});
         pickups.push_back(star);++stars;
     }
-    HPVR_LOGI("[hpvr.quest.challenge.stars] count=%u",stars);return stars==8;
+    HPVR_LOGI("[hpvr.quest.challenge.stars] count=%u",stars);return stars==expected_stars;
 }
 bool LoadChallengeMetadata(const wand::Hp1ActorVisualCensus& census,
     const hpvr_hp1_player_start_report& start,float yaw,ChallengeRuntime& challenge,unsigned expected_scenes=15){
@@ -364,9 +435,16 @@ bool LoadChallengeMetadata(const wand::Hp1ActorVisualCensus& census,
             const bool checkpoint=cls=="harrypotter.savepoint";
             const float radius=a.collision_radius_serialized?a.collision_radius*kMetersPerUnrealUnit:
                 checkpoint?.6F:cls=="hpbase.cutscene"?.8F:spell?.64F:.8F;
-            if(radius<=0)continue;
-            challenge.spatial.push_back({a.actor_reference,cls,AsciiFold(a.tag),AsciiFold(a.event),ActorLocalPosition(a,start,yaw),radius,
-                a.collision_height_serialized?a.collision_height*kMetersPerUnrealUnit:checkpoint?.6F:.8F,spell,false,checkpoint});
+            if(radius<=0&&!spell)continue;
+            challenge.spatial.push_back({a.actor_reference,cls,AsciiFold(a.tag),AsciiFold(a.event),ActorLocalPosition(a,start,yaw),std::max(radius,.05F),
+                a.collision_height_serialized?a.collision_height*kMetersPerUnrealUnit:checkpoint?.6F:.8F,spell,false,checkpoint,1,false,"spellflip",{}});
+            auto& zone=challenge.spatial.back();
+            for(const auto& property:a.serialized_properties){
+                const auto name=AsciiFold(property.name);
+                if(name=="spellname"&&property.text_value_serialized)zone.spell_name=AsciiFold(property.text_value);
+                if(name=="classproximitytype"&&property.object_reference_serialized&&!property.object_path.empty())
+                    zone.proximity_class=AsciiFold(property.object_path.back());
+            }
         }
         const auto object=AsciiFold(a.object_name);
         constexpr std::array<const char*,4> route{"hpath_a0","basestation0","hpath_b0","basestation3"};

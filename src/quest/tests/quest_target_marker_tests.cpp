@@ -1,4 +1,5 @@
 #include "hpvr/quest_target_marker.h"
+#include "hpvr/quest_target_tracking.h"
 
 #include <array>
 #include <cmath>
@@ -35,6 +36,26 @@ void CheckPlacement(const Vec3& eye, const Vec3& offset = {}) {
 int main() {
     try {
         using namespace hpvr::quest;
+        TargetVector point{0,1,4},low{-.5F,0,3.5F},high{.5F,2,4.5F},previous{};
+        FollowTargetOffset(point,low,high,previous,{2,0,-1});
+        Check(point==TargetVector{2,1,3}&&low==TargetVector{1.5F,0,2.5F}&&high==TargetVector{2.5F,2,3.5F},
+              "locked point and marker bounds follow moving target together");
+        FollowTargetOffset(point,low,high,previous,{2,0,-1});
+        Check(point==TargetVector{2,1,3},"stationary target does not accumulate offset twice");
+        FollowTargetOffset(point,low,high,previous,{-1,.5F,1});
+        Check(point==TargetVector{-1,1.5F,5},"lock follows reversal and vertical motion");
+        TargetVector origin{},direction{0,0,1};float distance=0,terminal=4;
+        for(unsigned frame=0;frame<120&&distance<terminal;++frame){
+            const TargetVector destination{std::min(1.5F,float(frame)*.03F),1,4};
+            TargetVector before{};for(unsigned a=0;a<3;++a)before[a]=origin[a]+direction[a]*distance;
+            terminal=RetargetProjectile(origin,direction,distance,destination);
+            for(unsigned a=0;a<3;++a)Check(std::abs(origin[a]+direction[a]*distance-before[a])<.00001F,
+                "homing preserves projectile position without teleporting");
+            distance=std::min(terminal,distance+.1F);
+            if(distance==terminal)for(unsigned a=0;a<3;++a)Check(std::abs(origin[a]+direction[a]*distance-destination[a])<.00001F,
+                "impact is at current target position");
+        }
+        Check(distance==terminal&&distance>4,"moving target intercepted with finite flight and preserved trail age");
         // Synthetic shape only; no proprietary pattern or texture in tests.
         constexpr std::array<std::array<float, 2>, 6> pattern{{
             {0,0},{0,0},{0,0.5F},{0.5F,1},{1,0.5F},{0.5F,0.5F}}};

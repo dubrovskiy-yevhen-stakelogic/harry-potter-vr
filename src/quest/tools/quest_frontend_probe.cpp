@@ -33,6 +33,11 @@ int main(int argc,char**argv){
  auto image=[&](const std::string& name,bool hud=false){
   std::vector<unsigned char> pixels(640*480*3,0);
   auto quads=hud?f.HudQuads(14,true):f.Quads();
+  if(hud){
+   const auto badge=f.HousePointQuads();quads.insert(quads.end(),badge.begin(),badge.end());
+   unsigned value=165,place=0;
+   do{const auto digit=f.HousePointQuads(static_cast<int>(value%10),place++,3);quads.insert(quads.end(),digit.begin(),digit.end());value/=10;}while(value);
+  }
   if(hud&&map_id==hpvr::quest::kBroomstickTrainingMapId){
    const auto labels=f.BroomLabelQuads();quads.insert(quads.end(),labels.begin(),labels.end());
    constexpr std::array<unsigned,3> sample{27,150,2};

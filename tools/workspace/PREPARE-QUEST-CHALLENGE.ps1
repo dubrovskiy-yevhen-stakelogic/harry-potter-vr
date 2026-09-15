@@ -8,7 +8,7 @@ param(
 $ErrorActionPreference='Stop'
 Set-StrictMode -Version Latest
 $preparationTimer=[Diagnostics.Stopwatch]::StartNew()
-$repo=Split-Path -Parent $MyInvocation.MyCommand.Path
+$repo=[IO.Path]::GetFullPath((Join-Path $PSScriptRoot '../..'))
 . (Join-Path $repo 'tools\release\INSTALL-HPVR.ps1') -LibraryOnly
 $ownedRoot=Get-HpvrFullPath $DataRoot
 Assert-HpvrNoLinks $ownedRoot
@@ -35,7 +35,7 @@ foreach($entry in $dependencies.Inputs){
     $manifest.Add([pscustomobject]@{path=$entry.Relative;sha256=(Get-FileHash -LiteralPath $entry.Source -Algorithm SHA256).Hash;
         bytes=(Get-Item -LiteralPath $entry.Source).Length})
 }
-& (Join-Path $repo 'PREPARE-QUEST-FRONTEND.ps1') -DataRoot $ownedRoot -Ffmpeg $Ffmpeg -ProbePath $frontend -IncludeChallenge
+& (Join-Path $PSScriptRoot 'PREPARE-QUEST-FRONTEND.ps1') -DataRoot $ownedRoot -Ffmpeg $Ffmpeg -ProbePath $frontend -IncludeChallenge
 $sceneTimer=[Diagnostics.Stopwatch]::StartNew()
 Invoke-HpvrChecked $scene @($ownedRoot) 'Challenge scene validation' |
     Set-Content -LiteralPath (Join-Path $private 'scene-report.txt') -Encoding UTF8

@@ -32,7 +32,9 @@ int main(){
         front.screen=FrontScreen::Pause;
         for(unsigned stage=0;stage<=20;++stage){front.progress.quest_stage=stage;
             check(ranges.contains(front.DrawKey()),"every saved quest objective has UI geometry");}
-        for(unsigned n=0;n<=128;++n)check(ranges.contains("beans_"+std::to_string(n)),"bean count geometry");
+        for(unsigned field=0;field<7;++field)for(unsigned place=0;place<7;++place)for(unsigned digit=0;digit<10;++digit)
+            check(ranges.contains("report_digit_"+std::to_string(field)+"_"+std::to_string(place)+"_"+std::to_string(digit)),
+                  "all live bean, card and house-point digits are cached");
         std::cout<<"C22_TESTS=PASS basic_input=PASS world_pick=PASS ui_layers=PASS\n";return 0;
     }catch(const std::exception& e){std::cerr<<e.what()<<'\n';return 1;}
 }

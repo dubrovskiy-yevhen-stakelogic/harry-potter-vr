@@ -7,6 +7,13 @@
 
 namespace hpvr::quest {
 
+enum class VoiceSpell : std::uint8_t { Flipendo, Alohomora, Wingardium };
+[[nodiscard]] inline std::string_view VoiceKeyword(VoiceSpell spell) noexcept {
+    return spell == VoiceSpell::Flipendo ? "flipendo" :
+           spell == VoiceSpell::Alohomora ? "alohomora" :
+           spell == VoiceSpell::Wingardium ? "wingardium" : "";
+}
+
 enum class VoiceCastStatus : std::uint8_t {
     Disabled, NeedsPermission, LoadingModel, Ready, Listening,
     AwaitingNewTarget, ModelUnavailable, MicrophoneUnavailable
@@ -21,6 +28,7 @@ struct VoiceCastArm {
     bool focused = false;
     bool gameplay_allowed = false;
     bool target_locked = false;
+    VoiceSpell spell = VoiceSpell::Flipendo;
 };
 
 struct VoiceCastEvent {
@@ -68,11 +76,17 @@ struct VoiceInputMeter {
 inline constexpr std::uint64_t kVoiceMaxGeneration = (std::uint64_t{1} << 56) - 1;
 inline constexpr float kVoiceMinWordSeconds = 0.25F;
 inline constexpr float kVoiceMaxWordSeconds = 1.8F;
+[[nodiscard]] inline float VoiceMinimumWordSeconds(VoiceSpell spell) noexcept {
+    return spell==VoiceSpell::Alohomora ? .16F : kVoiceMinWordSeconds;
+}
+[[nodiscard]] inline float VoiceMaximumWordSeconds(VoiceSpell spell) noexcept {
+    return spell==VoiceSpell::Wingardium ? 3.5F : kVoiceMaxWordSeconds;
+}
 
 [[nodiscard]] inline bool VoiceMayListen(const VoiceCastArm& arm) noexcept {
     return arm.enabled && arm.permission_granted && arm.focused &&
            arm.gameplay_allowed && arm.target_locked && arm.generation != 0 &&
-           arm.generation <= kVoiceMaxGeneration;
+           arm.generation <= kVoiceMaxGeneration && !VoiceKeyword(arm.spell).empty();
 }
 
 // Keep Android input warm only inside explicitly allowed, focused gameplay.
@@ -84,23 +98,25 @@ inline constexpr float kVoiceMaxWordSeconds = 1.8F;
 // One atomic word transports the entire command to the microphone worker.
 // The high bit is reserved for worker shutdown, not a valid generation bit.
 [[nodiscard]] inline std::uint64_t PackVoiceArm(const VoiceCastArm& arm) noexcept {
-    if (arm.generation > kVoiceMaxGeneration) return 0;
+    if (arm.generation > kVoiceMaxGeneration || VoiceKeyword(arm.spell).empty()) return 0;
     return (arm.generation << 7) | (arm.enabled ? 1ULL : 0ULL) |
         (arm.permission_granted ? 2ULL : 0ULL) | (arm.focused ? 4ULL : 0ULL) |
-        (arm.gameplay_allowed ? 8ULL : 0ULL) | (arm.target_locked ? 16ULL : 0ULL);
+        (arm.gameplay_allowed ? 8ULL : 0ULL) | (arm.target_locked ? 16ULL : 0ULL) |
+        (static_cast<std::uint64_t>(arm.spell) << 5);
 }
 
 [[nodiscard]] inline VoiceCastArm UnpackVoiceArm(std::uint64_t word) noexcept {
     return {word >> 7, (word & 1) != 0, (word & 2) != 0,
-            (word & 4) != 0, (word & 8) != 0, (word & 16) != 0};
+            (word & 4) != 0, (word & 8) != 0, (word & 16) != 0,
+            static_cast<VoiceSpell>((word >> 5) & 3)};
 }
 
 [[nodiscard]] inline bool VoiceEventIsCurrent(const VoiceCastArm& arm,
                                              const VoiceCastEvent& event) noexcept {
     return VoiceMayListen(arm) && event.generation == arm.generation &&
         std::isfinite(event.utterance_seconds) &&
-        event.utterance_seconds >= kVoiceMinWordSeconds &&
-        event.utterance_seconds <= kVoiceMaxWordSeconds;
+        event.utterance_seconds >= VoiceMinimumWordSeconds(arm.spell) &&
+        event.utterance_seconds <= VoiceMaximumWordSeconds(arm.spell);
 }
 
 // Acoustic acceptance belongs to the keyword decoder, not a volume/VAD test.
@@ -117,7 +133,7 @@ public:
                               float seconds,
                               VoiceCastEvent* result) noexcept {
         const VoiceCastEvent event{captured_generation, seconds};
-        if (result == nullptr || keyword != "flipendo" || !CanListen(arm) ||
+        if (result == nullptr || keyword != VoiceKeyword(arm.spell) || !CanListen(arm) ||
             !VoiceEventIsCurrent(arm, event)) return false;
         consumed_generation_ = captured_generation;
         *result = event;

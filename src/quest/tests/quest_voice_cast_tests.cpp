@@ -95,11 +95,32 @@ void TestNumericInputMeter() {
     Check(meter.nonzero == 4 && meter.clipped == 0 && meter.peak == 1 && meter.Rms() == 1,
           "quiet nonzero input is not mislabeled as missing PCM");
 }
+void TestSpellIdentity() {
+    auto arm = Armed(20);
+    arm.spell = VoiceSpell::Alohomora;
+    const auto unpacked = UnpackVoiceArm(PackVoiceArm(arm));
+    Check(unpacked.spell == arm.spell && unpacked.generation == arm.generation,
+          "atomic command preserves spell identity without changing generation");
+    VoiceCastGate gate;
+    VoiceCastEvent event;
+    Check(!gate.Accept(arm,20,"flipendo",.8F,&event), "Flipendo cannot open an Alohomora target");
+    Check(gate.Accept(arm,20,"alohomora",.8F,&event), "Alohomora accepts its own acoustic identity");
+    arm.generation=21;arm.spell=VoiceSpell::Flipendo;
+    Check(!gate.Accept(arm,21,"alohomora",.8F,&event), "Alohomora cannot cast Flipendo");
+    Check(!VoiceEventIsCurrent(arm,event), "changing spell generation invalidates pending audio");
+    arm.generation=22;arm.spell=VoiceSpell::Wingardium;
+    Check(UnpackVoiceArm(PackVoiceArm(arm)).spell==VoiceSpell::Wingardium,"Wingardium survives atomic transport");
+    Check(!gate.Accept(arm,22,"flipendo",.8F,&event),"Flipendo cannot levitate a block");
+    Check(gate.Accept(arm,22,"wingardium",2.5F,&event)&&VoiceEventIsCurrent(arm,event),
+          "complete two-word Wingardium phrase accepts longer duration");
+    arm.spell=static_cast<VoiceSpell>(3);
+    Check(!VoiceMayListen(arm)&&PackVoiceArm(arm)==0, "unsupported spells fail closed");
+}
 }  // namespace
 
 int main() {
     try {
-        TestTransportAndPermissions(); TestExactWordAndDuration(); TestStaleResults(); TestNumericInputMeter();
+        TestTransportAndPermissions(); TestExactWordAndDuration(); TestStaleResults(); TestNumericInputMeter(); TestSpellIdentity();
         std::cout << "voice casting policy: PASS (" << checks << " checks)\n";
         return 0;
     } catch (const std::exception& error) {

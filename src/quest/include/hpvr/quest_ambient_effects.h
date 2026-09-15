@@ -10,9 +10,12 @@ namespace hpvr::quest::ambient {
 inline constexpr std::size_t kMaximumAmbientEmitters=64;
 inline constexpr std::size_t kMaximumAmbientParticlesPerEmitter=16;
 struct Emitter {
+    bool enabled=true;
     std::int32_t actor_reference=0;
     std::array<float,3> position{},source_right{1,0,0},source_up{0,0,1},direction{0,1,0};
     float source_width_m=0,source_height_m=0,speed_mps=0,speed_range_mps=0;
+    float source_depth_m=0;
+    bool radial=false;
     float lifetime=1,lifetime_range=0,size_m=.08F,size_range_m=0;
     float size_end_scale=0,size_end_range=0,rate=20,rate_range=0;
     float alpha_start=1,alpha_range=0,phase=0;
@@ -37,10 +40,10 @@ inline std::size_t BuildAmbientParticles(const std::vector<Emitter>& emitters,fl
     for(const auto value:shared_head)if(!std::isfinite(value))return 0;
     std::size_t count=0;
     for(std::size_t emitter_index=0;emitter_index<std::min(emitters.size(),kMaximumAmbientEmitters);++emitter_index){
-        const auto& e=emitters[emitter_index];float distance_squared=0;
+        const auto& e=emitters[emitter_index];if(!e.enabled)continue;float distance_squared=0;
         for(unsigned axis=0;axis<3;++axis){const float d=e.position[axis]-shared_head[axis];distance_squared+=d*d;}
         if(!std::isfinite(distance_squared)||distance_squared>28*28)continue;
-        const std::array<float,13> scalars{e.source_width_m,e.source_height_m,e.speed_mps,e.speed_range_mps,
+        const std::array<float,14> scalars{e.source_depth_m,e.source_width_m,e.source_height_m,e.speed_mps,e.speed_range_mps,
             e.lifetime,e.lifetime_range,e.size_m,e.size_range_m,e.size_end_scale,e.size_end_range,e.rate,e.alpha_start,e.phase};
         if(!std::all_of(scalars.begin(),scalars.end(),[](float value){return std::isfinite(value);})||e.rate<=0)continue;
         const float nominal_lifetime=std::clamp(e.lifetime+e.lifetime_range*.5F,.05F,10.0F);
@@ -53,10 +56,17 @@ inline std::size_t BuildAmbientParticles(const std::vector<Emitter>& emitters,fl
             const auto birth=seed^ParticleHash(static_cast<std::uint32_t>(cycle));
             const float x=(ParticleUnit(birth+3)-.5F)*std::clamp(e.source_width_m,0.0F,20.0F);
             const float y=(ParticleUnit(birth+4)-.5F)*std::clamp(e.source_height_m,0.0F,20.0F);
+            const float z=(ParticleUnit(birth+9)-.5F)*std::clamp(e.source_depth_m,0.0F,20.0F);
             const float travel=age*std::clamp(e.speed_mps+e.speed_range_mps*ParticleUnit(birth+5),-3.0F,3.0F);
+            auto direction=e.direction;
+            if(e.radial){
+                const float vertical=2*ParticleUnit(birth+10)-1,angle=6.28318530718F*ParticleUnit(birth+11);
+                const float radius=std::sqrt(std::max(0.0F,1-vertical*vertical));
+                direction={radius*std::cos(angle),vertical,radius*std::sin(angle)};
+            }
             Particle p;
             for(unsigned axis=0;axis<3;++axis){
-                p.position[axis]=e.position[axis]+e.source_right[axis]*x+e.source_up[axis]*y+e.direction[axis]*travel;
+                p.position[axis]=e.position[axis]+e.source_right[axis]*x+e.source_up[axis]*y+e.direction[axis]*z+direction[axis]*travel;
                 p.color[axis]=std::clamp(e.color_start[axis]*(1-t)+e.color_end[axis]*t,0.0F,1.0F);
             }
             const float start=std::clamp(e.size_m+e.size_range_m*ParticleUnit(birth+6),.005F,1.0F);

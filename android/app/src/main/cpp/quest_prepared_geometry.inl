@@ -36,12 +36,12 @@ bool PrepareGeometryFromOwnedData(const std::filesystem::path& root,unsigned map
         scene.texture_rgba8.size()!=std::uint64_t(256)*256*scene.texture_layer_count*4||
         scene.lightmap_rgba8.size()!=std::uint64_t(scene.lightmap_width)*scene.lightmap_height*4)return false;
     std::optional<std::array<float,3>> courtyard_ambient;
-    if(map_id==2) {
+    if(map_id==2||map_id==3) {
         const auto topology=wand::load_hp1_bsp_topology(map);
         const auto actors=wand::inspect_hp1_actor_visuals(map);
         if(topology.status!=wand::Hp1ProfileStatus::ok || actors.status!=wand::Hp1ProfileStatus::ok ||
            !RestoreBroomSky(map,topology,actors,scene))return false;
-        for(const auto& actor:actors.actors)
+        if(map_id==2)for(const auto& actor:actors.actors)
             if(AsciiFold(actor.qualified_class_name)=="engine.zoneinfo") {
                 const auto ambient=wand::Hp1SerializedZoneAmbient(actor);
                 if(ambient) {
@@ -49,7 +49,7 @@ bool PrepareGeometryFromOwnedData(const std::filesystem::path& root,unsigned map
                     courtyard_ambient=ambient;
                 }
             }
-        if(!courtyard_ambient || scene.fallback_material_count!=0)return false;
+        if((map_id==2&&!courtyard_ambient) || scene.fallback_material_count!=0)return false;
     }
     g.texture_layers=scene.texture_layer_count;
     g.lightmap_width=scene.lightmap_width;g.lightmap_height=scene.lightmap_height;
@@ -63,7 +63,8 @@ bool PrepareGeometryFromOwnedData(const std::filesystem::path& root,unsigned map
             source.position_m.z-(sky?0:start.position_m[2])},yaw);
         g.vertices.push_back({{p[0],p[1],p[2]},
             {source.texture_uv[0],source.texture_uv[1]},{source.lightmap_uv[0],source.lightmap_uv[1]},
-            source.texture_layer,source.polygon_flags|((source.texture_layer<scene.texture_layer_names.size()&&
+            source.texture_layer,(source.polygon_flags&~(map_id==3?0x04000000U:0U))|((map_id==3&&source.texture_layer<scene.texture_layer_names.size()&&
+                AsciiFold(scene.texture_layer_names[source.texture_layer]).find("mirrorblur")!=std::string::npos)?0x04000000U:0U)|((source.texture_layer<scene.texture_layer_names.size()&&
                 IsReflectiveWoodFloor(scene.texture_layer_names[source.texture_layer],source.normal.y))?0x10000000U:0U),
             source.has_lightmap,PackAuthoredLighting(p,world.lights)});
     }
@@ -94,7 +95,7 @@ bool PrepareGeometryFromOwnedData(const std::filesystem::path& root,unsigned map
         &targets,&g.targets))return false;
     stage("CHARACTERS_READY");
     if(!LoadOwnedBeans(root,map,start,yaw,g.vertices,g.textures,g.texture_layers,g.beans,&g.collision))return false;
-    if(map_id==1&&!LoadChallengeStars(root,map,start,yaw,g.vertices,g.textures,g.texture_layers,g.beans))return false;
+    if((map_id==1||map_id==3)&&!LoadChallengeStars(root,map,start,yaw,g.vertices,g.textures,g.texture_layers,g.beans,map_id==3?6:8))return false;
     if(courtyard_ambient) {
         for(auto& vertex:g.vertices)
             if(!vertex.has_lightmap && !(vertex.polygon_flags&kBroomSkyFlag))

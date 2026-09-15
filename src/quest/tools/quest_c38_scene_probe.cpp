@@ -4,6 +4,35 @@
 using namespace hpvr::quest;
 void Check(bool ok,const char* what){if(!ok)throw std::runtime_error(what);}
 int main(int argc,char** argv){try{
+    {
+        std::vector<GpuVertex> vertices(3);vertices[1].position[0]=3;vertices[2].position[2]=3;
+        MirrorSurface pool;pool.normal={0,1,0};pool.ranges={{0,3}};
+        MirrorSurface wall;wall.normal={1,0,0};wall.ranges={{0,3}};
+        std::vector<MirrorSurface> surfaces{pool,wall};AppendWaterSurfaceGeometry(surfaces,vertices);
+        Check(surfaces[0].water_draw==std::pair<unsigned,unsigned>{3,768},"water subdivides into bounded small-wave mesh");
+        Check(surfaces[1].water_draw.second==0&&surfaces[0].ranges[0].first==0,"wall mirrors and original skip ranges unchanged");
+        for(const auto& v:vertices)Check(v.position[0]>=0&&v.position[2]>=0&&v.position[0]+v.position[2]<=3.0001F,
+            "water remains inside original pool outline");
+    }
+    {
+        std::vector<CharacterDraw> actors(1);actors[0].player=true;actors[0].actor_reference=1;
+        IntroCutscene scene;scene.object_name="cutscene6";scene.camera_active=true;
+        CutsceneTrack hermione;hermione.alias="Hermione";hermione.position={4,0,4};scene.tracks={hermione};
+        FaceCharmsCinematicTarget(scene,actors);
+        Check(std::abs(actors[0].yaw-kTau/8)<.0001F,"classroom camera faces live Hermione");
+        scene.tracks[0].position={-4,0,4};FaceCharmsCinematicTarget(scene,actors);
+        Check(std::abs(actors[0].yaw+kTau/8)<.0001F,"Hermione focus follows movement");
+        scene.camera_active=false;Check(CharmsFirstPersonFocus(scene,actors).has_value(),"lead-in faces Hermione before spectator camera capture");
+        scene.harry_released=true;Check(!CharmsFirstPersonFocus(scene,actors),"released lead-in leaves head control alone");
+        scene.locations={{0,"LocName1",{4,0,0}}};scene.camera_target="locname1";
+        for(const char* name:{"cutscene51","cutscene52","cutscene53","cutscene54","cutscene3","cutscene4"}){
+            scene.object_name=name;FaceCharmsCinematicTarget(scene,actors);
+            Check(std::abs(actors[0].yaw-kTau/4)<.0001F,"reveal faces authored opening target");
+        }
+        scene.object_name="cutscene1";scene.locations={{0,"HPGoto",{0,0,-4}}};FaceCharmsCinematicTarget(scene,actors);
+        Check(std::abs(std::abs(actors[0].yaw)-kTau/2)<.0001F,"exit faces destination from first frame");
+        scene.object_name="cutscene63";Check(!CharmsFirstPersonFocus(scene,actors),"practice route keeps original actor facing");
+    }
     IntroCutscene lesson;lesson.object_name="cutscene54";lesson.playing=true;lesson.camera_active=true;lesson.harry_released=true;
     CutsceneTrack camera;camera.camera=true;camera.moving=true;camera.delay_seconds=8;camera.next_command=2;
     camera.commands[4]="Waitfor CutEnd";camera.commands[5]="RELEASE";camera.commands[6]="Trigger HelpWithJumping";

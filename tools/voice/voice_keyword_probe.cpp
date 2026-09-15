@@ -21,18 +21,29 @@ int main(int argc, char** argv) {
     if (!input) return 5;
     hpvr::quest::QuestVoiceDecoder decoder;
     const double threshold = argc > 3 ? std::stod(argv[3]) : hpvr::quest::kVoiceKeywordThreshold;
-    if (!decoder.Load(argv[1], threshold) || !decoder.Begin()) return 6;
+    const std::string spell_name = argc > 4 ? argv[4] : "flipendo";
+    if (spell_name != "flipendo" && spell_name != "alohomora" && spell_name != "wingardium") return 2;
+    const auto spell = spell_name == "alohomora" ? hpvr::quest::VoiceSpell::Alohomora :
+        spell_name == "wingardium" ? hpvr::quest::VoiceSpell::Wingardium : hpvr::quest::VoiceSpell::Flipendo;
+    if (!decoder.Load(argv[1], threshold) || !decoder.Begin(spell)) return 6;
     const auto start = std::chrono::steady_clock::now();
     unsigned hits = 0;
+    std::uint64_t rejections=0;
     for (std::size_t at = 0; at < pcm.size(); at += 320) {
         const auto count = std::min<std::size_t>(320, pcm.size() - at);
         float seconds = 0;
         if (decoder.Process(pcm.data() + at, count, &seconds)) {
             ++hits;
-            std::cout << "keyword=FLIPENDO duration_s=" << seconds
+            std::cout << "keyword=" << spell_name << " duration_s=" << seconds
                       << " input_time_s=" << static_cast<double>(at + count) / 16000 << '\n';
         }
         if (decoder.failed()) return 7;
+        const auto snapshot=decoder.Stats();
+        if(snapshot.duration_rejects!=rejections){
+            rejections=snapshot.duration_rejects;
+            std::cout<<"duration_rejected_s="<<snapshot.last_keyword_seconds
+                <<" input_time_s="<<static_cast<double>(at+count)/16000<<'\n';
+        }
     }
     decoder.End();
     const auto stats = decoder.Stats();

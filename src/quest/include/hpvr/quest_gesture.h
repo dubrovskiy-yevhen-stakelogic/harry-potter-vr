@@ -10,6 +10,7 @@
 namespace hpvr::quest {
 
 enum class GestureVisualState { Idle, Recording, Accepted, Rejected, Canceled };
+enum class GestureSpell : unsigned { Flipendo, Alohomora, Wingardium };
 
 struct GestureSample {
     std::int64_t predicted_display_time_ns = 0;
@@ -27,6 +28,7 @@ struct FlipendoEvent {
     std::array<float, 3> locked_direction{};
     float score = 0.0F;
     float threshold = 0.0F;
+    GestureSpell spell = GestureSpell::Flipendo;
 };
 
 struct GestureGuide {
@@ -41,6 +43,12 @@ struct GestureShapeMatch {
     bool valid = false;
     float score = 0.0F;
 };
+
+[[nodiscard]] GestureShapeMatch CompareGameplayWingardiumShape(
+    std::span<const std::array<float, 2>> drawn);
+[[nodiscard]] GestureShapeMatch CompareGameplayAlohomoraShape(
+    std::span<const std::array<float, 2>> drawn,
+    std::span<const std::array<float, 2>> pattern);
 
 // A completed attempt only: bounded geometric diagnostics, never raw tracking
 // history on disk. Serial changes for rejected and canceled attempts as well.
@@ -84,6 +92,12 @@ public:
     QuestGesture& operator=(const QuestGesture&) = delete;
 
     [[nodiscard]] bool LoadFlipendoProfile(const std::filesystem::path& data_root);
+    [[nodiscard]] bool LoadProfiles(const std::filesystem::path& data_root, bool include_charms);
+    // Switching uses preloaded profiles and cancels unfinished or queued casts.
+    // An idle recognizer retains its observed release, so acquiring a new rune
+    // can start the first held stroke without another trigger press.
+    [[nodiscard]] bool SelectSpell(GestureSpell spell);
+    [[nodiscard]] GestureSpell selected_spell() const;
     // Both modes accept any in-plane rotation and either stroke direction.
     // Original mode retains authored accuracy, physical size, four increasing
     // lesson marks and the deadline. Relaxed mode widens the radius and fits

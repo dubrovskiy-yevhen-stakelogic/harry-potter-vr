@@ -1,14 +1,14 @@
 #requires -Version 5.1
 [CmdletBinding()]
 param(
-    [string]$ApkPath = 'artifacts/quest-release-0.1.2.1-alpha-c59/HPVR-Quest-0.1.2.1-alpha.apk',
-    [string]$OutputDirectory = 'artifacts/HPVR-Quest-Demo-0.1.2.1-alpha',
+    [Parameter(Mandatory=$true)][string]$ApkPath,
+    [Parameter(Mandatory=$true)][string]$OutputDirectory,
     [string]$HostBuildDirectory = 'build/quest-host-tests'
 )
 
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
-$hpvrRepository = [IO.Path]::GetFullPath($PSScriptRoot).TrimEnd('\', '/')
+$hpvrRepository = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '../..')).TrimEnd('\', '/')
 $hpvrArtifacts = Join-Path $hpvrRepository 'artifacts'
 
 function Resolve-PlayerPath([string]$Path) {
@@ -226,7 +226,7 @@ $hpvrManifest = [ordered]@{
     gameAssetsIncluded = $false
     # Explicit release scope: installers do not guess from files beside them.
     # Keep rebuilding historical one-map APKs possible with explicit paths.
-    mapIds = @(if ($hpvrMetadata.versionCode -ge 57) { 0; 1; 2 } elseif ($hpvrMetadata.versionCode -ge 38) { 0; 1 } else { 0 })
+    mapIds = @(if ($hpvrMetadata.versionCode -ge 71) { 0; 1; 2; 3 } elseif ($hpvrMetadata.versionCode -ge 57) { 0; 1; 2 } elseif ($hpvrMetadata.versionCode -ge 38) { 0; 1 } else { 0 })
     files = @($hpvrFiles.ToArray())
 }
 if ($hpvrPreparedSceneVersion -gt 0) { $hpvrManifest.preparedSceneVersion = $hpvrPreparedSceneVersion }

@@ -28,12 +28,14 @@ function Write-Fixture([string]$RelativePath, [string]$Contents = '// Synthetic 
 # These are deliberately synthetic text fixtures, not copied game data or code.
 $required = @(
     '.gitattributes', '.gitignore', 'CMakeLists.txt', 'README.md',
-    'SOURCE-KIT-README.md', 'BUILD-QUEST-DEBUG.ps1', 'PACKAGE-QUEST-DEBUG.ps1',
-    'BUILD-QUEST-RELEASE.ps1', 'PACKAGE-QUEST-PLAYER.ps1',
-    'VERIFY-QUEST-APK.ps1', 'IMPORT-QUEST-DATA.ps1', 'PREPARE-QUEST-AUDIO.ps1',
-    'PREPARE-QUEST-FRONTEND.ps1', 'RUN-LATEST-VR.cmd', 'android/build.gradle',
-    'PREPARE-QUEST-CHALLENGE.ps1', 'PREPARE-QUEST-BROOM.ps1',
-    'tools/test-quest-broom-preparation.ps1',
+    'INSTALL.bat', 'docs/BUILDING.md', 'tools/workspace/INSTALL-PLAYER.ps1',
+    'tools/workspace/BUILD-QUEST-DEBUG.ps1', 'tools/workspace/PACKAGE-QUEST-DEBUG.ps1',
+    'tools/workspace/BUILD-QUEST-RELEASE.ps1', 'tools/workspace/PACKAGE-QUEST-PLAYER.ps1',
+    'tools/workspace/VERIFY-QUEST-APK.ps1', 'tools/workspace/IMPORT-QUEST-DATA.ps1', 'tools/workspace/PREPARE-QUEST-AUDIO.ps1',
+    'tools/workspace/PREPARE-QUEST-FRONTEND.ps1', 'tools/workspace/RUN-LATEST-VR.cmd', 'android/build.gradle',
+    'tools/workspace/PREPARE-QUEST-CHALLENGE.ps1', 'tools/workspace/PREPARE-QUEST-BROOM.ps1',
+    'tools/test-quest-broom-preparation.ps1', 'tools/workspace/PREPARE-QUEST-CHARMS.ps1',
+    'tools/test-quest-charms-preparation.ps1',
     'android/settings.gradle', 'android/gradle.properties', 'android/app/build.gradle',
     'tools/verify-baseline.ps1', 'tools/test-source-kit-export.ps1',
     'tools/release/INSTALL-HPVR.ps1', 'tools/release/INSTALL-HPVR.cmd',
@@ -57,8 +59,8 @@ $required = @(
     'docs/CLASSIC-CASTING-AND-CHALLENGE.md', 'docs/FLIPENDO-CHALLENGE.md', 'docs/LOADING-AND-PICKUPS.md'
 )
 foreach ($relative in $required) { Write-Fixture $relative }
-$exporter = Join-Path $fixture 'EXPORT-SOURCE-KIT.ps1'
-Copy-Item -LiteralPath (Join-Path $repository 'EXPORT-SOURCE-KIT.ps1') -Destination $exporter
+$exporter = Join-Path $fixture 'tools/workspace/EXPORT-SOURCE-KIT.ps1'
+Copy-Item -LiteralPath (Join-Path $repository 'tools/workspace/EXPORT-SOURCE-KIT.ps1') -Destination $exporter
 Write-Fixture 'local/never-export.cpp'
 Write-Fixture 'src/build/never-export.cpp'
 Write-Fixture 'src/assets/never-export.cpp'
@@ -84,6 +86,9 @@ Expect (-not (Test-Path -LiteralPath $destination)) 'Audit-only created output.'
 Expect (Test-Path -LiteralPath (Join-Path $destination 'src/test.cpp')) 'Source did not export.'
 Expect (Test-Path -LiteralPath (Join-Path $destination 'android/app/src/main/cpp/quest_challenge_runtime.inl')) 'Inline gameplay source missing.'
 Expect (Test-Path -LiteralPath (Join-Path $destination 'SOURCE-SHA256.txt')) 'Manifest is missing.'
+Expect (@(Get-ChildItem -LiteralPath $destination -File -Filter '*.ps1').Count -eq 0) 'PowerShell scripts must not clutter the root.'
+Expect (-not (Test-Path -LiteralPath (Join-Path $destination 'AGENTS.md'))) 'Private repository instructions exported.'
+Expect (Test-Path -LiteralPath (Join-Path $destination 'INSTALL.bat')) 'Player entry point missing.'
 Expect (@(Get-ChildItem -LiteralPath $destination -Recurse -Filter 'never-export*').Count -eq 0) 'Excluded content exported.'
 foreach ($relative in @('cmake/HPVRVoice.cmake', 'tools/voice/FETCH-VOICE-DEPENDENCIES.ps1',
         'tools/voice/VOICE-ASSETS.psd1', 'tools/voice/flipendo.keywords', 'tools/voice/README.md',

@@ -332,6 +332,9 @@ bool QuestAudio::ConfigureMusic(const std::vector<wand::Hp1MpegSound>& sources,
     return true;
 }
 void QuestAudio::SelectMusic(unsigned index){music_requested_.store(index,std::memory_order_release);}
+void QuestAudio::SetAmbientLoopGain(float gain){
+    ambient_loop_gain_.store(std::isfinite(gain)?std::clamp(gain,0.0F,1.0F):0.0F,std::memory_order_relaxed);
+}
 void QuestAudio::SetPresentationAudio(bool ambient,bool paused){
     ambient_enabled_.store(ambient,std::memory_order_release);
     narrative_paused_.store(paused,std::memory_order_release);
@@ -397,9 +400,9 @@ void QuestAudio::SetWandDrawing(const bool drawing) {
 void QuestAudio::PlayBasicCast() {
     basic_cast_cursor_.store(0, std::memory_order_release);
 }
-void QuestAudio::PlaySpellCast() {
+void QuestAudio::PlaySpellCast(bool speak_flipendo) {
     spell_cast_cursor_.store(0, std::memory_order_release);
-    incantation_cursor_.store(0, std::memory_order_release);
+    incantation_cursor_.store(speak_flipendo?0:kIdleCursor, std::memory_order_release);
 }
 
 void QuestAudio::PlaySpellHit() {
@@ -460,7 +463,7 @@ aaudio_data_callback_result_t QuestAudio::Render(
     for (std::int32_t frame = 0; frame < frame_count; ++frame) {
         const bool paused=narrative_paused_.load(std::memory_order_acquire);
         float mixed = ambient_enabled_.load(std::memory_order_acquire) && !paused
-            ? static_cast<float>(ambient_[ambient_cursor_])*kAmbientGain : 0.0F;
+            ? static_cast<float>(ambient_[ambient_cursor_])*kAmbientGain*ambient_loop_gain_.load(std::memory_order_relaxed) : 0.0F;
         ambient_cursor_ = (ambient_cursor_ + 1) % ambient_.size();
         if (!wand_trace_.empty() && wand_drawing_.load(std::memory_order_acquire)) {
             mixed += static_cast<float>(wand_trace_[wand_trace_cursor_]) *

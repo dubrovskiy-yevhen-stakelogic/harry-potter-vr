@@ -10,7 +10,7 @@ param(
 
 $ErrorActionPreference = 'Stop'
 if ($VoiceDiagnostics -and $Release) { throw 'A release APK must never allow voice recording diagnostics.' }
-$repositoryRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
+$repositoryRoot = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '../..'))
 . (Join-Path $repositoryRoot 'tools/voice/VOICE-APK-PAYLOAD.ps1')
 function Get-HpvrBuildMetadata([string]$Path) {
     $source = Get-Content -LiteralPath $Path -Raw
@@ -218,7 +218,6 @@ try {
         -not $readOnlyData.Contains('[hpvr.quest.jump_lesson] status=STARTED') -or
         -not $readOnlyData.Contains('[hpvr.quest.jump] status=STARTED button=A') -or
         -not $readOnlyData.Contains('background_tracks=CONTINUE') -or
-        -not $readOnlyData.Contains('FEFolioBackTexture') -or
         -not $readOnlyData.Contains('HarryBarFull') -or
         -not $readOnlyData.Contains('/user/hand/left/input/menu/click') -or
         -not $readOnlyData.Contains('/user/hand/right/input/a/click') -or
@@ -288,7 +287,12 @@ try {
         -not $readOnlyData.Contains('s_spell_hit1')) {
         throw 'APK ARM64 host is missing a required C35 story/rendering marker'
     }
-    $progressWriter = if($challengeBuild){'HPVR_PROGRESS 8'}else{'HPVR_PROGRESS 7'}
+    $progressWriter = if($ExpectedVersionCode -ge 58){'HPVR_PROGRESS 9'}elseif($challengeBuild){'HPVR_PROGRESS 8'}else{'HPVR_PROGRESS 7'}
+    if ($ExpectedVersionCode -ge 58) {
+        foreach ($marker in @('Maps/Lev_Tut3.unr', 'CHARMS TRAINING', 'FOLIO MAGI')) {
+            if (-not $readOnlyData.Contains($marker)) { throw "APK missing Charms/menu support: $marker" }
+        }
+    }
     if ($ExpectedVersionCode -ge 43) {
         foreach ($marker in @('[hpvr.quest.scene.prepared] status=HIT',
                 '[hpvr.quest.scene.prepared] status=REBUILD', 'ASSET_CACHE_READY',
@@ -319,9 +323,15 @@ try {
         }
     }
     if ($voiceBuild) {
-        foreach ($marker in @('VOICE CAST', '[hpvr.quest.voice] status=CAST keyword=FLIPENDO',
+        $voiceCastMarker=if($ExpectedVersionCode -ge 61){'[hpvr.quest.voice] status=CAST keyword=%s target=%d'}else{'[hpvr.quest.voice] status=CAST keyword=FLIPENDO'}
+        foreach ($marker in @('VOICE CAST', $voiceCastMarker,
                 'isVoicePermissionGranted', 'requestVoicePermission', 'getVoiceModelPath')) {
             if (-not $readOnlyData.Contains($marker)) { throw "APK missing C44 voice marker: $marker" }
+        }
+        if($ExpectedVersionCode -ge 61){
+            foreach($marker in @('SAY ALOHOMORA','ALOHOMORA','[hpvr.quest.lock.particles]')){
+                if(-not $readOnlyData.Contains($marker)){throw "APK missing Charms casting marker: $marker"}
+            }
         }
     }
     if ($ExpectedVersionCode -ge 47) {
@@ -394,6 +404,7 @@ Write-Host "[hpvr.quest.apk.verify] version=$ExpectedVersionName versionCode=$Ex
 Write-Host "[hpvr.quest.apk.verify] regression_features=C37 camera=LIVE_HARRY_OR_THEATRICAL_6DOF loading=WARNER_THEATER vr_settings=$settingsWriter audio=USER_OWNED_RUNTIME_DATA runtime_acceptance=PENDING"
 if($challengeBuild){
     $recovery = if ($ExpectedVersionCode -ge 44) { 'TIMED_FAINT_CHECKPOINT' } else { 'AUTHORED_BSP' }
-    Write-Host "[hpvr.quest.apk.verify] challenge_markers=C38 save_writer=HPVR_PROGRESS8 maps=INTRO_AND_FLIPENDO_CHALLENGE events=MOVERS_STARS_CUTSCENES pit_recovery=$recovery"
+    $verifiedMaps = if ($ExpectedVersionCode -ge 58) { 'INTRO_FLIPENDO_BROOM_CHARMS' } elseif ($ExpectedVersionCode -ge 56) { 'INTRO_FLIPENDO_BROOM' } else { 'INTRO_AND_FLIPENDO_CHALLENGE' }
+    Write-Host "[hpvr.quest.apk.verify] challenge_markers=C38 save_writer=$progressWriter maps=$verifiedMaps events=MOVERS_STARS_CUTSCENES pit_recovery=$recovery"
 }
 if($voiceBuild){Write-Host '[hpvr.quest.apk.verify] voice=C47 neural_model_and_notice_files=24 model_sha256=VERIFIED network=NONE microphone=OPT_IN runtime_acceptance=PENDING'}

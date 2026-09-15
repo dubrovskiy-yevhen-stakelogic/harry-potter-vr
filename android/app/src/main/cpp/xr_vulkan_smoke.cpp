@@ -121,6 +121,7 @@ struct XrVulkanSmoke::State {
     double voice_diagnostic_poll=0;
     std::uint64_t voice_generation=0;
     std::int32_t voice_target=0;
+    VoiceSpell voice_spell=VoiceSpell::Flipendo;
     int voice_last_error=0;
     std::array<float,3> voice_target_point{};
     std::vector<std::uint8_t> startup_pixels;
@@ -191,6 +192,9 @@ struct XrVulkanSmoke::State {
     std::array<XrPath,4> metric_paths{};
     bool metrics_enabled=false;
     bool metrics_extension=false;
+    bool performance_extension=false;
+    PFN_xrPerfSettingsSetPerformanceLevelEXT set_performance=nullptr;
+    int requested_gpu_boost=-1;
     PFN_xrRequestDisplayRefreshRateFB request_refresh=nullptr;
     std::vector<int> refresh_rates;
     int requested_refresh=-1;
@@ -251,7 +255,7 @@ bool QueueSceneLoad(auto& state,unsigned map_id,bool transfer){
     if(state.scene_load_future.valid())return false;
     try{
         state.loading_scene=std::make_unique<QuestScene>();
-        if(!transfer)state.loading_gesture=std::make_unique<QuestGesture>();
+        state.loading_gesture=std::make_unique<QuestGesture>();
         QuestScene* const pending=state.loading_scene.get();
         QuestGesture* const profile=state.loading_gesture.get();
         // Capture no live scene or input state: only the pending objects belong
@@ -260,7 +264,7 @@ bool QueueSceneLoad(auto& state,unsigned map_id,bool transfer){
             [pending,profile,root=state.data_root,saves=state.save_root,map_id](){
                 HPVR_LOGI("[hpvr.quest.scene.async] status=STARTED map=%u mode=CPU_ONLY",map_id);
                 return pending->LoadFromOwnedData(root,saves,map_id)&&
-                    (!profile||profile->LoadFlipendoProfile(root));
+                    (!profile||profile->LoadProfiles(root,map_id==kCharmsTrainingMapId));
             });
         state.loading_map_id=map_id;state.map_transfer=transfer;
         state.scene_load_failed=false;
@@ -824,7 +828,7 @@ bool XrVulkanSmoke::PumpHogwartsLoad() {
 }
 
 bool XrVulkanSmoke::InitializeGraphics(const XrInstance instance,
-                                       const XrSystemId system_id,bool metrics_extension) {
+                                       const XrSystemId system_id,bool metrics_extension,bool performance_extension) {
     State& state = *state_;
     if (state.device != VK_NULL_HANDLE) {
         return state.xr_instance == instance && state.system_id == system_id;
@@ -832,6 +836,7 @@ bool XrVulkanSmoke::InitializeGraphics(const XrInstance instance,
     state.xr_instance = instance;
     state.system_id = system_id;
     state.metrics_extension=metrics_extension;
+    state.performance_extension=performance_extension;
 
     PFN_xrGetVulkanGraphicsRequirements2KHR get_requirements = nullptr;
     PFN_xrCreateVulkanInstanceKHR create_vulkan_instance = nullptr;
@@ -1011,6 +1016,9 @@ bool XrVulkanSmoke::CreateSession() {
     xrGetInstanceProcAddr(state.xr_instance,"xrEnumerateDisplayRefreshRatesFB",reinterpret_cast<PFN_xrVoidFunction*>(&enumerate_refresh));
     xrGetInstanceProcAddr(state.xr_instance,"xrRequestDisplayRefreshRateFB",reinterpret_cast<PFN_xrVoidFunction*>(&state.request_refresh));
     state.refresh_rates.clear();state.requested_refresh=-1;
+    state.set_performance=nullptr;state.requested_gpu_boost=-1;
+    if(state.performance_extension)
+        xrGetInstanceProcAddr(state.xr_instance,"xrPerfSettingsSetPerformanceLevelEXT",reinterpret_cast<PFN_xrVoidFunction*>(&state.set_performance));
     if(enumerate_refresh&&state.request_refresh){
         unsigned count=0;
         if(XR_SUCCEEDED(enumerate_refresh(state.session,0,&count,nullptr))&&count>0&&count<32){
@@ -1598,6 +1606,7 @@ bool XrVulkanSmoke::PollEvents(bool* exit_requested) {
                     return false;
                 }
                 state.running = true;
+                state.requested_gpu_boost=-1;
                 HPVR_LOGI("[hpvr.quest.session] status=RUNNING");
             } else if (changed.state == XR_SESSION_STATE_STOPPING) {
                 state.running = false;
@@ -1779,7 +1788,6 @@ bool XrVulkanSmoke::RenderFrame() {
         if(!state.scene.WantsGesture())state.gesture->Reset();
         state.gesture->SetGameplayMode(!state.scene.IsGestureLesson());
         state.gesture->SetLessonDifficulty(state.scene.GetVrSettings().relaxed_lesson);
-        state.gesture->SetLessonRound(state.scene.LessonRound());
         const auto turning = state.scene.GetVrSettings();
         locomotion_input.smooth_turn = turning.turning_mode == TurningMode::Smooth;
         locomotion_input.smooth_turn_degrees = static_cast<float>(turning.smooth_turn_speed);
@@ -1804,16 +1812,22 @@ bool XrVulkanSmoke::RenderFrame() {
             wand_tracked = false;
         }
         state.scene.UpdateBasicCast(wand_world,submit_projection&&wand_tracked,basic_held,delta_seconds);
+        if(!state.gesture->SelectSpell(state.scene.ActiveGestureSpell()))state.gesture->Reset();
+        state.gesture->SetLessonRound(state.scene.LessonRound());
         std::array<float,3> voice_point{};
         const bool voice_allowed=submit_projection&&tracking_active&&wand_tracked&&
             state.scene.VoiceCaptureAllowed();
         const auto target=voice_allowed?state.scene.VoiceTarget(&voice_point):0;
-        if(target!=state.voice_target){
+        const auto voice_spell=state.scene.ActiveGestureSpell()==GestureSpell::Alohomora?
+            VoiceSpell::Alohomora:state.scene.ActiveGestureSpell()==GestureSpell::Wingardium?
+            VoiceSpell::Wingardium:VoiceSpell::Flipendo;
+        if(target!=state.voice_target||voice_spell!=state.voice_spell){
+            state.voice_spell=voice_spell;
             state.voice_target=target;state.voice_target_point=voice_point;
             if(++state.voice_generation>kVoiceMaxGeneration)state.voice_generation=1;
         }
         const VoiceCastArm voice_arm{state.voice_generation,state.scene.GetVrSettings().voice_cast,
-            state.voice_permission,tracking_active,voice_allowed,target>0};
+            state.voice_permission,tracking_active,voice_allowed,target>0,voice_spell};
         state.voice.SetListening(voice_arm);
         VoiceCastEvent voice_event{};
         if(state.voice.PollEvent(voice_arm,&voice_event)){
@@ -1928,9 +1942,9 @@ bool XrVulkanSmoke::RenderFrame() {
             points<<std::fixed<<std::setprecision(3);
             for(std::size_t i=0;i<diagnostic.projected_point_count;++i)
                 points<<diagnostic.projected_points[i][0]<<','<<diagnostic.projected_points[i][1]<<';';
-            HPVR_LOGI("[hpvr.quest.gesture.shape] attempt=%u reason=%s samples=%u seconds=%.3f "
+            HPVR_LOGI("[hpvr.quest.gesture.shape] spell=%u attempt=%u reason=%s samples=%u seconds=%.3f "
                 "extent=(%.3f,%.3f) depth=%.3f length=%.3f score=%.3f threshold=%.3f points=%s",
-                diagnostic.attempt,diagnostic.reason,diagnostic.sample_count,diagnostic.duration_seconds,
+                static_cast<unsigned>(state.gesture->selected_spell()),diagnostic.attempt,diagnostic.reason,diagnostic.sample_count,diagnostic.duration_seconds,
                 diagnostic.projected_extent[0],diagnostic.projected_extent[1],diagnostic.depth_span_meters,
                 diagnostic.path_length,diagnostic.score,diagnostic.threshold,points.str().c_str());
         }
@@ -2033,6 +2047,13 @@ bool XrVulkanSmoke::RenderFrame() {
     }
 
     const auto vr=state.scene.IsGpuReady()?state.scene.GetVrSettings():VrSettings{};
+    if(state.requested_gpu_boost!=int(vr.gpu_boost)&&
+       (state.session_state==XR_SESSION_STATE_FOCUSED||state.session_state==XR_SESSION_STATE_VISIBLE)){
+        state.requested_gpu_boost=int(vr.gpu_boost);
+        const auto level=vr.gpu_boost?XR_PERF_SETTINGS_LEVEL_BOOST_EXT:XR_PERF_SETTINGS_LEVEL_SUSTAINED_HIGH_EXT;
+        const auto result=state.set_performance?state.set_performance(state.session,XR_PERF_SETTINGS_DOMAIN_GPU_EXT,level):XR_ERROR_FUNCTION_UNSUPPORTED;
+        HPVR_LOGI("[hpvr.quest.gpu_boost] enabled=%d level=%d result=%d thermal_policy=RUNTIME",int(vr.gpu_boost),int(level),int(result));
+    }
     if(state.scene.IsGpuReady())state.scene.SetSupportedRefreshRates(state.refresh_rates);
     if(state.scene.IsGpuReady()&&state.request_refresh&&vr.refresh_rate!=state.requested_refresh&&
        (state.session_state==XR_SESSION_STATE_FOCUSED||state.session_state==XR_SESSION_STATE_VISIBLE)){
@@ -2087,6 +2108,7 @@ bool XrVulkanSmoke::RenderFrame() {
              ++eye) {
             const double eye_cpu_start=ThreadMs();
             if(state.timing_pool)vkCmdWriteTimestamp(command_buffer,VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,state.timing_pool,eye*2);
+            if(scene_visible)state.scene.RecordMirrorCapture(command_buffer,view_projections[eye]);
             std::array<VkClearValue, 2> clear_values{};
             clear_values[0].color = clear_color;
             if (scene_visible) {

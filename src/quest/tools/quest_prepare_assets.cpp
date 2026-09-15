@@ -33,7 +33,7 @@ void RejectRedirects(const fs::path& path){
 }
 int Run(const std::vector<fs::path>& args){
     if(args.size()!=6&&args.size()!=7){
-        std::cerr<<"usage: hpvr_quest_prepare_assets <owned-root> --output <private-output-outside-root> --map <0|1|2> [--verify]\n";
+        std::cerr<<"usage: hpvr_quest_prepare_assets <owned-root> --output <private-output-outside-root> --map <0|1|2|3> [--verify]\n";
         return 2;
     }
     try{
@@ -88,6 +88,92 @@ int Run(const std::vector<fs::path>& args){
         if(!ValidatePreparedGeometry(candidate))throw std::runtime_error("prepared read-back layout is invalid");
         const auto read_seconds=elapsed()-read_at;
         if(verify){
+            if(map_id==kCharmsTrainingMapId){
+                const auto census=hpvr::wand::inspect_hp1_actor_visuals(root/map->package_path);
+                hpvr_hp1_player_start_report start{};
+                if(hpvr_hp1_load_player_start_utf8((root/map->package_path).string().c_str(),kMetersPerUnrealUnit,0,&start)!=0)
+                    throw std::runtime_error("prepared charms player start is invalid");
+                const float yaw=start.rotation_units[1]*kTau/65536;
+                CharmsRuntime charms;ChallengeRuntime challenge;
+                if(!LoadCharmsMetadata(root,census,start,yaw,candidate.challenge_props,charms,&candidate.vertices)||
+                   !LoadChallengeMetadata(census,start,yaw,challenge,23)||
+                   !ValidateCharmsSceneLayout(challenge,charms,candidate.doors.size(),candidate.fixture_actors,candidate.characters))
+                    throw std::runtime_error("prepared charms runtime metadata mismatch");
+                unsigned chests=0,rewards=0,cards=0;
+                const auto mirrors=FindMirrorSurfaces(candidate.vertices,candidate.map_vertices);
+                if(mirrors.size()!=3||std::ranges::count_if(mirrors,[](const auto& m){return std::abs(m.normal[1])>.99F;})!=1)
+                    throw std::runtime_error("prepared charms must contain two wall mirrors and one reflecting pool");
+                for(const auto& mirror:mirrors)std::cout<<"PREPARED_MIRROR normal="<<mirror.normal[0]<<','<<mirror.normal[1]<<','<<mirror.normal[2]
+                    <<" center="<<mirror.center[0]<<','<<mirror.center[1]<<','<<mirror.center[2]<<'\n';
+                for(const auto& prop:candidate.challenge_props)if(prop.name=="hprops.knight"){
+                    auto center=ScaleVector(AddVector(prop.minimum,prop.maximum),.5F);center[1]=prop.minimum[1];
+                    std::cout<<"PREPARED_KNIGHT ref="<<prop.reference<<" foot="<<center[0]<<','<<center[1]<<','<<center[2]<<'\n';
+                    float visible_top=-1e9F;
+                    for(unsigned i=0;i+2<candidate.map_vertices;i+=3){
+                        if(candidate.vertices[i].polygon_flags&1U)continue;
+                        std::vector<GpuVertex> tri(candidate.vertices.begin()+i,candidate.vertices.begin()+i+3);
+                        const auto faces=BuildCollisionTriangles(tri,3);
+                        for(const auto& face:faces){float h=0;if(CollisionTriangleHeightAtXZ(face,center[0],center[2],&h)&&
+                            h<center[1]+.05F&&h>center[1]-.8F)visible_top=std::max(visible_top,h);}
+                    }
+                    if(std::abs(visible_top-center[1])>.005F)throw std::runtime_error("prepared knight is not grounded on its visible pedestal");
+                }
+                unsigned attached_stars=0;
+                auto moving_doors=candidate.doors;auto moving_pickups=candidate.beans;
+                for(auto& door:moving_doors)if(door.tag=="secretjumpledge"){
+                    (void)movers::Start(door.motion,true);
+                    for(unsigned i=0;i<100;++i)(void)movers::Advance(door.motion,.05F);
+                }
+                UpdateCharmsPickupAttachments(charms,moving_doors,moving_pickups);
+                for(const auto& pickup:moving_pickups)if(pickup.kind==3&&charms.prop_attachments.contains(pickup.actor_reference)){
+                    ++attached_stars;
+                    if(std::abs(pickup.attachment_offset[1]-8.64F)>.005F||BeanWorldPosition(pickup)==pickup.position)
+                        throw std::runtime_error("prepared final star does not follow the lifted platform");
+                }
+                if(attached_stars!=1)throw std::runtime_error("prepared final star attachment is missing");
+                auto entry_doors=candidate.doors;
+                if(OpenCharmsCutsceneDoors(1526,entry_doors)<=0)throw std::runtime_error("entry door does not open for Harry");
+                for(auto& door:entry_doors)for(unsigned i=0;i<100;++i)(void)movers::Advance(door.motion,.05F);
+                if(CloseCharmsEntryDoors(entry_doors)<=0)throw std::runtime_error("entry door does not close after Harry");
+                for(auto& door:entry_doors)for(unsigned i=0;i<100;++i)(void)movers::Advance(door.motion,.05F);
+                if(CloseCharmsEntryDoors(entry_doors)!=0)throw std::runtime_error("closed entry door would hold player control");
+                std::cout<<"PREPARED_C70=PASS mirrors=3 grounded_knights=4 attached_stars=1 entry_door=OPEN_CLOSE\n";
+                for(int ref:{1989,1990,2018,1979,1546,1547}){
+                    auto scene=challenge.scenes.at(ref);scene.camera_target="locname1";
+                    if(!CharmsFirstPersonFocus(scene,candidate.characters))throw std::runtime_error("charms reveal has no authored focus");
+                }
+                if(!CharmsFirstPersonFocus(challenge.scenes.at(1411),candidate.characters))
+                    throw std::runtime_error("charms exit has no authored destination");
+                std::cout<<"PREPARED_C71=PASS reveal_targets=6 exit_destination=VALID\n";
+                auto collision=candidate.collision;const auto static_count=collision.size();
+                for(const auto& door:candidate.doors){
+                    std::vector<GpuVertex> vertices(candidate.vertices.begin()+door.first_vertex,candidate.vertices.begin()+door.first_vertex+door.vertex_count);
+                    auto extra=BuildCollisionTriangles(vertices,vertices.size());collision.insert(collision.end(),extra.begin(),extra.end());
+                }
+                AppendCharmsCollision(charms,collision);
+                for(auto& [ref,block]:charms.blocks){
+                    const auto box=CharmsBlockBounds(block);
+                    const auto center=ScaleVector(AddVector(box.minimum,box.maximum),.5F);
+                    const auto lift=charms_block::Advance(block.motion,box,AddVector(center,{0,1,0}),true,.05F,15,
+                        collision,static_count,block.collision_first,block.collision_count,block.collision_yaw);
+                    std::cout<<"PREPARED_BLOCK_LIFT ref="<<ref<<" rise="<<lift.offset[1]<<'\n';
+                    if(std::abs(lift.offset[1]-.2F)>.001F)
+                        throw std::runtime_error("prepared levitation block is wedged in starting geometry");
+                }
+                const auto sky_count=std::count_if(candidate.vertices.begin(),candidate.vertices.begin()+candidate.map_vertices,
+                    [](const auto& vertex){return (vertex.polygon_flags&kBroomSkyFlag)!=0;});
+                if(sky_count!=36)throw std::runtime_error("prepared balcony sky must contain only its six authored faces");
+                std::cout<<"PREPARED_BALCONY_SKY=PASS vertices="<<sky_count<<'\n';
+                for(const auto& prop:candidate.challenge_props)if(chest::IsChest(prop.name)){
+                    if(!prop.spell_target||prop.animation_frames!=74||prop.settled_frames!=6)
+                        throw std::runtime_error("prepared chest animation is incomplete");
+                    ++chests;
+                    for(const auto& reward:candidate.beans)if(reward.source_actor==prop.reference){++rewards;cards+=reward.kind==4;}
+                }
+                if(chests!=11||rewards!=50||cards!=1||charms.valid_plates.size()!=9)
+                    throw std::runtime_error("prepared charms rewards or plates are incomplete");
+                std::cout<<"PREPARED_CHARMS=PASS scenes=23 blocks=7 plates=9 chests=11 rewards=50 chest_cards=1\n";
+            }
             if(map_id==2){
                 const auto player=std::ranges::find_if(candidate.characters,[](const auto& draw){return draw.player;});
                 BroomAvatar avatar;
@@ -98,6 +184,13 @@ int Run(const std::vector<fs::path>& args){
             }
             const auto* vertex_address=candidate.vertices.data();
             const auto* texture_address=candidate.textures.data();
+            if(map_id==kCharmsTrainingMapId){
+                auto mirrors=FindMirrorSurfaces(candidate.vertices,candidate.map_vertices);
+                const auto before=candidate.vertices.size();AppendWaterSurfaceGeometry(mirrors,candidate.vertices);
+                if(std::ranges::count_if(mirrors,[](const auto& m){return m.water_draw.second>0;})!=1)
+                    throw std::runtime_error("exactly one water surface must receive wave geometry");
+                std::cout<<"PREPARED_WATER_WAVES=PASS added_vertices="<<candidate.vertices.size()-before<<'\n';
+            }
             QuestFrontEnd front;
             if(!LoadFrontAssets(root,&front.assets,map_id))throw std::runtime_error("prepared scene frontend assets are incomplete");
             // Reserve the same two extra layers used by fire and the target
@@ -106,6 +199,11 @@ int Run(const std::vector<fs::path>& args){
                 throw std::runtime_error("prepared scene leaves insufficient frontend texture layers");
             candidate.texture_layers+=2;
             candidate.textures.resize(std::uint64_t(candidate.texture_layers)*256*256*4);
+            if(map_id==3){
+                unsigned feather_layer=0;
+                if(!LoadWingFeatherTexture(root,256,256,candidate.textures,candidate.texture_layers,feather_layer))
+                    throw std::runtime_error("original Wingardium feather texture could not be loaded");
+            }
             std::map<std::string,FrontDrawRange> ranges;std::uint32_t front_vertices=0;
             if(!AppendFrontGeometry(front,candidate.vertices,candidate.textures,candidate.texture_layers,ranges,front_vertices)||
                 candidate.vertices.data()!=vertex_address||candidate.textures.data()!=texture_address)

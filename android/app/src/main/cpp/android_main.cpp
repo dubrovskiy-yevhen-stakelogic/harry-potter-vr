@@ -35,6 +35,7 @@ struct QuestHost {
     XrInstance instance = XR_NULL_HANDLE;
     XrSystemId system_id = XR_NULL_SYSTEM_ID;
     bool metrics_extension=false;
+    bool performance_extension=false;
     hpvr::quest::XrVulkanSmoke stereo_smoke{};
 };
 
@@ -300,6 +301,8 @@ bool InitializeOpenXr(QuestHost& host) {
     if(HasExtension(extensions,XR_FB_DISPLAY_REFRESH_RATE_EXTENSION_NAME))
         enabled.push_back(XR_FB_DISPLAY_REFRESH_RATE_EXTENSION_NAME);
     host.metrics_extension=HasExtension(extensions,XR_META_PERFORMANCE_METRICS_EXTENSION_NAME);
+    host.performance_extension=HasExtension(extensions,XR_EXT_PERFORMANCE_SETTINGS_EXTENSION_NAME);
+    if(host.performance_extension)enabled.push_back(XR_EXT_PERFORMANCE_SETTINGS_EXTENSION_NAME);
     if(host.metrics_extension)
         enabled.push_back(XR_META_PERFORMANCE_METRICS_EXTENSION_NAME);
     create_info.enabledExtensionCount = enabled.size();
@@ -373,7 +376,7 @@ void ApplyEvent(QuestHost& host, const hpvr::quest::HostEvent event) {
     if (transition.should_start_session) {
         if (InitializeOpenXr(host) &&
             host.stereo_smoke.InitializeGraphics(host.instance,
-                                                 host.system_id,host.metrics_extension) &&
+                                                 host.system_id,host.metrics_extension,host.performance_extension) &&
             host.stereo_smoke.CreateSession()) {
             HPVR_LOGI(
                 "[hpvr.quest.lifecycle] generation=%llu session=CREATED",

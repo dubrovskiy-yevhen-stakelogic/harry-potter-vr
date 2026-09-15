@@ -13,6 +13,7 @@ void QuestScene::AbortMapTransition(const char* message){
 void QuestScene::RequestChallengeTravel(){
     auto& s=*state_;if(s.map_id!=0||s.travel_pending||s.travel_blocked)return;
     s.travel_origin=s.frontend.progress;auto next=s.frontend.progress;
+    next.completed_maps|=1U<<kIntroductionMapId;
     next.map_id=1;next.phase=2;next.page=14;next.quest_stage=0;next.lesson_passes=4;
     next.banked_beans+=static_cast<unsigned>(next.collected_beans.size());next.collected_beans.clear();
     next.activated_events.clear();next.challenge_stars=0;next.graph_state.clear();next.world_state.clear();
@@ -45,6 +46,7 @@ void QuestScene::RebuildChallengeCollision(){
         }
         door.collision_count=s.collision_triangles.size()-door.collision_first;
     }
+    if(s.map_id==3)AppendCharmsCollision(s.charms,s.collision_triangles);
     s.challenge.collision_dirty=false;
 }
 template<class SceneState>
@@ -68,16 +70,20 @@ std::string InitialChallengeWorldSnapshot(const SceneState& state){
     return physical.str();
 }
 void QuestScene::RestoreTransferredProgress(const ProgressSave& progress,unsigned slot){
+    state_->house_point_hud.Reset(progress.house_points[campaign::kGryffindor]);
     auto& s=*state_;
     if(progress.map_id!=s.map_id||slot>=3)return;
     s.frontend.progress=progress;s.frontend.slot=slot;
     s.frontend.paused=FrontScreen::Game;s.frontend.BeginGame();
     if(s.map_id==0){RestoreCurrentProgress();return;}
     if(s.map_id==2){RestoreBroomProgress();return;}
+    if(s.map_id==3&&!RestoreCharmsState(s.charms,progress.charms_state)){
+        s.frontend.screen=FrontScreen::Main;s.frontend.message="INVALID CHARMS CHECKPOINT";return;
+    }
     auto& p=s.frontend.progress;
     if(!s.challenge_initial_checkpoint_valid){
         auto initial=p;initial.health=100;initial.quest_stage=0;initial.challenge_stars=0;
-        initial.collected_beans.clear();initial.activated_events.clear();
+        initial.collected_beans.clear();initial.activated_events.clear();initial.charms_state.clear();
         initial.graph_state=s.challenge.graph.Serialize();initial.world_state=InitialChallengeWorldSnapshot(s);
         float floor=0;(void)FindPropGroundBelow(s.collision_triangles,{0,0,0},&floor);
         initial.player={0,floor+kPlayerCapsuleHalfHeightMeters+kPlayerEyeHeightMeters,0};initial.yaw=0;
@@ -86,7 +92,7 @@ void QuestScene::RestoreTransferredProgress(const ProgressSave& progress,unsigne
     // Rebuild the fallback for this slot from immutable fresh-map state. A
     // legacy Continue in another slot must not inherit the previous slot's book.
     auto initial=p;initial.health=100;initial.quest_stage=0;initial.challenge_stars=0;
-    initial.collected_beans.clear();initial.activated_events.clear();
+    initial.collected_beans.clear();initial.activated_events.clear();initial.charms_state.clear();
     initial.graph_state=s.challenge_initial_checkpoint.graph_state;
     initial.world_state=s.challenge_initial_checkpoint.world_state;
     initial.player=s.challenge_initial_checkpoint.player;initial.yaw=0;
@@ -123,11 +129,11 @@ void QuestScene::RestoreTransferredProgress(const ProgressSave& progress,unsigne
             }
             valid=valid&&ref==d.actor_reference&&std::isfinite(d.phase)&&d.phase>=0&&d.phase<=1&&finite(d.hold)&&d.hold>=0&&
                 std::ranges::all_of(d.grid_offset,finite)&&std::ranges::all_of(d.grid_target,finite);}
-        in>>count;valid=valid&&count==actors.size();
-        for(auto& a:actors){std::int32_t ref=0;in>>ref>>a.enabled>>a.yaw;for(auto& v:a.cutscene_offset)in>>v;
-            valid=valid&&ref==a.actor_reference&&finite(a.yaw)&&std::ranges::all_of(a.cutscene_offset,finite);a.desired_yaw=a.yaw;}
-        in>>barrel>>barrel_time>>count;valid=valid&&barrel<=4&&finite(barrel_time)&&barrel_time>=0&&count<=3;
-        if(count>3)valid=false;
+        const bool characters_valid=ReadCheckpointCharacters(in,actors,s.map_id==3);
+        valid=valid&&characters_valid;
+        const unsigned maximum_gnomes=s.map_id==3?4U:3U;
+        in>>barrel>>barrel_time>>count;valid=valid&&barrel<=4&&finite(barrel_time)&&barrel_time>=0&&count<=maximum_gnomes;
+        if(count>maximum_gnomes)valid=false;
         else for(unsigned i=0;i<count;++i){std::int32_t ref=0;unsigned n=0;in>>ref>>n;
             valid=valid&&n<=3&&!hits.contains(ref)&&std::ranges::any_of(actors,[&](const auto& a){return a.actor_reference==ref&&AsciiFold(a.class_name)=="tut1.tut1gnome";});hits[ref]=n;}
         in>>resume_scene>>complete;valid=valid&&bool(in)&&(!resume_scene||s.challenge.scenes.contains(resume_scene));
@@ -136,8 +142,8 @@ void QuestScene::RestoreTransferredProgress(const ProgressSave& progress,unsigne
             if(count<=s.challenge.scenes.size())for(unsigned i=0;i<count;++i){std::int32_t ref=0;in>>ref;
                 valid=valid&&s.challenge.scenes.contains(ref)&&ref!=resume_scene&&
                     std::ranges::find(pending,ref)==pending.end();pending.push_back(ref);}
-            in>>count;valid=valid&&count<=3;
-            if(count<=3)for(unsigned i=0;i<count;++i){std::int32_t ref=0;in>>ref;
+            in>>count;valid=valid&&count<=maximum_gnomes;
+            if(count<=maximum_gnomes)for(unsigned i=0;i<count;++i){std::int32_t ref=0;in>>ref;
                 valid=valid&&active_gnomes.insert(ref).second&&std::ranges::any_of(actors,[&](const auto& a){
                     return a.actor_reference==ref&&a.enabled&&AsciiFold(a.class_name)=="tut1.tut1gnome";});}
         }
@@ -149,7 +155,7 @@ void QuestScene::RestoreTransferredProgress(const ProgressSave& progress,unsigne
         s.challenge.pending_scenes=std::move(pending);s.challenge.gnome_active=std::move(active_gnomes);
     }
     s.challenge.graph=std::move(graph);s.intro_cutscene.playing=false;s.challenge.active_scene=0;
-    SetBridgeProfessor(s.character_draws,ChallengeActivated(p,4807)&&resume_scene!=4807);
+    if(s.map_id==1)SetBridgeProfessor(s.character_draws,ChallengeActivated(p,4807)&&resume_scene!=4807);
     s.challenge.checkpoint_pending=false;
     s.challenge.authored_checkpoint_pending=p.world_state.empty();
     if(p.world_state.empty()){
@@ -186,6 +192,12 @@ void QuestScene::RestoreTransferredProgress(const ProgressSave& progress,unsigne
             if(activated)PrepareChallengeBeanEmission(bean,prop,s.collision_triangles);
             bean.emission_time=activated?1.0F:0.0F;
         }
+    }
+    if(s.map_id==3)for(auto& bean:s.beans)if(bean.source_actor&&
+        std::ranges::none_of(s.challenge.props,[&](const auto& prop){return prop.reference==bean.source_actor;})){
+        const bool activated=ChallengeActivated(p,bean.source_actor);
+        if(activated)PrepareChallengeBeanEmission(bean,BeanSpawnerSource(bean,s.challenge.props),s.collision_triangles,&p.player);
+        bean.emission_time=activated?1.0F:0.0F;
     }
     s.last_player=p.player;s.last_yaw=p.yaw;
     if(p.world_state.empty()){
@@ -227,19 +239,21 @@ void QuestScene::RestoreTransferredProgress(const ProgressSave& progress,unsigne
     s.audio.SelectMusic(s.frontend.assets.level_music_index);s.audio.SetPresentationAudio(true,false);
     if(s.challenge.barrel_time>0)for(auto& a:s.character_draws)
         if(AsciiFold(a.class_name)=="tut1.flipbarrel"&&a.clips.contains("roll"))a.active_clip="roll";
-    if(s.challenge.complete&&!resume_scene)RequestBroomTravel();
+    if(s.map_id==1&&s.challenge.complete&&!resume_scene)RequestBroomTravel();
     else if(resume_scene)StartChallengeScene(resume_scene);
     else if(p.quest_stage==0){s.frontend.screen=FrontScreen::Objective;s.frontend.selection=0;}
     // Commit only after XR has adopted the scene, not from the background loader.
 }
 void QuestScene::BeginChallengeDeath(const char* reason) const {
     auto& s=*state_;
-    if(s.map_id!=1||s.death_time>=0)return;
+    if(!IsWalkingChallenge(s.map_id)||s.death_time>=0)return;
+    SceneLoadTrace::Event(s.frontend.saves,s.map_id,std::string("DEATH reason=")+reason+
+        " player="+std::to_string(s.last_player[0])+","+std::to_string(s.last_player[1])+","+std::to_string(s.last_player[2]));
     ProgressSave checkpoint;
     auto checked_graph=s.challenge.graph;
     const bool memory=s.challenge_start_checkpoint_valid&&s.challenge_start_checkpoint.health>0&&
         !s.challenge_start_checkpoint.world_state.empty()&&checked_graph.Restore(s.challenge_start_checkpoint.graph_state);
-    const bool disk=!memory&&ReadProgress(s.frontend.saves,s.frontend.slot,&checkpoint)&&checkpoint.map_id==1&&checkpoint.health>0&&
+    const bool disk=!memory&&ReadProgress(s.frontend.saves,s.frontend.slot,&checkpoint)&&checkpoint.map_id==s.map_id&&checkpoint.health>0&&
         checkpoint.world_state.starts_with("CHALLENGE_WORLD 3 ")&&
         !checkpoint.graph_state.empty()&&!checkpoint.world_state.empty()&&checked_graph.Restore(checkpoint.graph_state);
     if(!disk){
@@ -288,6 +302,7 @@ void QuestScene::StartChallengeScene(std::int32_t reference){
     auto& s=*state_;const auto found=s.challenge.scenes.find(reference);
     if(found==s.challenge.scenes.end()||s.intro_cutscene.playing)return;
     s.challenge.active_scene=reference;s.intro_cutscene=found->second;s.intro_cutscene.playing=true;
+    SceneLoadTrace::Event(s.frontend.saves,s.map_id,"CUTSCENE_START ref="+std::to_string(reference));
     RememberChallengeEvent(s.frontend.progress,reference);s.challenge.checkpoint_pending=true;
     auto& scene=s.intro_cutscene;
     // A saved cutscene restarts its own authored marks rather than inheriting a
@@ -313,65 +328,54 @@ void QuestScene::StartChallengeScene(std::int32_t reference){
             }
         }
     }
-    if(reference==4807)SetBridgeProfessor(s.character_draws,false);
+    if(s.map_id==3){
+        const float wait=OpenCharmsCutsceneDoors(reference,s.doors);
+        for(auto& track:scene.tracks)track.delay_seconds=std::max(track.delay_seconds,wait);
+    }
+    if(s.map_id==1&&reference==4807)SetBridgeProfessor(s.character_draws,false);
     GroundCutsceneCast(scene,s.character_draws,s.collision_triangles);
-    (void)award::RestoreProfessorFacing(reference,scene.locations,s.character_draws);
+    if(s.map_id==3&&reference==1526){
+        for(auto& track:scene.tracks)for(auto& actor:s.character_draws)if(actor.player&&actor.actor_reference==track.actor_reference)
+            for(const auto& location:scene.locations)if(AsciiFold(location.alias)=="locname1"){
+                const auto direction=SubtractVector(location.position,track.position);
+                if(std::hypot(direction[0],direction[2])>.01F)actor.yaw=actor.desired_yaw=std::atan2(direction[0],direction[2]);
+            }
+    }
+    if(s.map_id==1)(void)award::RestoreProfessorFacing(reference,scene.locations,s.character_draws);
+    if(s.map_id==3&&s.frontend.vr.first_person_cutscenes)FaceCharmsCinematicTarget(scene,s.character_draws);
     s.audio.StopDialogue();s.front_anchor_valid=false;
     HPVR_LOGI("[hpvr.quest.challenge.scene] status=STARTED ref=%d name=%s",reference,scene.object_name.c_str());
-}
-// Tut1Gnome has equal radius/half-height, so its capsule is a sphere. Keep
-// ground and wall contacts at those authored dimensions, not Harry's height.
-std::array<float,3> MoveChallengeGnome(const std::vector<CollisionTriangle>& triangles,
-                                    const std::array<float,3>& feet,
-                                    const std::array<float,3>& requested){
-    auto position=feet;
-    const float length=std::hypot(requested[0],requested[2]);
-    if(!std::isfinite(length)||length<=.00001F||length>.5F)return position;
-    const unsigned count=std::max(1U,static_cast<unsigned>(std::ceil(length/.05F)));
-    const auto substep=ScaleVector(requested,1.0F/static_cast<float>(count));
-    const auto try_position=[&](const std::array<float,3>& delta){
-        auto candidate=AddVector(position,delta);float floor=0;
-        if(!FindPropGroundBelow(triangles,candidate,&floor)||floor>position[1]+.3F||floor<position[1]-.35F)return false;
-        candidate[1]=floor;auto center=candidate;center[1]+=gnome::kCollisionHalfHeightMeters;
-        constexpr float radius=gnome::kCollisionRadiusMeters;
-        constexpr float contact=radius-kGroundContactEpsilonMeters;
-        for(const auto& triangle:triangles){
-            const bool walkable=std::abs(triangle.normal[1])>=kWalkableNormalY;
-            if((walkable&&triangle.maximum[1]<=center[1])||
-               center[0]+radius<triangle.minimum[0]||center[0]-radius>triangle.maximum[0]||
-               center[1]+radius<triangle.minimum[1]||center[1]-radius>triangle.maximum[1]||
-               center[2]+radius<triangle.minimum[2]||center[2]-radius>triangle.maximum[2])continue;
-            const auto closest=ClosestPointOnTriangle(center,triangle);
-            if(walkable&&closest[1]<=center[1])continue;
-            const auto separation=SubtractVector(center,closest);
-            if(DotVector(separation,separation)<contact*contact)return false;
-        }
-        position=candidate;return true;
-    };
-    for(unsigned i=0;i<count;++i)if(!try_position(substep)){
-        if(std::abs(substep[0])>.00001F)(void)try_position({substep[0],0,0});
-        if(std::abs(substep[2])>.00001F)(void)try_position({0,0,substep[2]});
-    }
-    return position;
 }
 void QuestScene::AdvanceChallenge(float seconds){
     auto& s=*state_;auto& c=s.challenge;auto& p=s.frontend.progress;
     if(!std::isfinite(seconds)||seconds<=0||!c.graph.healthy())return;
     const float step=std::clamp(seconds,0.0F,.05F);
+    if(s.map_id==3)UpdateCharmsPickupAttachments(s.charms,s.doors,s.beans);
     if(s.death_time>=0){AdvanceChallengeDeath(step);return;}
     if(p.health==0){BeginChallengeDeath("HEALTH_DEPLETED");return;}
     for(auto& flight:s.pickup_flights)flight.elapsed+=step;
     std::erase_if(s.pickup_flights,[](const auto& flight){return flight.elapsed>=flight.duration;});
     s.bean_time=std::fmod(s.bean_time+step,1000.0F);s.bean_hud_time=std::max(0.0F,s.bean_hud_time-step);
-    for(auto& prop:c.props)if(prop.activation_time>=0)prop.activation_time=std::min(prop.animation_duration,prop.activation_time+step);
+    s.star_hud_time=std::max(0.0F,s.star_hud_time-step);
+    s.card_pickup.Advance(step);
+    for(auto& prop:c.props)if(prop.activation_time>=0){
+        const bool opening=prop.activation_time<prop.animation_duration;
+        prop.activation_time=std::min(prop.animation_duration,prop.activation_time+step);
+        if(opening&&prop.activation_time>=prop.animation_duration&&chest::IsChest(prop.name))
+            if(const auto sound=GameplayDialogueIndex(s.frontend.assets,"chest_landing"))
+                (void)s.audio.PlayWorldEffect(*sound,.85F);
+    }
     for(auto& bean:s.beans)if(bean.source_actor&&ChallengeRewardsReady(c.props,bean.source_actor,p))
         bean.emission_time=std::min(1.0F,bean.emission_time+step);
     c.hurt_time=std::max(0.0F,c.hurt_time-step);s.health_flash_time=std::max(0.0F,s.health_flash_time-step);
     const bool playing=s.intro_cutscene.playing;
     const bool controlled=IsCutscenePlaying();
     AdvanceIntroCutscene(step);
+    if(s.map_id==3&&s.frontend.vr.first_person_cutscenes&&IsCutscenePlaying())
+        FaceCharmsCinematicTarget(s.intro_cutscene,s.character_draws);
     for(auto& a:s.character_draws){a.animation_time+=step;a.yaw+=std::clamp(std::remainder(a.desired_yaw-a.yaw,kTau),-8*step,8*step);}
     if(controlled&&!IsCutscenePlaying()){
+        SceneLoadTrace::Event(s.frontend.saves,s.map_id,"CUTSCENE_RELEASE ref="+std::to_string(c.active_scene));
         // Restore player control once, not again when a background exit track
         // eventually ends after the player has already walked into another room.
         c.active_scene=0;p.quest_stage=std::min(63U,std::max(1U,p.quest_stage+1));
@@ -387,13 +391,30 @@ void QuestScene::AdvanceChallenge(float seconds){
     // Collision and platform support must agree on the same physical feet.
     // The presentation head changes height when the user crouches or stands.
     if(s.player_capsule_valid&&!s.restore_pending)body=s.player_capsule;
-    if(!IsCutscenePlaying()){
+    // Scripted actors still touch class-proximity triggers during cinematics.
+    // Player triggers remain gated below until control is returned.
+    for(auto& zone:c.spatial){
+        if(zone.proximity_class.empty()||zone.proximity_class=="harry"||zone.proximity_class=="wingardiumblock")continue;
+        bool inside=false;
+        for(const auto& actor:s.character_draws){
+            if(!actor.enabled)continue;
+            const auto cls=AsciiFold(actor.class_name);
+            if(cls!=zone.proximity_class&&!cls.ends_with("."+zone.proximity_class))continue;
+            const auto d=SubtractVector(AddVector(actor.base_origin,actor.cutscene_offset),zone.position);
+            if(std::hypot(d[0],d[2])<=zone.radius&&std::abs(d[1])<=zone.height+kPlayerCapsuleHalfHeightMeters){inside=true;break;}
+        }
+        if(inside&&!zone.inside)(void)c.graph.Touch(zone.reference);
+        zone.inside=inside;
+    }
+    if(!IsCutscenePlaying()&&!(s.map_id==3&&s.charms.active_lesson>=0)){
         const auto world=AddVector(RotateYaw(body,-c.source_yaw),c.source_origin);
         const std::array<float,3> unreal{-world[2]/kMetersPerUnrealUnit,world[0]/kMetersPerUnrealUnit,world[1]/kMetersPerUnrealUnit};
         if(c.zones.IsLethal(unreal)){
             BeginChallengeDeath("AUTHORED_BSP_KILLZONE");return;
         }
         for(auto& zone:c.spatial){
+            if(!zone.proximity_class.empty()&&zone.proximity_class!="harry")continue;
+            if(s.map_id==3&&zone.event=="openclosedoor"&&ChallengeActivated(p,zone.reference))continue;
             auto position=zone.position;
             if(zone.checkpoint)position[1]+=.10F+.03F*std::sin(8*s.bean_time);
             const auto d=SubtractVector(body,position);
@@ -414,8 +435,20 @@ void QuestScene::AdvanceChallenge(float seconds){
         for(const auto& pickup:s.beans){
             if(pickup.source_actor&&(!ChallengeRewardsReady(c.props,pickup.source_actor,p)||pickup.emission_time<.25F))continue;
             if(ChallengeCollected(p,pickup.actor_reference)||!CanCollectBean(s.collision_triangles,body,BeanWorldPosition(pickup)))continue;
+            if(pickup.kind==4){
+                if(TakeBroomCard(p,s.card_pickup,pickup,s.bean_time,s.audio.DialogueDurationSeconds(s.card_sound))){
+                    p.earned_cards|=campaign::CardMask(chest::CardId(pickup.actor_reference));
+                    (void)s.audio.PlayWorldEffect(s.card_sound,.9F);s.bean_hud_time=4;
+                    c.checkpoint_pending=true;
+                }
+                continue;
+            }
             p.collected_beans.insert(std::lower_bound(p.collected_beans.begin(),p.collected_beans.end(),pickup.actor_reference),pickup.actor_reference);
-            if(pickup.kind==3){(void)c.graph.CollectStar(pickup.actor_reference);p.challenge_stars=c.graph.star_count();}
+            if(pickup.kind==1){
+                p.health=std::min(100U,p.health+20);(void)s.audio.PlayWorldEffect(s.frog_sound,.8F);
+                c.checkpoint_pending=true;continue;
+            }
+            if(pickup.kind==3){(void)c.graph.CollectStar(pickup.actor_reference);p.challenge_stars=c.graph.star_count();s.star_hud_time=4.0F;}
             StartPickupFlight(pickup.actor_reference);
             s.bean_hud_time=4;
             if(pickup.kind==3)(void)s.audio.PlayWorldEffect(s.star_sound,.85F);
@@ -431,6 +464,7 @@ void QuestScene::AdvanceChallenge(float seconds){
             switch(effect.kind){
             case MapEventKind::mover_trigger:
                 for(auto& d:s.doors)if(d.actor_reference==ref){
+                    if(d.cutscene_hold)break;
                     if(d.grid){
                         const auto push_origin=grid_push::ConsumeOrigin(c.grid_hit_positions,ref,s.last_player);
                         const auto remaining=SubtractVector(d.grid_target,d.grid_offset);
@@ -482,7 +516,11 @@ void QuestScene::AdvanceChallenge(float seconds){
                 for(auto& prop:c.props)if(prop.reference==ref&&prop.spell_target&&!ChallengeActivated(p,ref)){
                     RememberChallengeEvent(p,ref);(void)c.graph.Signal(ref);c.checkpoint_pending=true;
                     prop.activation_time=0;
-                    if(const auto sound=GameplayDialogueIndex(s.frontend.assets,prop.cauldron?"cauldron_flip":"vase_breaking"))
+                    constexpr std::array<const char*,4> chest_sounds{
+                        "METAL_CHEST_OPEN_2","METAL_CHEST_OPEN_4","WOOD_CHEST_OPEN_1","WOOD_CHEST_OPEN_2"};
+                    const auto effect_name=chest::IsChest(prop.name)?chest_sounds[static_cast<unsigned>(ref)%chest_sounds.size()]:
+                        (prop.cauldron?"cauldron_flip":"vase_breaking");
+                    if(const auto sound=GameplayDialogueIndex(s.frontend.assets,effect_name))
                         (void)s.audio.PlayWorldEffect(*sound,.85F);
                     for(auto& bean:s.beans)if(bean.source_actor==ref){
                         PrepareChallengeBeanEmission(bean,prop,s.collision_triangles,&body);bean.emission_time=0;
@@ -490,6 +528,19 @@ void QuestScene::AdvanceChallenge(float seconds){
                 }
                 break;
             case MapEventKind::actor_trigger:
+                if(s.map_id==3&&effect.enabled)for(const auto& prop:c.props)
+                    if(prop.reference==ref&&prop.name=="hprops.padlock"){
+                        RememberChallengeEvent(p,ref);c.checkpoint_pending=true;
+                    }
+                if(s.map_id==3)StartCharmsLesson(ref);
+                if(s.map_id==3&&effect.enabled&&!ChallengeActivated(p,ref))
+                    if(std::ranges::any_of(s.beans,[&](const auto& bean){return bean.source_actor==ref;})){
+                        RememberChallengeEvent(p,ref);c.checkpoint_pending=true;
+                        for(auto& bean:s.beans)if(bean.source_actor==ref){
+                            PrepareChallengeBeanEmission(bean,BeanSpawnerSource(bean,c.props),s.collision_triangles,&body);
+                            bean.emission_time=0;
+                        }
+                    }
                 for(auto& a:s.character_draws)if(a.actor_reference==ref&&!ChallengeActivated(p,ref)){
                     if(AsciiFold(a.class_name)=="tut1.tut1gnome"){
                         auto& motion=c.gnome_motion[ref];
@@ -520,6 +571,8 @@ void QuestScene::AdvanceChallenge(float seconds){
     bool moved=false;
     for(std::size_t i=0;i<std::min(s.doors.size(),c.mover_triangles.size());++i){
         auto& d=s.doors[i];const auto old_pose=d.motion.pose;const auto old_grid=d.grid_offset;
+        const bool released_cutscene_hold=d.cutscene_hold&&(!s.intro_cutscene.playing||d.tag!=CharmsCutsceneDoorTag(c.active_scene));
+        if(released_cutscene_hold)d.cutscene_hold=false;
         auto old_transform=movers::BuildTransform(d.placement,old_pose);
         old_transform.translation=AddVector(old_transform.translation,old_grid);
         bool supported=false;
@@ -548,15 +601,19 @@ void QuestScene::AdvanceChallenge(float seconds){
             const std::array<float,3> delta{d.grid_target[0]-d.grid_offset[0],0,d.grid_target[2]-d.grid_offset[2]};
             const float distance=std::hypot(delta[0],delta[2]);
             if(!d.grid_physics.initialized||!d.grid_physics.grounded||d.grid_physics.dynamic_support||distance>.00001F){
-                auto minimum=movers::TransformPoint(old_transform,c.mover_triangles[i][0].vertices[0]);auto maximum=minimum;
+                const float frame_yaw=s.map_id==3?d.placement.player_yaw:0;
+                auto minimum=grid_motion::Yaw(movers::TransformPoint(old_transform,c.mover_triangles[i][0].vertices[0]),-frame_yaw);auto maximum=minimum;
                 for(const auto& triangle:c.mover_triangles[i])for(const auto& vertex:triangle.vertices){
-                    const auto point=movers::TransformPoint(old_transform,vertex);
+                    const auto point=grid_motion::Yaw(movers::TransformPoint(old_transform,vertex),-frame_yaw);
                     for(unsigned axis=0;axis<3;++axis){minimum[axis]=std::min(minimum[axis],point[axis]);maximum[axis]=std::max(maximum[axis],point[axis]);}
                 }
-                const auto horizontal=distance>.00001F?ScaleVector(delta,std::min(1.0F,step*2.5F/distance)):std::array<float,3>{};
+                // One millimetre covers BSP/mesh rounding without lifting the
+                // lower trim out of its authored recessed track.
+                if(s.map_id==3)for(const unsigned axis:{0U,2U}){minimum[axis]+=.001F;maximum[axis]-=.001F;}
+                const auto horizontal=grid_motion::Yaw(distance>.00001F?ScaleVector(delta,std::min(1.0F,step*2.5F/distance)):std::array<float,3>{},-frame_yaw);
                 const auto physics=grid_motion::Advance(d.grid_physics,{minimum,maximum},horizontal,step,
-                    s.collision_triangles,c.collision_base,d.collision_first,d.collision_count);
-                d.grid_offset=AddVector(d.grid_offset,physics.offset);
+                    s.collision_triangles,c.collision_base,d.collision_first,d.collision_count,0,frame_yaw);
+                d.grid_offset=AddVector(d.grid_offset,grid_motion::Yaw(physics.offset,frame_yaw));
                 if(physics.blocked){d.grid_target=d.grid_offset;c.checkpoint_pending=true;}
                 d.grid_target[1]=d.grid_offset[1];
                 if(physics.left_support||physics.landed)c.checkpoint_pending=true;
@@ -569,7 +626,7 @@ void QuestScene::AdvanceChallenge(float seconds){
         if((arrival.finished||grid_arrived||(d.looping&&arrival.arrivals))&&!d.completion_sent){
             d.completion_sent=true;(void)c.graph.Signal(d.actor_reference);c.checkpoint_pending=true;
         }
-        if(arrival.finished&&d.opening&&d.initial_state.find("opentimed")!=std::string::npos){
+        if((arrival.finished||released_cutscene_hold)&&!d.cutscene_hold&&d.opening&&d.initial_state.find("opentimed")!=std::string::npos){
             d.opening=false;d.hold=d.stay_open;
             if(d.hold==0){d.motion.seconds=d.close_seconds;(void)movers::Start(d.motion,false);}
         }
@@ -592,6 +649,7 @@ void QuestScene::AdvanceChallenge(float seconds){
         }
     }
     if(moved||c.collision_dirty)RebuildChallengeCollision();
+    if(s.map_id==3)UpdateCharmsPickupAttachments(s.charms,s.doors,s.beans);
     for(auto& a:s.character_draws){
         const auto cls=AsciiFold(a.class_name);auto feet=AddVector(a.base_origin,a.cutscene_offset);
         if(cls=="tut1.flipbarrel"&&c.barrel_time>0&&c.barrel_stage<4){
@@ -637,6 +695,20 @@ void QuestScene::AdvanceChallenge(float seconds){
     }
     for(std::size_t i=0;i<s.character_draws.size();++i)(void)s.spell_targets.SetSceneOffset(i,s.character_draws[i].cutscene_offset);
     if(s.projectile.flying){
+        for(const auto& actor:s.character_draws)if(actor.actor_reference==c.impact_actor&&AsciiFold(actor.class_name)=="tut1.tut1gnome"){
+            if(!actor.enabled||actor.collision_disabled){c.impact_actor=0;s.projectile.flying=false;break;}
+            const auto current=AddVector(s.projectile.origin,ScaleVector(s.projectile.direction,s.projectile.distance_m));
+            auto destination=AddVector(actor.collision_center,actor.cutscene_offset);
+            destination[1]=(actor.collision_min_y+actor.collision_max_y)*.5F+actor.cutscene_offset[1];
+            s.projectile.terminal_distance_m=RetargetProjectile(s.projectile.origin,s.projectile.direction,
+                s.projectile.distance_m,destination);
+            const float length=s.projectile.terminal_distance_m-s.projectile.distance_m;
+            const float obstruction=BasicRayDistance(s.collision_triangles,current,s.projectile.direction);
+            if(obstruction+.025F<length){s.projectile.terminal_distance_m=s.projectile.distance_m+obstruction;c.impact_actor=0;}
+            break;
+        }
+    }
+    if(s.projectile.flying){
         s.projectile.distance_m=std::min(s.projectile.terminal_distance_m,s.projectile.distance_m+step*kFlipendoSpeedMetersPerSecond);
         if(s.projectile.distance_m>=s.projectile.terminal_distance_m){
             s.projectile.flying=false;s.projectile.impacting=true;s.projectile.impact_seconds=0;
@@ -664,5 +736,5 @@ void QuestScene::AdvanceChallenge(float seconds){
         SaveCheckpoint(true);c.authored_checkpoint_pending=false;
     }
     c.checkpoint_pending=false;
-    if(c.complete&&!s.intro_cutscene.playing)RequestBroomTravel();
+    if(s.map_id==1&&c.complete&&!s.intro_cutscene.playing)RequestBroomTravel();
 }

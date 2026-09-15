@@ -4,7 +4,7 @@ param([string]$FrontendProbe)
 $ErrorActionPreference='Stop'
 Set-StrictMode -Version Latest
 $hpvrTestRepository=Split-Path -Parent $PSScriptRoot
-. (Join-Path $hpvrTestRepository 'PREPARE-QUEST-BROOM.ps1') -LibraryOnly
+. (Join-Path $hpvrTestRepository 'tools/workspace/PREPARE-QUEST-BROOM.ps1') -LibraryOnly
 $hpvrTestChecks=0
 function Test-Broom([bool]$Pass,[string]$Message) {
     if (-not $Pass) { throw "Broom preparation test failed: $Message" }
@@ -55,7 +55,7 @@ Reject-Broom { Get-HpvrBroomDependencies $owned 'fixture-probe' } 'graph omittin
 $script:hpvrTestGraphMode='escape'
 Reject-Broom { Get-HpvrBroomDependencies $owned 'fixture-probe' } 'escaped dependency path rejected'
 if (-not [string]::IsNullOrWhiteSpace($FrontendProbe)) {
-    foreach ($arguments in @(@('unused','unused','--map','3'),@('unused','unused','--map','-1'),
+    foreach ($arguments in @(@('unused','unused','--map','4'),@('unused','unused','--map','-1'),
                              @('unused','unused','--map','01'),@('unused','unused','--map','2','extra'))) {
         $savedPreference=$ErrorActionPreference
         try { $ErrorActionPreference='Continue'; $null=& $FrontendProbe @arguments 2>&1; $exitCode=$LASTEXITCODE }

@@ -29,6 +29,13 @@ int main(){try{
     hit=gm::Sweep(world,box,{-1,0,0},none,0);check(hit.found&&hit.fraction==0,"cannot move into rear wall");
     hit=gm::Sweep(world,box,{6,0,0},none,0);check(hit.found&&std::abs(hit.fraction-.5F)<1e-5F,"full solid bounds stop at opposite wall");
     gm::State motion;
+    auto embedded=box;embedded.minimum[1]-=.32F;embedded.maximum[1]-=.32F;
+    auto recovered=gm::Advance(motion,embedded,{},.02F,world,world.size(),none,0,.36F);
+    check(recovered.landed&&motion.grounded&&std::abs(recovered.offset[1]-.32F)<1e-5F,"bounded initial overlap recovery reaches floor");
+    embedded=gm::Translate(embedded,recovered.offset);
+    recovered=gm::Advance(motion,embedded,{.1F,0,0},.02F,world,world.size(),none,0,.36F);
+    check(recovered.offset[0]>.099F&&std::abs(recovered.offset[1])<1e-5F,"recovered block moves and remains supported");
+    motion={};
     auto step=gm::Advance(motion,box,{.02F,0,0},1.0F/72,world,world.size(),none,0);
     check(motion.grounded&&std::abs(step.offset[1])<1e-5F&&step.offset[0]>.019F,"floor supports a horizontal grid move");
     std::vector<Triangle> empty;
@@ -55,6 +62,17 @@ int main(){try{
     seams.push_back(Tri({-2,0,1},{2,.32F,1.32F},{-2,.32F,1.32F}));
     hit=gm::Sweep(seams,{{-1,0,-1},{1,2,1.00008F}},{.04F,0,0},none,0);
     check(!hit.found,"submillimeter cooked-brush contact cannot lock tangent movement");
+    for(const float yaw:{.016F,.7F,1.57F,3.0F}){
+        std::vector<Triangle> rotated;
+        for(const auto& t:seams)rotated.push_back(Tri(gm::Yaw(t.vertices[0],yaw),gm::Yaw(t.vertices[1],yaw),gm::Yaw(t.vertices[2],yaw)));
+        const gm::Bounds track_box{{-1,0,-.999F},{1,2,.999F}};
+        gm::State track_motion;
+        const auto slide=gm::Advance(track_motion,track_box,{.04F,0,0},.02F,rotated,rotated.size(),none,0,0,yaw);
+        check(!slide.blocked&&track_motion.grounded&&std::abs(slide.offset[0]-.04F)<1e-5F&&std::abs(slide.offset[1])<1e-5F,
+              "oriented box slides tangent to rotated track without rising");
+        hit=gm::Sweep(rotated,track_box,{0,0,.1F},none,0,false,yaw);
+        check(hit.found&&hit.fraction<.02F,"oriented sweep still blocks crossing the track edge");
+    }
     std::vector<Triangle> only_wall;Wall(only_wall,1);box={{-1,3,-1},{1.00008F,7,1}};motion={};
     step=gm::Advance(motion,box,{},1.F/72,only_wall,only_wall.size(),none,0);
     check(!motion.grounded&&step.offset[1]<0,"overlapping vertical wall is not floor support");

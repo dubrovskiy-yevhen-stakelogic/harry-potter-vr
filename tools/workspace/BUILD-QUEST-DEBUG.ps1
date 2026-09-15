@@ -2,7 +2,7 @@
 param([switch]$VoiceDiagnostics)
 
 $ErrorActionPreference = 'Stop'
-$repositoryRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
+$repositoryRoot = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '../..'))
 $androidProject = Join-Path $repositoryRoot 'android'
 $sdkRoot = 'C:\Dev\android-toolchain\sdk'
 $jdkRoot = 'C:\Dev\android-toolchain\jdk21'

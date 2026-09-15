@@ -1,8 +1,8 @@
 # Harry Potter VR — Quest demo installation
 
-Version **0.1.2.1 alpha** is an unofficial standalone Quest 3 demo containing the
-opening level, Flipendo Challenge and Broomstick Training. All three maps are
-selected automatically. This voice-recognition hotfix adds no new maps.
+This is an unofficial standalone Quest 3 port. The installer selects all maps
+declared by its matching release manifest automatically. Supported levels include
+the opening level, Flipendo Challenge, Broomstick Training and Alohomora / Charms.
 The release contains the APK, an offline voice-recognition model and Windows
 import tools, **not game assets, player recordings or saves**.
 
@@ -30,12 +30,24 @@ integrity, not the identity of an untrusted download.
 Double-click `INSTALL-HPVR.cmd` and enter the game
 folder containing `Maps`, `Textures`, `Sounds`, `Music` and `system`.
 Missing FFmpeg and ADB are downloaded and cached automatically. The banner
-must say `HPVR installer revision 6`. The selected maps should be `0, 1, 2` for this
-release. To use existing tools explicitly:
+must say `HPVR installer revision 7`. The selected maps should be `0, 1, 2, 3`
+for four-map builds (older releases retain their declared selection).
+To use existing tools explicitly:
 
 ```powershell
 .\INSTALL-HPVR.ps1 -GamePath 'C:\Program Files\HP' -AdbPath 'C:\Android\platform-tools\adb.exe' -FfmpegPath 'C:\ffmpeg\bin\ffmpeg.exe'
 ```
+
+Import success requires matching file hashes and a successful access check.
+Shell ownership of copied data is normal. The installer adds `o+rx` to HP data
+directories and `o+r` to imported files. New APKs return `DATA_ACCESS=PASS` after
+opening imported files from the app's own background process, without opening
+the VR activity. Older APKs check mode bits; if emulated storage masks them,
+update the APK to obtain a reliable access check. The installer
+does not use `777`, change ownership or modify saves/settings. A failed permission
+check stops installation rather than reporting false success. Start the app only
+after a complete successful import. This installer uses Windows host tools;
+native macOS preparation is not provided by this package.
 
 If PowerShell blocks the script, use the CMD wrapper with the same arguments:
 
@@ -81,11 +93,12 @@ preparation work out of headset loading; it does not remove GPU initialization
 or guarantee an instant first launch. Progress and per-level reports are shown
 during installation. No additional game downloads are used.
 
-This release's `release-manifest.json` declares `mapIds: [0, 1, 2]`. A normal
-double-click install imports the packages and audio for all three levels, then
-prepares and verifies all three scene caches. No extra map option is needed.
-Use the in-game level selection to start the Flipendo Challenge or Broomstick
-Training from the beginning.
+Four-map builds declare `mapIds: [0, 1, 2, 3]` in `release-manifest.json`.
+A normal double-click install imports packages and audio for every declared
+level, then prepares and verifies each scene cache. No extra map option is needed.
+Use in-game level selection to start a restored map from the beginning.
+The original input folder must include `Maps/Lev_Tut3.unr` for the fourth map;
+a folder previously imported for a three-map demo is not a complete PC copy.
 
 Older release manifests without `mapIds` retain the original one-map default;
 merely having a second map beside the first does not enable it. `-IncludeChallenge`
@@ -108,10 +121,10 @@ key. **Do not uninstall it to bypass the error: that can erase saves, settings
 and imported data. Contact the author for migration.** The installer does not
 uninstall apps or bypass downgrade protection.
 
-The alpha APK uses Android version code 59. Updating an earlier public release
+The current development APK uses Android version code 72. Updating an earlier public release
 requires the same release certificate; a higher version number alone cannot
-resolve a different signing key. Use the complete matching alpha installer kit;
-this hotfix retains the same three-map data scope as 0.1.2.
+resolve a different signing key. Use the complete matching alpha installer kit
+to add the new level's packages and prepared cache, not just its APK.
 
 ## Offline preparation and storage
 
@@ -144,7 +157,7 @@ non-debuggable release; private saves are separate.
 
 `HP/Cache/Scenes/map-0.hpvc` is the prepared first map, `map-1.hpvc` is the
 prepared Flipendo Challenge and `map-2.hpvc` is Broomstick Training.
-All three are generated and verified by default for 0.1.2.1 alpha. Only these
+All three are generated and verified by default for 0.1.2 alpha. Only these
 selected cache files are transferred; their SHA-256 hashes are checked on the
 headset along with the other imported files. They remain private game-derived
 data and are never included in the public release ZIP. If a cache is missing or
@@ -156,10 +169,8 @@ packages instead; rerun the installer from a matching kit to restore preparation
 Voice casting is optional. When enabled, it uses the headset microphone with
 Android's microphone permission and recognizes spells locally; it does not need
 an online speech service. The player build does not save voice recordings.
-It is an early experimental feature with limited player testing. Additional
-pronunciation paths do not guarantee recognition for every accent or microphone;
-some pronunciations may be missed, and similar-sounding speech can trigger a
-spell while aiming. Voice and gesture casting are disabled during
+It is an early experimental feature tested only by the author so far; some
+pronunciations may be missed. Voice and gesture casting are disabled during
 Broomstick Training. The in-game Controls submenu explains each casting mode.
 Private diagnostic recordings, test audio and diagnostic APKs are not part of
 this release. The model's license notices are included in `THIRD-PARTY/`.

@@ -6,7 +6,7 @@ param(
     [switch]$IncludeChallenge
 )
 $ErrorActionPreference='Stop'
-$repo=Split-Path -Parent $MyInvocation.MyCommand.Path
+$repo=[IO.Path]::GetFullPath((Join-Path $PSScriptRoot '../..'))
 $withChallenge=[bool]$IncludeChallenge
 . (Join-Path $repo 'tools\release\INSTALL-HPVR.ps1') -LibraryOnly
 $DataRoot=Get-HpvrFullPath $DataRoot

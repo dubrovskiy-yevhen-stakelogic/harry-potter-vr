@@ -35,6 +35,9 @@ CMakeCache.txt
 /android/local.properties
 
 # Logs and captures
+AGENTS.md
+.agents/
+.codex/
 *.log
 *.dmp
 *.trace

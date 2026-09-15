@@ -14,6 +14,37 @@ int main(){
         std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
     std::filesystem::create_directory(dir);
     ProgressSave s,r;
+    {
+        QuestFrontEnd front;front.assets.star_icon=42;
+        for(unsigned count=0;count<=8;++count){
+            const auto quads=front.StarPickupQuads(count);
+            Check(quads.size()==3,"star pickup has frame, original icon and count");
+        }
+        Check(front.StarPickupQuads(12).size()==4,"star pickup supports multi-digit counts");
+    }
+    {
+        HousePointHud counter;
+        counter.Advance(100,.05F,false);Check(counter.remaining==0&&counter.Value()==100,"loaded points do not replay awards");
+        counter.Advance(105,.05F,false);Check(counter.remaining>0&&counter.Value()<105,"award starts visible counting crest");
+        for(unsigned i=0;i<20;++i)counter.Advance(105,.05F,false);
+        Check(counter.Value()==105,"crest counter reaches exact total");
+        const float remaining=counter.remaining;counter.Advance(105,1,true);
+        Check(counter.remaining==remaining,"pause retains award notification");
+        counter.Advance(115,.05F,false);counter.Advance(120,.05F,false);
+        for(unsigned i=0;i<100;++i)counter.Advance(120,.05F,false);
+        Check(counter.Value()==120&&counter.remaining==0,"consecutive awards accumulate and notification expires");
+        counter.Advance(90,.05F,false);Check(counter.Value()==90&&counter.remaining==0,"checkpoint rollback does not replay lost points");
+    }
+    {
+        ProgressSave charms;charms.map_id=3;charms.phase=2;
+        charms.collected_beans={1568,0x20000000+1730*16,0x30000000+2576};
+        Check(WriteProgress(dir,2,&charms)&&ReadProgress(dir,2,&r)&&r.collected_beans==charms.collected_beans,
+              "charms book persists frog, chest and knight spawner rewards");
+        for(unsigned map:{0U,1U,2U}){charms.map_id=map;Check(!WriteProgress(dir,2,&charms),"spawner rewards cannot enter another map");}
+        charms.map_id=3;charms.collected_beans={0x30000000+100001};
+        Check(!WriteProgress(dir,2,&charms),"out-of-range spawner rejected");
+        std::filesystem::remove(dir/"slot3.1.hpvr");
+    }
     Check(!ReadProgress(dir,0,&r),"empty save");
     s.page=4;s.player={2,1.4F,-8};
     Check(WriteProgress(dir,0,&s)&&s.generation==1,"first durable write");
@@ -106,11 +137,12 @@ int main(){
     Check(f.screen==FrontScreen::LevelStart&&f.slot==2&&f.selection==1,"third-level overwrite confirmation defaults to keep save");
     click();Check(f.screen==FrontScreen::LevelSlots,"third-level cancel returns without starting or writing");
     f.selection=3;click();Check(f.screen==FrontScreen::Levels&&f.selection==2,"slot back returns to third level row");
-    f.selection=3;click();Check(f.screen==FrontScreen::Main&&f.selection==4,"level-select back is after all three maps");
+    f.selection=static_cast<unsigned>(kQuestMaps.size());click();
+    Check(f.screen==FrontScreen::Main&&f.selection==4,"level-select back is after every supported map");
     for(unsigned row=0;row<=kQuestMaps.size();++row){
         f.screen=FrontScreen::Levels;f.selection=row;
         for(const auto& quad:f.Quads())Check(quad.x>=0&&quad.y>=0&&quad.x+quad.w<=640&&quad.y+quad.h<=480,
-                                            "three-level menu fits existing panel");
+                                            "supported-level menu fits existing panel");
     }
     const auto blocked=dir/"not-a-directory";
     {std::ofstream block(blocked);block<<"occupied";}

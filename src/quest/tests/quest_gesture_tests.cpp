@@ -266,11 +266,25 @@ void TestNaturalStrokeVariants(const std::vector<Point>& pattern,float radius) {
 }  // namespace
 
 int main() {
+    for(const auto& w:std::vector<std::vector<Point>>{
+        {{0,0},{.25F,1},{.5F,.2F},{.75F,1},{1,0}},
+        {{0,0},{.18F,.8F},{.55F,.1F},{.8F,1},{1,.1F}},
+        {{0,0},{.1F,.35F},{.2F,.8F},{.3F,.95F},{.4F,.5F},{.45F,.6F},{.54F,.18F},{.68F,.7F},{.8F,1},{.92F,.55F},{1,.1F}}}) {
+        Expect(hpvr::quest::CompareGameplayWingardiumShape(w).score==1,"unequal complete gameplay W accepted");
+        auto reversed=w;std::reverse(reversed.begin(),reversed.end());
+        Expect(hpvr::quest::CompareGameplayWingardiumShape(reversed).score==1,"reverse W accepted");
+    }
+    for(const auto& wrong:std::vector<std::vector<Point>>{
+        {{0,0},{.5F,1},{1,0}},{{0,0},{1,0}},
+        {{0,0},{.25F,1},{.5F,0}},{{0,1},{.25F,0},{.5F,1},{.75F,0},{1,1}}})
+        Expect(hpvr::quest::CompareGameplayWingardiumShape(wrong).score==0,"V line partial W and M rejected");
     TestShapeMatcher();
     TestGameplayStructure(MakeCoil(1.3F));
     TestNaturalStrokeVariants({{.10F,.90F},{.28F,.35F},{.65F,.10F},{.43F,.58F},{.80F,.35F},{.64F,.88F}},.0525F);
     hpvr::quest::QuestGesture gesture;
     Expect(!gesture.IsLoaded(), "fresh gesture must not claim a profile");
+    Expect(!gesture.SelectSpell(hpvr::quest::GestureSpell::Alohomora),
+           "unloaded profiles cannot be selected");
     hpvr::quest::GestureSample sample{};
     Expect(!gesture.Observe(sample),
            "gesture without a loaded profile must fail closed");
@@ -327,6 +341,177 @@ int main() {
         std::vector<std::int32_t> segments(HPVR_HP1_GESTURE_MAX_SEGMENTS);
         hpvr_hp1_spell_profile_report profile{};
         const std::filesystem::path root(data_root);
+        if (std::filesystem::exists(root / "Maps/Lev_Tut3.unr")) {
+            using hpvr::quest::GestureSpell;
+            hpvr::quest::QuestGesture multi;
+            Expect(multi.LoadProfiles(root, true), "all three owned spell profiles load together");
+            Expect(multi.selected_spell() == GestureSpell::Flipendo, "profile loading selects Flipendo");
+            const std::array<const char*, 2> names{"spellAloho", "SPELLLEV"};
+            const std::array<const char*, 2> patterns{"AlohoPattern", "LevPattern"};
+            std::array<std::vector<Point>, 2> owned_shapes;
+            for (unsigned spell_index = 0; spell_index < 2; ++spell_index) {
+                const auto spell = spell_index == 0 ? GestureSpell::Alohomora : GestureSpell::Wingardium;
+                std::vector<hpvr_wand_vec2> points(HPVR_HP1_GESTURE_MAX_TEMPLATE_POINTS);
+                std::vector<std::int32_t> profile_segments(HPVR_HP1_GESTURE_MAX_SEGMENTS);
+                hpvr_hp1_spell_profile_report charm_profile{};
+                Expect(hpvr_hp1_load_spell_profile_utf8((root / "system/HPBase.u").string().c_str(),
+                    (root / "Maps/Lev_Tut3.unr").string().c_str(), patterns[spell_index], names[spell_index],
+                    points.data(), static_cast<std::uint32_t>(points.size()), profile_segments.data(),
+                    static_cast<std::uint32_t>(profile_segments.size()), &charm_profile) == HPVR_HP1_PROFILE_OK,
+                    "owned new spell template loads");
+                points.resize(charm_profile.template_point_count);
+                for (const auto& point : points) owned_shapes[spell_index].push_back({point.x, point.y});
+                if(spell_index==0){
+                    // A hand-drawn keyhole: oval bow, narrow neck, broad base.
+                    const std::vector<Point> keyhole{{.5F,0},{.18F,.03F},{0,.22F},{.05F,.42F},
+                        {.35F,.56F},{.12F,1},{.86F,.93F},{.64F,.54F},{.93F,.39F},
+                        {1,.18F},{.77F,.02F},{.5F,0}};
+                    for(unsigned seam=0;seam+1<keyhole.size();++seam){
+                        std::vector<Point> stroke;
+                        for(unsigned i=0;i<keyhole.size();++i)stroke.push_back(keyhole[(i+seam)%(keyhole.size()-1)]);
+                        for(bool reverse:{false,true})for(float angle:{0.F,.3F,1.57F}){
+                            auto variant=Transform(stroke,angle,.65F,reverse);
+                            Expect(hpvr::quest::CompareGameplayAlohomoraShape(variant,owned_shapes[0]).score==1,
+                                "rough keyhole accepts different starting points and directions");
+                        }
+                    }
+                    auto rough=owned_shapes[0];
+                    for(std::size_t i=0;i<rough.size();++i){rough[i][0]=rough[i][0]*.65F+.045F*std::sin(float(i)*.8F);rough[i][1]+=.055F*std::cos(float(i)*1.1F);}
+                    Expect(hpvr::quest::CompareGameplayAlohomoraShape(rough,owned_shapes[0]).score==1,"rough unequal Alohomora accepted during gameplay");
+                    std::vector<Point> circle,line,zigzag;
+                    for(unsigned i=0;i<64;++i){const float t=float(i)/63;
+                        circle.push_back({.5F+.45F*std::cos(t*2*std::numbers::pi_v<float>),.5F+.45F*std::sin(t*2*std::numbers::pi_v<float>)});
+                        line.push_back({t,t});zigzag.push_back({t,(i%2)?1.0F:0.0F});
+                    }
+                    for(const auto& wrong:{circle,line,zigzag}){
+                        Expect(hpvr::quest::CompareGameplayAlohomoraShape(wrong,owned_shapes[0]).score==0,"gameplay Alohomora rejects circle line and scribble");
+                        const auto result=hpvr::quest::CompareGestureShape(wrong,owned_shapes[0],charm_profile.accuracy_radius*1.75F,false);
+                        Expect(!result.valid||result.score<charm_profile.pass_marks[0],"Alohomora scoring rejects circles, lines and scribbles");
+                    }
+                    const std::vector<Point> triangle{{0,1},{.5F,0},{1,1},{0,1}};
+                    const std::vector<Point> square{{0,0},{1,0},{1,1},{0,1},{0,0}};
+                    const std::vector<Point> w{{0,0},{.25F,1},{.5F,.15F},{.75F,1},{1,0}};
+                    for(const auto& wrong:{triangle,square,w})
+                        Expect(hpvr::quest::CompareGameplayAlohomoraShape(wrong,owned_shapes[0]).score==0,
+                            "Alohomora rejects unrelated simple closed shapes and W");
+                    for(const auto count:{4U,6U}){
+                        const std::vector<Point> incomplete(keyhole.begin(),keyhole.begin()+count);
+                        Expect(hpvr::quest::CompareGameplayAlohomoraShape(incomplete,owned_shapes[0]).score==0,
+                            "an unfinished half-keyhole does not cast Alohomora");
+                    }
+                }
+                if(spell_index==0)if(const char* replay=std::getenv("HPVR_TEST_ALOHOMORA_TRACE_LOG")){
+                    std::ifstream input(replay);Expect(input.good(),"Alohomora numeric recording opens");
+                    std::string line;
+                    while(std::getline(input,line)){
+                        const auto marker=line.find("points=");if(marker==std::string::npos)continue;
+                        std::vector<Point> path;std::istringstream pairs(line.substr(marker+7));std::string field;
+                        while(std::getline(pairs,field,';')){std::replace(field.begin(),field.end(),',',' ');
+                            std::istringstream pair(field);Point p{};if(pair>>p[0]>>p[1])path.push_back(p);}
+                        if(path.size()<3)continue;
+                        std::cout<<"Alohomora headset replay";
+                        for(float radius:{.03F,.0525F,.08F,.1F}){
+                            const auto score=hpvr::quest::CompareGestureShape(path,owned_shapes[0],radius,true);
+                            std::cout<<" radius="<<radius<<" score="<<score.score;
+                        }
+                        std::cout<<'\n';
+                        const auto revised=hpvr::quest::CompareGestureShape(path,owned_shapes[0],charm_profile.accuracy_radius*1.75F,false);
+                        const bool complete=line.find("seconds=0.")==std::string::npos;
+                        Expect((revised.valid&&revised.score>=charm_profile.pass_marks[0])==complete,
+                            "complete headset Alohomora passes first VR lesson tier; a short click does not");
+                    }
+                }
+                Expect(multi.SelectSpell(spell) && multi.selected_spell() == spell,
+                       "preloaded spell selection succeeds");
+                multi.SetGameplayMode(true);
+                for (unsigned angle = 0; angle < 360; angle += 45) {
+                    // W keeps its upright identity: a half turn is an M, not W.
+                    if(spell_index==1&&angle>45&&angle<315)continue;
+                    multi.Reset();
+                    hpvr::quest::GestureSample stroke{};
+                    stroke.tracked = true; stroke.predicted_display_time_ns = 1'000'000'000;
+                    Expect(multi.Observe(stroke), "neutral frame arms a new spell");
+                    const auto shape = Transform(owned_shapes[spell_index], angle * std::numbers::pi_v<float> / 180, .55F);
+                    for (std::size_t i = 0; i < shape.size(); ++i) {
+                        stroke.cast_held = i + 1 != shape.size();
+                        stroke.predicted_display_time_ns += 10'000'000;
+                        stroke.tip = {(shape[i][0] - shape[0][0]) * .42F,
+                                      -(shape[i][1] - shape[0][1]) * .42F, 0};
+                        Expect(multi.Observe(stroke), "new spell accepts bounded tracked samples");
+                    }
+                    hpvr::quest::FlipendoEvent charm_event;
+                    std::cout<<"GAMEPLAY_GESTURE spell="<<spell_index<<" angle="<<angle<<" score="<<multi.last_score()<<'\n';
+                    Expect(multi.ConsumeEvent(&charm_event) && charm_event.spell == spell,
+                           "rotated scaled new spell emits its own spell identity");
+                }
+                multi.SetGameplayMode(false);
+                for (bool relaxed : {false,true}) for (unsigned round=0;round<4;++round) {
+                    multi.SetLessonDifficulty(relaxed);multi.SetLessonRound(round);multi.Reset();
+                    hpvr::quest::GestureSample stroke{};
+                    stroke.tracked=true;stroke.tip={0,1,-1};stroke.aim_direction={0,0,-1};
+                    stroke.predicted_display_time_ns=1'000'000'000;
+                    Expect(multi.Observe(stroke),"lesson neutral frame arms");
+                    stroke.cast_held=true;stroke.predicted_display_time_ns+=10'000'000;
+                    Expect(multi.Observe(stroke),"lesson guide starts at wand");
+                    hpvr::quest::GestureGuide guide;
+                    Expect(multi.BuildGuide(&guide)&&guide.visible,"lesson guide is available");
+                    for(std::size_t i=1;i<guide.template_points.size();++i) {
+                        for(unsigned part=1;part<=4;++part) {
+                            const float t=part/4.0F;
+                            for(unsigned axis=0;axis<3;++axis)stroke.tip[axis]=
+                                guide.template_points[i-1][axis]*(1-t)+guide.template_points[i][axis]*t;
+                            stroke.predicted_display_time_ns+=10'000'000;
+                            Expect(multi.Observe(stroke),"visible lesson guide is traceable");
+                        }
+                    }
+                    stroke.cast_held=false;stroke.predicted_display_time_ns+=10'000'000;
+                    Expect(multi.Observe(stroke),"lesson release submits the drawing");
+                    hpvr::quest::FlipendoEvent lesson_event;
+                    std::cout<<"charms guide spell="<<spell_index<<" relaxed="<<relaxed<<" round="<<round<<" score="<<multi.last_score()<<'\n';
+                    Expect(multi.ConsumeEvent(&lesson_event)&&lesson_event.spell==spell,
+                        "tracing the rendered guide passes every lesson round");
+                }
+                multi.SetLessonDifficulty(false);
+                multi.SetLessonRound(3);
+                Expect(multi.threshold() == charm_profile.pass_marks[3] && multi.time_limit_seconds() == 12,
+                       "new spell retains authored lesson timing and fourth mark");
+            }
+            multi.SetGameplayMode(true);
+            for (unsigned spell_index = 0; spell_index < 2; ++spell_index) {
+                Expect(multi.SelectSpell(GestureSpell::Flipendo), "reset target identity before acquisition");
+                multi.Reset();
+                hpvr::quest::GestureSample stroke{};
+                stroke.tracked=true;stroke.predicted_display_time_ns=1'000'000'000;
+                Expect(multi.Observe(stroke), "aiming before rune acquisition observes a neutral gesture input");
+                const auto spell=spell_index==0?GestureSpell::Alohomora:GestureSpell::Wingardium;
+                Expect(multi.SelectSpell(spell), "new rune selects its profile on the acquisition frame");
+                const auto shape=Transform(owned_shapes[spell_index],.71F,.55F);
+                const auto attempts=multi.attempt_count();
+                for(std::size_t i=0;i<shape.size();++i){
+                    stroke.cast_held=i+1!=shape.size();stroke.predicted_display_time_ns+=10'000'000;
+                    stroke.tip={(shape[i][0]-shape[0][0])*.42F,-(shape[i][1]-shape[0][1])*.42F,0};
+                    Expect(multi.Observe(stroke), "first newly acquired typed stroke captures without an extra neutral frame");
+                }
+                hpvr::quest::FlipendoEvent charm_event;
+                Expect(multi.attempt_count()==attempts+1&&multi.ConsumeEvent(&charm_event)&&charm_event.spell==spell,
+                       "hold aim draw release succeeds on the first attempt for either new spell");
+                stroke.cast_held=true;stroke.predicted_display_time_ns+=10'000'000;
+                Expect(multi.Observe(stroke), "start another active typed stroke");
+                Expect(multi.SelectSpell(GestureSpell::Flipendo), "external mid-stroke profile change cancels the stroke");
+                const auto canceled_attempts=multi.attempt_count();
+                stroke.predicted_display_time_ns+=10'000'000;
+                Expect(multi.Observe(stroke)&&multi.attempt_count()==canceled_attempts&&!multi.ConsumeEvent(&charm_event),
+                       "mid-stroke switching cannot cast or start again while the trigger remains held");
+            }
+            Expect(!multi.SelectSpell(static_cast<GestureSpell>(99)) && multi.IsLoaded(),
+                   "invalid selection preserves current loaded profile");
+            Expect(!multi.LoadProfiles(root / "missing-package-root", true) && multi.IsLoaded(),
+                   "failed reload preserves complete previous profile set");
+            Expect(multi.SelectSpell(GestureSpell::Flipendo), "switching back remains available");
+            Expect(multi.LoadFlipendoProfile(root) && !multi.SelectSpell(GestureSpell::Alohomora),
+                   "legacy Flipendo-only loader does not retain unrequested profiles");
+            std::cout << "owned multi-spell profiles: rotated gameplay traces passed\n";
+        }
         const std::uint32_t profile_status = hpvr_hp1_load_spell_profile_utf8(
             (root / "system" / "HPBase.u").string().c_str(),
             (root / "Maps" / "Lev_Tut1.unr").string().c_str(),

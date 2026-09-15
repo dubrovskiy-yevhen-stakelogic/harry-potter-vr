@@ -59,7 +59,8 @@ int main(){try{
     using namespace hpvr::quest::cache;
     Temporary temporary;const auto good=temporary.path/"map1.hpvrscene";
     constexpr SourceFingerprint fingerprint=0x1234567890abcdefULL;
-    Check(CookRevision(0)==45&&CookRevision(1)==45&&CookRevision(2)==56,"only broom scene changes cook revision");
+    Check(CookRevision(0)==45&&CookRevision(1)==45&&CookRevision(2)==65&&CookRevision(3)==70,
+          "card and charms fixes invalidate only their two scene caches");
     const auto broom=temporary.path/"map2.hpvrscene";
     {Writer writer(broom,2,fingerprint);writer.U32(42);writer.Finish();}
     {Reader reader(broom,2,fingerprint);Check(reader.U32()==42,"new broom cache loads");reader.Finish();}
@@ -67,16 +68,17 @@ int main(){try{
     const auto stale=temporary.path/"old-map2.hpvrscene";WriteBytes(stale,old_broom);
     Rejected([&]{Reader reader(stale,2,fingerprint);},"C55 broom cache must not mask C56 fixes");
     Example expected;Save(good,fingerprint,expected);
-    Check(hpvr::quest::kQuestMaps.size()==3&&hpvr::quest::FindQuestMap(0)->package_path=="Maps/Lev_Tut1.unr"&&
+    Check(hpvr::quest::kQuestMaps.size()==4&&hpvr::quest::FindQuestMap(0)->package_path=="Maps/Lev_Tut1.unr"&&
           hpvr::quest::FindQuestMap(1)->package_path=="Maps/Lev_Tut1b.unr"&&
-          hpvr::quest::FindQuestMap(2)->package_path=="Maps/Lev_Tut2.unr","stable three-map descriptors");
-    Check(!hpvr::quest::FindQuestMap(3)&&!hpvr::quest::FindQuestMap(std::numeric_limits<unsigned>::max()),
+          hpvr::quest::FindQuestMap(2)->package_path=="Maps/Lev_Tut2.unr"&&
+          hpvr::quest::FindQuestMap(3)->package_path=="Maps/Lev_Tut3.unr","stable four-map descriptors");
+    Check(!hpvr::quest::FindQuestMap(4)&&!hpvr::quest::FindQuestMap(std::numeric_limits<unsigned>::max()),
           "unknown map descriptors rejected");
     const auto flying=temporary.path/"map2.hpvc";
     {Writer writer(flying,2,fingerprint);writer.U32(202);writer.Finish();}
     {Reader reader(flying,2,fingerprint);Check(reader.U32()==202,"third-map cache round trip");reader.Finish();}
     Rejected([&]{Reader reader(flying,1,fingerprint);},"flying cache cannot be read as challenge");
-    Rejected([&]{Writer writer(temporary.path/"unsupported.hpvc",3,fingerprint);},"unknown cache writer map rejected");
+    Rejected([&]{Writer writer(temporary.path/"unsupported.hpvc",4,fingerprint);},"unknown cache writer map rejected");
     Example loaded;loaded.name="untouched";Check(Load(good,fingerprint,&loaded)&&loaded==expected,"typed stream round trip");
     const auto good_bytes=ReadBytes(good);
     Check(std::string(reinterpret_cast<const char*>(good_bytes.data()),8)=="HPVRSCN1","portable magic");
@@ -158,7 +160,7 @@ int main(){try{
     Check(detail::FingerprintFiles(source_b,{file_b},2)!=hash_b&&
           detail::FingerprintFiles(source_b,{file_b},2)!=detail::FingerprintFiles(source_b,{file_b},1),
           "third-map source identity remains isolated");
-    Rejected([&]{(void)ComputeSourceFingerprint(source_a,3);},"unsupported source map rejected");
+    Rejected([&]{(void)ComputeSourceFingerprint(source_a,4);},"unsupported source map rejected");
     Rejected([&]{(void)ComputeSourceFingerprint(source_a,0);},"invalid original dependency graph rejected");
     std::cout<<"ASSET_CACHE_TESTS=PASS\n";return 0;
 }catch(const std::exception& error){std::cerr<<error.what()<<'\n';return 1;}}
