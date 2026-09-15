@@ -138,6 +138,13 @@ int Run(const std::vector<fs::path>& args){
                 for(auto& door:entry_doors)for(unsigned i=0;i<100;++i)(void)movers::Advance(door.motion,.05F);
                 if(CloseCharmsEntryDoors(entry_doors)!=0)throw std::runtime_error("closed entry door would hold player control");
                 std::cout<<"PREPARED_C70=PASS mirrors=3 grounded_knights=4 attached_stars=1 entry_door=OPEN_CLOSE\n";
+                auto classroom_doors=candidate.doors;
+                if(OpenCharmsCutsceneDoors(1878,classroom_doors)<=0)throw std::runtime_error("professor return door does not open");
+                for(auto& door:classroom_doors)for(unsigned i=0;i<100;++i)(void)movers::Advance(door.motion,.05F);
+                if(CloseCharmsDoors(classroom_doors,"aloroom2",true)<=0)throw std::runtime_error("professor return door does not close");
+                for(auto& door:classroom_doors)for(unsigned i=0;i<100;++i)(void)movers::Advance(door.motion,.05F);
+                if(CloseCharmsDoors(classroom_doors,"aloroom2",true)!=0)throw std::runtime_error("classroom door closure never finishes");
+                std::cout<<"PREPARED_CLASSROOM_RETURN=PASS sequence=OPEN_CROSS_CLOSE\n";
                 for(int ref:{1989,1990,2018,1979,1546,1547}){
                     auto scene=challenge.scenes.at(ref);scene.camera_target="locname1";
                     if(!CharmsFirstPersonFocus(scene,candidate.characters))throw std::runtime_error("charms reveal has no authored focus");
@@ -184,8 +191,9 @@ int Run(const std::vector<fs::path>& args){
             }
             const auto* vertex_address=candidate.vertices.data();
             const auto* texture_address=candidate.textures.data();
+            auto runtime_mirrors=FindMirrorSurfaces(candidate.vertices,candidate.map_vertices);
             if(map_id==kCharmsTrainingMapId){
-                auto mirrors=FindMirrorSurfaces(candidate.vertices,candidate.map_vertices);
+                auto& mirrors=runtime_mirrors;
                 const auto before=candidate.vertices.size();AppendWaterSurfaceGeometry(mirrors,candidate.vertices);
                 if(std::ranges::count_if(mirrors,[](const auto& m){return m.water_draw.second>0;})!=1)
                     throw std::runtime_error("exactly one water surface must receive wave geometry");
@@ -208,6 +216,14 @@ int Run(const std::vector<fs::path>& args){
             if(!AppendFrontGeometry(front,candidate.vertices,candidate.textures,candidate.texture_layers,ranges,front_vertices)||
                 candidate.vertices.data()!=vertex_address||candidate.textures.data()!=texture_address)
                 throw std::runtime_error("frontend exceeded prepared-scene allocation headroom");
+            if(map_id==kCharmsTrainingMapId){
+                std::uint64_t animated_begin=std::uint64_t(candidate.map_vertices)+candidate.fixture_vertices;
+                for(const auto& door:candidate.doors)animated_begin+=door.vertex_count;
+                if(!ValidateRuntimeVertexLayout(candidate.characters,candidate.beans,runtime_mirrors,
+                    animated_begin,candidate.vertices.size()-front_vertices))
+                    throw std::runtime_error("runtime water and animation vertex layout rejected");
+                std::cout<<"PREPARED_RUNTIME_VERTEX_LAYOUT=PASS map="<<map_id<<'\n';
+            }
             std::cout<<"PREPARED_FRONTEND=PASS map="<<map_id<<" vertices="<<front_vertices
                 <<" layers="<<candidate.texture_layers<<" scene_buffer_reallocated=NO\n";
         }

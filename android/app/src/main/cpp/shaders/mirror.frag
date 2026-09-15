@@ -7,6 +7,7 @@ layout(push_constant) uniform Mirror {
     vec4 panel;
 } mirror;
 layout(binding=6) uniform sampler2DArray reflected_scene;
+layout(binding=0) uniform sampler2DArray textures;
 layout(location=0) in vec2 uv;
 layout(location=1) flat in uint layer;
 layout(location=2) flat in uint flags;
@@ -32,7 +33,11 @@ void main(){
     if(mirror.panel.y>.5){
         vec3 n=normalize(water_normal);
         float glint=pow(max(0,dot(n,normalize(vec3(.18,1,.12)))),64);
-        reflection=mix(reflection,vec3(.16,.18,.28),.12)+vec3(.032,.037,.05)*glint;
+        // Retain the owned WetTexture surface above the planar reflection.
+        vec2 flow=uv+.016*sin(uv.yx*12.0+vec2(1.1,-.9)*mirror.params.w);
+        vec3 surface=texture(textures,vec3(flow,float(layer))).rgb;
+        surface*=vec3(.60,.68,1.0)*max(light,vec3(.45));
+        reflection=mix(reflection,surface,.42)+vec3(.032,.037,.05)*glint;
     }
     color=vec4(reflection,1);
 }

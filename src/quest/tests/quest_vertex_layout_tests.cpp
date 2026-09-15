@@ -7,6 +7,7 @@
 struct Clip {unsigned first_vertex=0;float duration=1;unsigned frame_count=1;};
 struct Actor {std::map<std::string,Clip> clips;std::string active_clip="idle";unsigned vertex_count=3;};
 struct Pickup {unsigned first=0,count=3,frames=1;};
+struct Mirror {std::pair<unsigned,unsigned> water_draw{};};
 void Check(bool value,const char* message){if(!value)throw std::runtime_error(message);}
 int main(){try{
     using hpvr::quest::ValidateAnimatedVertexLayout;
@@ -17,6 +18,19 @@ int main(){try{
     Check(ValidateAnimatedVertexLayout(actors,pickups,12,33),"recovered clips after pickups");
     actors[0].active_clip="knockback";
     Check(ValidateAnimatedVertexLayout(actors,pickups,12,33),"active recovered clip");
+    std::vector<Mirror> mirrors{{{0,0}},{{33,6144}}};
+    Check(hpvr::quest::ValidateRuntimeVertexLayout(actors,pickups,mirrors,12,6177),"water tail after recovered animation clips");
+    Check(!ValidateAnimatedVertexLayout(actors,pickups,12,6177),"reproduces previous water layout rejection");
+    mirrors[1].water_draw={34,6144};
+    Check(!hpvr::quest::ValidateRuntimeVertexLayout(actors,pickups,mirrors,12,6178),"water gap rejected");
+    mirrors[1].water_draw={30,6144};
+    Check(!hpvr::quest::ValidateRuntimeVertexLayout(actors,pickups,mirrors,12,6174),"water overlap rejected");
+    mirrors[1].water_draw={33,6143};
+    Check(!hpvr::quest::ValidateRuntimeVertexLayout(actors,pickups,mirrors,12,6176),"partial water triangle rejected");
+    mirrors[1].water_draw={33,6144};
+    Check(!hpvr::quest::ValidateRuntimeVertexLayout(actors,pickups,mirrors,12,6176),"water outside buffer rejected");
+    mirrors.clear();
+    Check(hpvr::quest::ValidateRuntimeVertexLayout(actors,pickups,mirrors,12,33),"levels without water unchanged");
     Check(!ValidateAnimatedVertexLayout(actors,pickups,12,32),"outside vertex buffer");
     Check(!ValidateAnimatedVertexLayout(actors,pickups,12,34),"unclaimed tail");
     actors[0].clips["knockback"].first_vertex=25;

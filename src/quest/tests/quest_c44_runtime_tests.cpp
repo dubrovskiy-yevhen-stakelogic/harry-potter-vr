@@ -388,8 +388,45 @@ void TestPhysicalPlatformSupport(){
 }
 } // namespace
 
+void TestCoverWaterAndExit(){
+    std::vector<GpuVertex> vertices;
+    Quad(vertices,{-2,-2,-2},{2,-2,-2},{2,2,-2},{-2,2,-2});
+    auto collision=BuildCollisionTriangles(vertices,static_cast<unsigned>(vertices.size()));
+    DoorDraw column;column.grid=true;column.actor_reference=10;column.collision_first=0;column.collision_count=collision.size();
+    std::vector<DoorDraw> columns{column};
+    Check(!SpellTargetExposed(collision,columns,20,{0,0,0},{0,0,-3}),"hidden symbol centre stays blocked even when its trigger protrudes");
+    Check(SpellTargetExposed(collision,columns,10,{0,0,0},{0,0,-3}),"cover itself remains a valid Flipendo target");
+    for(auto& triangle:collision)for(auto& p:triangle.vertices)p[0]+=8;
+    for(auto& triangle:collision){triangle.minimum[0]+=8;triangle.maximum[0]+=8;}
+    Check(SpellTargetExposed(collision,columns,20,{0,0,0},{0,0,-3}),"moving the column exposes the original target");
+    std::vector<GpuVertex> water(3);
+    water[1].position[0]=16;water[2].position[2]=16;
+    water[1].texture_uv[0]=1;water[2].texture_uv[1]=1;
+    water[1].lightmap_uv[0]=1;water[2].lightmap_uv[1]=1;
+    MirrorSurface pool;pool.normal={0,1,0};pool.ranges={{0,3}};
+    std::vector<MirrorSurface> pools{pool};AppendWaterSurfaceGeometry(pools,water);
+    Check(pools[0].water_draw.second==768,"water tessellation keeps the expected triangle count");
+    for(std::size_t i=3;i<water.size();++i){const auto& v=water[i];
+        Check(std::abs(v.texture_uv[0]-v.position[0]/16)<1e-6F&&std::abs(v.texture_uv[1]-v.position[2]/16)<1e-6F,
+            "water surface interpolates original UVs across every new triangle");
+        Check(v.texture_uv[0]==v.lightmap_uv[0]&&v.texture_uv[1]==v.lightmap_uv[1],"water lightmap interpolation follows geometry");
+    }
+    DoorDraw door;door.tag="aloroom2";door.motion.count=2;door.motion.keys[1].offset_unreal[0]=100;
+    door.open_seconds=.2F;door.close_seconds=.2F;std::vector<DoorDraw> doors{door};
+    Check(OpenCharmsCutsceneDoors(1878,doors)>0&&doors[0].cutscene_hold,"professor return opens the classroom before crossing");
+    for(unsigned i=0;i<20;++i)(void)movers::Advance(doors[0].motion,.05F);
+    Check(CloseCharmsDoors(doors,"aloroom2",true)>0&&!doors[0].opening&&doors[0].cutscene_hold,
+        "return closes explicitly while suppressing duplicate proximity toggles");
+    for(unsigned i=0;i<20;++i)(void)movers::Advance(doors[0].motion,.05F);
+    Check(CloseCharmsDoors(doors,"aloroom2",true)==0&&doors[0].motion.current==0,"control resumes only after the door is closed");
+    const auto source=std::filesystem::path(__FILE__).parent_path()/"../../../android/app/src/main/cpp/quest_scene.cpp";
+    std::ifstream input(source);const std::string text{std::istreambuf_iterator<char>(input),{}};
+    Check(text.find("const bool capture_target=manual;")!=std::string::npos&&text.find("if(!manual&&active&&aiming)state.basic_cast.aim=aim;")!=std::string::npos,
+        "classic keeps current aim through release even with voice enabled");
+}
 int main() {
     try {
+        TestCoverWaterAndExit();
         TestAirborneMantle();
         TestInterruptedMantleCheckpoint();
         TestInterruptedMantleSceneWiring();

@@ -3083,6 +3083,21 @@ float BasicRayDistance(const std::vector<CollisionTriangle>& triangles,
     }
     return nearest;
 }
+bool SpellTargetExposed(const std::vector<CollisionTriangle>& triangles,const std::vector<DoorDraw>& doors,
+                        std::int32_t target,const std::array<float,3>& origin,const std::array<float,3>& center){
+    const auto delta=SubtractVector(center,origin);const float length=std::sqrt(DotVector(delta,delta));
+    if(!std::isfinite(length)||length>24)return false;
+    if(length<.01F)return true;
+    // Trigger cylinders can protrude through their cover. Test the actual
+    // target centre against the current column geometry, not that cylinder.
+    for(const auto& door:doors){
+        if(!door.grid||door.grid_physics.retired||door.actor_reference==target)continue;
+        if(door.collision_first>triangles.size()||door.collision_count>triangles.size()-door.collision_first)return false;
+        const auto cover=std::span<const CollisionTriangle>(triangles).subspan(door.collision_first,door.collision_count);
+        if(!gnome::CanSee(cover,origin,center))return false;
+    }
+    return true;
+}
 bool InClimbLesson(const IntroCutscene& twins,const IntroCutscene& next,const std::array<float,3>& p){
     auto a=twins.trigger_position;const auto& b=next.trigger_position;
     for(const auto& mark:twins.locations)if(AsciiFold(mark.alias)=="hploc2")a=mark.position;
@@ -6960,9 +6975,9 @@ void QuestScene::UpdateBasicCast(const ViewPose& wand,bool tracked,bool held,flo
     state.wand_was_held=held;
     if(state.voice_repeat.Advance(active,held,state.audio.SpeechBusy(),state.projectile.flying,seconds))
         state.wand_cast_consumed=false;
-    // Speech must survive ordinary hand drift: retain the chosen target for
-    // this held trigger, just as gesture casting does. Release selects anew.
-    const bool capture_target=manual||(state.frontend.vr.voice_cast&&IsWalkingChallenge(state.map_id)&&CanCast());
+    // Classic aim remains live even with speech enabled. Voice dispatch captures
+    // its target only when a complete incantation has been recognized.
+    const bool capture_target=manual;
     if(state.wand_lock_valid)for(const auto& actor:state.character_draws)if(actor.actor_reference==state.wand_lock_actor){
         if(!actor.enabled||actor.collision_disabled){state.wand_lock_valid=false;state.aim_actor=0;break;}
         FollowTargetOffset(state.wand_lock_point,state.aim_minimum,state.aim_maximum,
@@ -6972,7 +6987,8 @@ void QuestScene::UpdateBasicCast(const ViewPose& wand,bool tracked,bool held,flo
     const bool locked=capture_target&&state.wand_lock_valid;
     float distance=24;
     if(!active){state.aim_actor=0;state.wand_lock_valid=false;state.wand_cast_consumed=held;}
-    if(active&&held&&!locked&&!state.wand_cast_consumed){
+    const bool aiming=held||state.basic_cast.charging;
+    if(active&&aiming&&!locked&&!state.wand_cast_consumed){
         state.aim_actor=0;
         distance=BasicRayDistance(state.collision_triangles,tip,direction);
         if(state.map_id==0)distance=std::min(distance,BasicRayDistance(state.prop_aim_triangles,tip,direction));
@@ -6992,7 +7008,7 @@ void QuestScene::UpdateBasicCast(const ViewPose& wand,bool tracked,bool held,flo
             if(hit&&far>=near&&far>0)distance=std::min(distance,near);
         }
     }
-    if(active&&held&&!locked&&!state.wand_cast_consumed&&IsWalkingChallenge(state.map_id)&&!state.charms.held_block){
+    if(active&&aiming&&!locked&&!state.wand_cast_consumed&&IsWalkingChallenge(state.map_id)&&!state.charms.held_block){
         float target_distance=24;
         const auto target=FindChallengeSpellTarget(tip,direction,&target_distance,&state.aim_minimum,&state.aim_maximum);
         if(target&&target_distance<=distance+.03F){state.aim_actor=target;distance=target_distance;}
@@ -7009,6 +7025,7 @@ void QuestScene::UpdateBasicCast(const ViewPose& wand,bool tracked,bool held,flo
             state.wand_lock_actor_offset=actor.cutscene_offset;break;
         }
     }
+    if(!manual&&active&&aiming)state.basic_cast.aim=aim;
     if(state.basic_cast.Observe(active,held,tip,aim,seconds)){
         if(state.wand_cast_consumed||state.voice_cast_this_hold||(manual&&state.wand_lock_valid)){
             state.basic_cast.flying=false;return;
@@ -7196,6 +7213,13 @@ void QuestScene::AdvanceIntroCutscene(const float delta_seconds) {
                 continue;
             }
             if (op == "release") {
+                if(state.map_id==3&&scene.object_name=="cutscene7"&&track.actor_reference==state.harry_actor){
+                    const bool professor_moving=std::ranges::any_of(scene.tracks,[](const auto& t){return t.actor_reference==565&&!t.finished;});
+                    const float wait=professor_moving?.05F:CloseCharmsDoors(state.doors,"aloroom2",true);
+                    if(wait>0){track.next_command=command_index;track.delay_seconds=wait;break;}
+                    RememberChallengeEvent(state.frontend.progress,1544);
+                    RememberChallengeEvent(state.frontend.progress,1814);
+                }
                 if(state.map_id==3&&scene.object_name=="cutscene5"&&track.actor_reference==state.harry_actor){
                     const float wait=CloseCharmsEntryDoors(state.doors);
                     if(wait>0){track.next_command=command_index;track.delay_seconds=wait;break;}
@@ -7930,7 +7954,9 @@ std::int32_t QuestScene::FindChallengeSpellTarget(const std::array<float,3>& ori
         else {float l=(low[axis]-origin[axis])/direction[axis],h=(high[axis]-origin[axis])/direction[axis];
             if(l>h)std::swap(l,h);a=std::max(a,l);b=std::min(b,h);}
         }
-        if(b>=a&&b>0&&a<=nearest+.025F){nearest=a;target=reference;
+        if(b>=a&&b>0&&a<=nearest+.025F){
+            if(!SpellTargetExposed(state.collision_triangles,state.doors,reference,origin,ScaleVector(AddVector(low,high),.5F)))return;
+            nearest=a;target=reference;
             if(bounds_min)*bounds_min=low;if(bounds_max)*bounds_max=high;}
     };
     for(const auto& zone:state.challenge.spatial)if(zone.spell){
@@ -7947,6 +7973,7 @@ std::int32_t QuestScene::FindChallengeSpellTarget(const std::array<float,3>& ori
         if(!block.plate)test(ref,AddVector(block.minimum,block.offset),AddVector(block.maximum,block.offset));
     for(const auto& a:state.character_draws)if(a.enabled&&!a.player&&!a.flying){
         const auto cls=AsciiFold(a.class_name);if(cls!="tut1.tut1gnome"&&cls!="tut1.flipbarrel")continue;
+        if(cls=="tut1.tut1gnome"&&state.map_id==3&&!state.challenge.gnome_active.contains(a.actor_reference))continue;
         if(cls=="tut1.tut1gnome"&&state.challenge.gnome_hits.contains(a.actor_reference)&&state.challenge.gnome_hits.at(a.actor_reference)>0)continue;
         if(cls=="tut1.flipbarrel"&&state.challenge.barrel_stage>=4)continue;
         const auto center=AddVector(a.collision_center,a.cutscene_offset);
@@ -7981,7 +8008,14 @@ void QuestScene::LaunchChallengeSpell(const std::array<float,3>& origin,const st
     auto target=FindChallengeSpellTarget(origin,direction,&distance);
     auto destination=AddVector(origin,ScaleVector(direction,distance));
     if(state.wand_lock_valid){
-        target=state.wand_lock_actor;destination=state.wand_lock_point;state.wand_lock_valid=false;
+        std::array<float,3> locked_direction{};
+        if(NormalizeVector(SubtractVector(state.wand_lock_point,tip),&locked_direction)){
+            float locked_distance=24;
+            const auto visible=FindChallengeSpellTarget(tip,locked_direction,&locked_distance);
+            target=visible==state.wand_lock_actor?visible:0;
+            destination=target?state.wand_lock_point:AddVector(tip,ScaleVector(locked_direction,locked_distance));
+        }else target=0;
+        state.wand_lock_valid=false;
     }
     if(state.map_id==3)if(const auto block=state.charms.blocks.find(target);block!=state.charms.blocks.end()){
         state.charms.held_block=target;state.charms.hold_release_armed=state.wand_was_held;
@@ -8080,7 +8114,7 @@ bool QuestScene::IsLoaded() const {
         expected_vertices += door.vertex_count;
     }
     if(state.front_vertex_count>state.vertices.size()||
-       !ValidateAnimatedVertexLayout(state.character_draws,state.beans,expected_vertices,
+       !ValidateRuntimeVertexLayout(state.character_draws,state.beans,state.mirrors,expected_vertices,
            state.vertices.size()-state.front_vertex_count))return false;
     expected_vertices=state.vertices.size();
     const bool map_specific=state.map_id==3?

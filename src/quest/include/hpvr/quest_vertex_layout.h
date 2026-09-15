@@ -28,4 +28,18 @@ bool ValidateAnimatedVertexLayout(const Actors& actors, const Pickups& pickups,
     for(const auto& [first,count]:ranges){if(first!=begin)return false;begin+=count;}
     return begin==end;
 }
+
+template<class Actors, class Pickups, class Mirrors>
+bool ValidateRuntimeVertexLayout(const Actors& actors, const Pickups& pickups,
+                                const Mirrors& mirrors, std::uint64_t begin,
+                                std::uint64_t end) {
+    // Water tessellation follows animated geometry and precedes the UI.
+    for(auto it=mirrors.rbegin();it!=mirrors.rend();++it){
+        const auto [first,count]=it->water_draw;
+        if(!count)continue;
+        if(first<begin||first>end||count%3||std::uint64_t(count)!=end-first)return false;
+        end=first;
+    }
+    return ValidateAnimatedVertexLayout(actors,pickups,begin,end);
+}
 } // namespace hpvr::quest

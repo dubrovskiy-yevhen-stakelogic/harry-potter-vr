@@ -42,6 +42,10 @@ void AppendWaterSurfaceGeometry(std::vector<MirrorSurface>& mirrors,std::vector<
             const auto point=[&](unsigned x,unsigned y){
                 GpuVertex v=a;const float u=float(x)/subdivisions,w=float(y)/subdivisions;
                 for(unsigned axis=0;axis<3;++axis)v.position[axis]=a.position[axis]+u*(b.position[axis]-a.position[axis])+w*(c.position[axis]-a.position[axis]);
+                for(unsigned axis=0;axis<2;++axis){
+                    v.texture_uv[axis]=a.texture_uv[axis]+u*(b.texture_uv[axis]-a.texture_uv[axis])+w*(c.texture_uv[axis]-a.texture_uv[axis]);
+                    v.lightmap_uv[axis]=a.lightmap_uv[axis]+u*(b.lightmap_uv[axis]-a.lightmap_uv[axis])+w*(c.lightmap_uv[axis]-a.lightmap_uv[axis]);
+                }
                 return v;
             };
             for(unsigned y=0;y<subdivisions;++y)for(unsigned x=0;x+y<subdivisions;++x){

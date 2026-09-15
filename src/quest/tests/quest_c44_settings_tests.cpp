@@ -312,7 +312,7 @@ int main(){try{
     Check(front.WorldVisible()&&front.PausesWorld(),"controls opened over welcome retains notice pause");
     front.ToggleVrMenu();
     Check(front.screen==FrontScreen::Welcome,"controls closes back to welcome without dismissing it");
-    Check(TextAt(front,78)=="0.1.3ALPHATEST-WELCOME"&&TextAt(front,122)=="VERYEARLYALPHA-EXPECTBUGS."&&
+    Check(TextAt(front,78)=="0.1.3ALPHA-WELCOME"&&TextAt(front,122)=="VERYEARLYALPHA-EXPECTBUGS."&&
           TextAt(front,194)=="ITHASONLYBEENTESTEDBYTHEAUTHOR.","welcome states alpha status and author-only voice testing");
     for(unsigned map:{0U,1U,2U,3U})for(auto screen:{FrontScreen::Welcome,FrontScreen::DemoEnd})for(unsigned row:{0U,1U}){
         front.assets.map_id=map;front.screen=screen;front.selection=row;

@@ -394,6 +394,7 @@ void QuestScene::AdvanceChallenge(float seconds){
     // Scripted actors still touch class-proximity triggers during cinematics.
     // Player triggers remain gated below until control is returned.
     for(auto& zone:c.spatial){
+        if(s.map_id==3&&zone.event=="aloroom2"&&ChallengeActivated(p,zone.reference))continue;
         if(zone.proximity_class.empty()||zone.proximity_class=="harry"||zone.proximity_class=="wingardiumblock")continue;
         bool inside=false;
         for(const auto& actor:s.character_draws){
@@ -414,7 +415,7 @@ void QuestScene::AdvanceChallenge(float seconds){
         }
         for(auto& zone:c.spatial){
             if(!zone.proximity_class.empty()&&zone.proximity_class!="harry")continue;
-            if(s.map_id==3&&zone.event=="openclosedoor"&&ChallengeActivated(p,zone.reference))continue;
+            if(s.map_id==3&&(zone.event=="openclosedoor"||zone.event=="aloroom2")&&ChallengeActivated(p,zone.reference))continue;
             auto position=zone.position;
             if(zone.checkpoint)position[1]+=.10F+.03F*std::sin(8*s.bean_time);
             const auto d=SubtractVector(body,position);
@@ -709,6 +710,11 @@ void QuestScene::AdvanceChallenge(float seconds){
         }
     }
     if(s.projectile.flying){
+        const auto current=AddVector(s.projectile.origin,ScaleVector(s.projectile.direction,s.projectile.distance_m));
+        const float obstruction=BasicRayDistance(s.collision_triangles,current,s.projectile.direction);
+        if(obstruction+.025F<s.projectile.terminal_distance_m-s.projectile.distance_m){
+            s.projectile.terminal_distance_m=s.projectile.distance_m+obstruction;c.impact_actor=0;
+        }
         s.projectile.distance_m=std::min(s.projectile.terminal_distance_m,s.projectile.distance_m+step*kFlipendoSpeedMetersPerSecond);
         if(s.projectile.distance_m>=s.projectile.terminal_distance_m){
             s.projectile.flying=false;s.projectile.impacting=true;s.projectile.impact_seconds=0;

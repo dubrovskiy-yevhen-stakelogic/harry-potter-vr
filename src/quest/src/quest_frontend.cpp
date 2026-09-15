@@ -802,7 +802,7 @@ std::vector<FrontQuad> QuestFrontEnd::Quads(bool include_report_values)const{
             const bool finished=screen==FrontScreen::DemoEnd;
             const bool challenge=assets.map_id==1;
             const bool flying=assets.map_id==kBroomstickTrainingMapId;
-            const std::string heading=!finished?"0.1.3 ALPHA TEST - WELCOME":
+            const std::string heading=!finished?"0.1.3 ALPHA - WELCOME":
                 (flying?"BROOMSTICK TRAINING COMPLETE":challenge?"FLIPENDO CHALLENGE COMPLETE":"THANK YOU FOR PLAYING!");
             text(heading,320-float(heading.size())*6,78,2,0xffe164);
             if(finished){

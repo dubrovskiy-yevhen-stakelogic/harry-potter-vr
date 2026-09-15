@@ -14,7 +14,7 @@ grid_motion::Bounds CharmsBlockBounds(const CharmsBlock& block){
 }
 std::string_view CharmsCutsceneDoorTag(std::int32_t scene){
     if(scene==1526)return "openclosedoor";
-    if(scene==2771)return "aloroom2";
+    if(scene==2771||scene==1878)return "aloroom2";
     return {};
 }
 float OpenCharmsCutsceneDoors(std::int32_t scene,std::vector<DoorDraw>& doors){
@@ -26,15 +26,16 @@ float OpenCharmsCutsceneDoors(std::int32_t scene,std::vector<DoorDraw>& doors){
     }
     return wait;
 }
-float CloseCharmsEntryDoors(std::vector<DoorDraw>& doors){
+float CloseCharmsDoors(std::vector<DoorDraw>& doors,std::string_view tag,bool retain_hold=false){
     float wait=0;
-    for(auto& door:doors)if(door.tag=="openclosedoor"&&!door.grid){
-        door.cutscene_hold=false;door.hold=0;door.opening=false;door.motion.seconds=door.close_seconds;
+    for(auto& door:doors)if(door.tag==tag&&!door.grid){
+        door.cutscene_hold=retain_hold;door.hold=0;door.opening=false;door.motion.seconds=door.close_seconds;
         if(movers::Start(door.motion,false))door.completion_sent=false;
         if(door.motion.moving)wait=std::max(wait,door.close_seconds+.05F);
     }
     return wait;
 }
+float CloseCharmsEntryDoors(std::vector<DoorDraw>& doors){return CloseCharmsDoors(doors,"openclosedoor");}
 struct CharmsRuntime {
     std::array<charms::LessonMetadata,2> lessons;
     charms::LessonSession lesson;

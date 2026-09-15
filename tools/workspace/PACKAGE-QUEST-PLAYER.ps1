@@ -203,6 +203,8 @@ foreach ($copy in $hpvrCopies) {
         $developmentHeading = $playerReadme.IndexOf('<!-- player-readme-end -->', [StringComparison]::Ordinal)
         if ($developmentHeading -lt 0) { throw 'README player/developer section boundary is missing.' }
         $playerReadme = $playerReadme.Substring(0, $developmentHeading).TrimEnd()
+        $playerReadme = [regex]::Replace($playerReadme, '(?s)## Want to play\?.*?(?=## Included levels)',
+            "## Getting started`n`nRun ``INSTALL-HPVR.cmd`` and select your original PC game folder.`n`n")
         $playerReadme = $playerReadme.Replace('(tools/release/PLAYER-INSTALL.md)', '(PLAYER-INSTALL.md)')
         $playerReadme += "`n`nDiscord: [HPVR](https://discord.com/channels/747967102895390741/1547254536203407390).`n"
         [IO.File]::WriteAllText($destination, $playerReadme, [Text.UTF8Encoding]::new($false))

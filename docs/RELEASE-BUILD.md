@@ -1,6 +1,6 @@
 # Quest release build
 
-The current source targets **0.1.3-alpha-test**, Android version code **72**,
+The current source targets **0.1.3-alpha**, Android version code **73**,
 with the opening level, [Flipendo Challenge](FLIPENDO-CHALLENGE.md), Broomstick
 Training and Alohomora / Charms.
 The release contains the port, third-party libraries and the licensed offline voice model,
@@ -24,7 +24,7 @@ For an update, reuse the existing release signing identity. From the repository
 root, build into a new artifact directory:
 
 ```powershell
-.\tools\workspace\BUILD-QUEST-RELEASE.ps1 -OutputDirectory artifacts\quest-release-0.1.3-alpha-test
+.\tools\workspace\BUILD-QUEST-RELEASE.ps1 -OutputDirectory artifacts\quest-release-0.1.3-alpha
 ```
 
 Only a project's first release with no identity should use
@@ -46,8 +46,8 @@ the player ZIP. This example uses the main `build` tree:
 ```powershell
 cmake --build build --config Release --target hpvr_hp1_package_graph hpvr_hp1_sound_probe hpvr_quest_frontend_probe hpvr_quest_intro_probe hpvr_quest_prepare_assets
 .\tools\workspace\PACKAGE-QUEST-PLAYER.ps1 -HostBuildDirectory build `
-  -ApkPath artifacts\quest-release-0.1.3-alpha-test\HPVR-Quest-0.1.3-alpha-test.apk `
-  -OutputDirectory artifacts\HPVR-Quest-Demo-0.1.3-alpha-test
+  -ApkPath artifacts\quest-release-0.1.3-alpha\HPVR-Quest-0.1.3-alpha.apk `
+  -OutputDirectory artifacts\HPVR-Quest-Demo-0.1.3-alpha
 ```
 
 The packager reads the matching `RELEASE-METADATA.json`, checks the APK and
