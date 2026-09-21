@@ -54,6 +54,11 @@ int main(int argc,char** argv){try{
     front.progress.banked_beans=45;front.progress.collected_beans={2,7};
     front.progress.earned_cards=7;front.progress.house_points={78,46,113,90};
     Check(front.ReportValue(0)==47&&front.ReportValue(1)==3&&front.ReportValue(2)==90,"live cumulative badge values");
+    front.progress.spent_beans=25;
+    Check(front.ReportValue(0)==22,"card purchase subtracts its price from displayed beans");
+    front.progress.spent_beans=100;
+    Check(front.ReportValue(0)==0,"bean spending cannot underflow");
+    front.progress.spent_beans=0;
     for(unsigned i=0;i<4;++i)Check(front.ReportValue(i+3)==front.progress.house_points[i],"house display order");
     const auto key=front.DrawKey();front.progress.banked_beans=999999;front.progress.earned_cards=0x1ffffff;
     Check(front.DrawKey()==key,"totals do not multiply baked menu variants");

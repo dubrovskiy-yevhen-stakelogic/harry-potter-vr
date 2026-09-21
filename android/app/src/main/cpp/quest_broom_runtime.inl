@@ -50,7 +50,7 @@ void QuestScene::StartBroomScene(const std::string& tag,unsigned phase) {
     if(s.map_id!=2||s.intro_cutscene.playing)return;
     const auto name=AsciiFold(tag);const auto reference=b.lesson.scenes_by_tag.find(name);
     if(reference==b.lesson.scenes_by_tag.end()||!s.challenge.scenes.contains(reference->second)){
-        b.active=false;s.frontend.screen=FrontScreen::Main;s.frontend.message="FLYING LESSON SCENE IS MISSING";return;
+        b.active=false;s.frontend.ShowError("FLYING LESSON SCENE IS MISSING");return;
     }
     if(!s.challenge_initial_checkpoint_valid){
         s.challenge_initial_checkpoint=s.frontend.progress;
@@ -101,7 +101,7 @@ void QuestScene::BeginBroomTrial() {
     auto& s=*state_;auto& b=s.broom;
     if(s.map_id!=2||s.intro_cutscene.playing||b.path>=b.routes.size())return;
     if(!broom::BeginSession(b.session,BroomSessionConfig(b))){
-        b.active=false;s.frontend.screen=FrontScreen::Main;s.frontend.message="INVALID FLYING LESSON ROUTE";return;
+        b.active=false;s.frontend.ShowError("INVALID FLYING LESSON ROUTE");return;
     }
     for(const auto& actor:s.character_draws)if(actor.actor_reference==b.lesson.player_reference){
         s.last_player=AddVector(actor.base_origin,actor.cutscene_offset);
@@ -150,7 +150,7 @@ void QuestScene::RestoreBroomProgress() {
         std::istringstream in(progress.world_state);std::string magic;unsigned version=0;
         bool valid=bool(in>>magic>>version>>path>>phase)&&magic=="BROOM_WORLD"&&version==1&&path<2&&phase<=5;
         in>>std::ws;valid=valid&&in.eof();
-        if(!valid){s.frontend.screen=FrontScreen::Main;s.frontend.message="INVALID FLYING LESSON CHECKPOINT";return;}
+        if(!valid){s.frontend.ShowError("INVALID FLYING LESSON CHECKPOINT");return;}
     }
     if(!s.challenge_initial_checkpoint_valid){
         s.challenge_initial_checkpoint=progress;
@@ -158,7 +158,7 @@ void QuestScene::RestoreBroomProgress() {
         s.challenge_initial_checkpoint_valid=true;
     }
     if(!s.challenge.graph.Restore(s.challenge_initial_checkpoint.graph_state)){
-        s.frontend.screen=FrontScreen::Main;s.frontend.message="FLYING LESSON EVENT RESET FAILED";return;
+        s.frontend.ShowError("FLYING LESSON EVENT RESET FAILED");return;
     }
     b.path=path;b.phase=phase==1?3:phase==2?4:phase;b.active=false;b.pending_start=false;
     b.complete=b.phase==5;b.stage=0;b.hits=0;b.seconds=0;b.previous_valid=false;b.camera_locations.clear();

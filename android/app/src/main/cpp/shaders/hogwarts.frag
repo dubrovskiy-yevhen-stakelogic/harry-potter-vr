@@ -22,6 +22,7 @@ layout(location = 3) in vec3 in_light;
 layout(location = 4) in vec2 in_lightmap_uv;
 layout(location = 5) flat in uint in_has_lightmap;
 layout(location = 6) in vec3 in_world_position;
+layout(location = 7) flat in float in_actor_opacity;
 
 layout(location = 0) out vec4 out_color;
 
@@ -123,7 +124,9 @@ void main() {
     const float ue1_display_gamma = 0.92;
     linear_color = pow(linear_color * ue1_exposure,
                        vec3(ue1_display_gamma));
-    if ((in_polygon_flags & 0x20000000u)!=0u) {
+    if (in_actor_opacity >= 0.0) {
+        out_color=vec4(linear_color,in_actor_opacity);
+    } else if ((in_polygon_flags & 0x20000000u)!=0u) {
         out_color=vec4(mix(linear_color,vec3(0.55,0.75,1.0),0.45),0.48);
     } else {
         bool wood=(in_polygon_flags & 0x10000000u)!=0u;

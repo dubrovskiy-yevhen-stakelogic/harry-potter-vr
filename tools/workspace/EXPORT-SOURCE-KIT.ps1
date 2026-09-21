@@ -31,6 +31,7 @@ $rootFiles = @(
     'android/build.gradle', 'android/settings.gradle', 'android/gradle.properties',
     'android/app/build.gradle', 'tools/verify-baseline.ps1', 'tools/test-source-kit-export.ps1',
     'tools/release/INSTALL-HPVR.ps1', 'tools/release/INSTALL-HPVR.cmd',
+    'tools/release/INSTALL.bat', 'tools/release/CHANGELOG.md',
     'tools/release/PLAYER-INSTALL.md', 'tools/release/TEST-PLAYER-INSTALL.ps1',
     'tools/release/TEST-ADB-BOOTSTRAP.ps1', 'tools/release/TEST-FFMPEG-BOOTSTRAP.ps1',
     'cmake/HPVRVoice.cmake', 'tools/voice/CMakeLists.txt',

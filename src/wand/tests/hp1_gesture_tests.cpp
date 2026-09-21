@@ -538,7 +538,8 @@ Bytes make_class_export_package(std::string_view object_name,
     return bytes;
 }
 
-Bytes make_p8_texture_package(std::uint16_t package_version = 76, int wet_source = 0) {
+Bytes make_p8_texture_package(std::uint16_t package_version = 76, int wet_source = 0,
+                              int compressed_tail = 0) {
     enum Name : std::int32_t {
         none,
         core,
@@ -554,11 +555,13 @@ Bytes make_p8_texture_package(std::uint16_t package_version = 76, int wet_source
         wet_class,
         source_name,
         wet_name,
+        has_comp,
     };
     constexpr std::array names{
         "None", "Core", "Package", "Class", "Engine", "Texture",
         "Palette", "Format", "SyntheticTexture", "SyntheticPalette",
         "Fire", "WetTexture", "SourceTexture", "SyntheticWater",
+        "bHasComp",
     };
     Bytes bytes = make_header(package_version);
     const auto name_offset = bytes.size();
@@ -585,6 +588,10 @@ Bytes make_p8_texture_package(std::uint16_t package_version = 76, int wet_source
     bytes.insert(bytes.end(), palette_payload.begin(), palette_payload.end());
 
     Bytes texture_payload;
+    if (compressed_tail) {
+        append_compact(texture_payload, has_comp);
+        append_u8(texture_payload, 0x83);
+    }
     append_compact(texture_payload, format_name);
     append_u8(texture_payload, 0x01U);
     append_u8(texture_payload, 0);
@@ -609,6 +616,19 @@ Bytes make_p8_texture_package(std::uint16_t package_version = 76, int wet_source
               skip_offset_patch,
               static_cast<std::uint32_t>(
                   texture_offset + after_mip_data));
+    if (compressed_tail) {
+        append_compact(texture_payload, 1);
+        const auto patch = texture_payload.size();
+        append_i32(texture_payload, 0);
+        append_compact(texture_payload, 8);
+        texture_payload.insert(texture_payload.end(), 8, 0xAB);
+        patch_u32(texture_payload, patch, static_cast<std::uint32_t>(
+            texture_offset + texture_payload.size() + (compressed_tail == 2 ? 1 : 0)));
+        append_i32(texture_payload, 2);
+        append_i32(texture_payload, 2);
+        append_u8(texture_payload, 1);
+        append_u8(texture_payload, 1);
+    }
     bytes.insert(bytes.end(), texture_payload.begin(), texture_payload.end());
 
     Bytes wet_payload;
@@ -646,7 +666,8 @@ Bytes make_level_package(bool imported_actor = false,
                          bool truncate_model = false,
                          bool invalid_active_vertex = false,
                          bool include_player_start = false,
-                         const Bytes& actor_properties = {}) {
+                         const Bytes& actor_properties = {},
+                         bool repeated_actor = false) {
     enum Name : std::int32_t {
         none,
         core,
@@ -675,6 +696,7 @@ Bytes make_level_package(bool imported_actor = false,
         "Actor0", "Actor1", "SyntheticPolys", "PlayerStart", "Location",
         "Rotation", "Vector", "Rotator", "PlayerStart0",
         "CutCast", "CutLoc", "cast", "Locs",
+        "stationData", "Destination", "HPath_A", "HPath_A0",
     };
     Bytes bytes = make_header(package_version);
     const auto name_offset = bytes.size();
@@ -694,7 +716,7 @@ Bytes make_level_package(bool imported_actor = false,
     append_i32(payload, include_player_start ? 5 : 4);
     append_i32(payload, include_player_start ? 5 : 4);
     append_compact(payload, imported_actor ? -4 : 3);
-    append_compact(payload, 0);
+    append_compact(payload, repeated_actor ? 3 : 0);
     append_compact(payload, 4);
     if (include_player_start) {
         append_compact(payload, 6);
@@ -1613,6 +1635,89 @@ void actor_visual_census_retains_slots_and_instance_overrides() {
     expect(start->location_serialized && start->rotation_serialized &&
                !start->mesh_serialized && start->draw_scale == 1.0F,
            "actor visual census decodes transform and leaves defaults explicit");
+    const auto duplicate_map=files.write("maps/AliasedActors.unr",
+        make_level_package(false,false,76,false,false,false,{},true));
+    const auto handles=hpvr::wand::inspect_hp1_level_handles(duplicate_map);
+    const auto unique=hpvr::wand::inspect_hp1_actor_visuals(duplicate_map);
+    expect(handles.status==Hp1ProfileStatus::ok &&
+               handles.actor_references==std::vector<std::int32_t>{3,3,4,0},
+           "raw level handles preserve aliased actor slots");
+    expect(unique.status==Hp1ProfileStatus::ok && unique.actors.size()==2 &&
+               unique.actors[0].actor_reference==3 && unique.actors[0].actor_slot_index==0 &&
+               unique.actors[1].actor_reference==4 && unique.actors[1].actor_slot_index==2,
+           "visual census creates one actor per export and preserves first slot");
+}
+
+void actor_visual_census_decodes_station_routes() {
+    const TemporaryGraphRoot files;
+    auto check=[&](int group,unsigned behavior,bool trailing,bool valid){
+        Bytes route;
+        append_compact(route,25);append_i32(route,group);
+        append_compact(route,26);append_compact(route,27);
+        append_i32(route,1);append_i32(route,-2);append_i32(route,3);
+        append_f32(route,.5F);append_u8(route,static_cast<std::uint8_t>(behavior));
+        if(trailing)append_u8(route,0);
+        Bytes properties;append_compact(properties,22);append_u8(properties,0x5a);
+        append_compact(properties,24);append_u8(properties,static_cast<std::uint8_t>(route.size()));
+        properties.insert(properties.end(),route.begin(),route.end());append_compact(properties,0);
+        const auto path=files.write("maps/Station.unr",make_level_package(false,false,76,false,false,false,properties));
+        const auto census=hpvr::wand::inspect_hp1_actor_visuals(path);
+        expect((census.status==Hp1ProfileStatus::ok)==valid,"station structure validation");
+        if(!valid)return;
+        const auto& property=census.actors.front().serialized_properties.front();
+        expect(property.station_route.has_value()&&property.value==route,"station retains decoded fields and raw bytes");
+        const auto& decoded=*property.station_route;
+        expect(decoded.destination=="Destination"&&decoded.path_type=="HPath_A"&&decoded.first_path=="HPath_A0"&&
+               decoded.next_group==group&&decoded.pause_seconds==.5F&&decoded.behavior==behavior&&
+               decoded.rotation_units==std::array<std::int32_t,3>{1,-2,3},"station route field order");
+    };
+    check(0,0,false,true);check(3,4,false,true);
+    check(4,0,false,false);check(-1,0,false,false);check(0,5,false,false);check(0,0,true,false);
+}
+
+void actor_visual_census_decodes_string_encodings() {
+    const TemporaryGraphRoot files;
+    auto check = [&](int count, Bytes payload, std::string_view expected, bool valid) {
+        Bytes value;
+        append_compact(value, count);
+        value.insert(value.end(), payload.begin(), payload.end());
+        Bytes properties;
+        append_compact(properties, 22);
+        append_u8(properties, 0x5d);
+        append_u8(properties, static_cast<std::uint8_t>(value.size()));
+        properties.insert(properties.end(), value.begin(), value.end());
+        append_compact(properties, 0);
+        const auto map = files.write("maps/String.unr",
+            make_level_package(false, false, 76, false, false, false, properties));
+        const auto census = hpvr::wand::inspect_hp1_actor_visuals(map);
+        if (!valid) {
+            expect(census.status != Hp1ProfileStatus::ok, "malformed FString rejected");
+            return;
+        }
+        expect(census.status == Hp1ProfileStatus::ok &&
+                   census.actors.front().serialized_properties.size() == 1,
+               "FString property decoded");
+        const auto& property = census.actors.front().serialized_properties.front();
+        expect(property.text_value_serialized && property.text_value == expected &&
+                   property.value == value,
+               "FString text decoded without changing serialized bytes");
+    };
+    check(0, {}, "", true);
+    check(1, {0}, "", true);
+    check(3, {'H', 'i', 0}, "Hi", true);
+    check(-1, {0, 0}, "", true);
+    check(-3, {'H', 0, 'i', 0, 0, 0}, "Hi", true);
+    check(-4, {0x16, 0x04, 0x3D, 0xD8, 0x00, 0xDE, 0, 0},
+          "\xD0\x96\xF0\x9F\x98\x80", true);
+    check(-3, {'H', 0, 0, 0}, "", false);
+    check(-2, {0x00, 0xDC, 0, 0}, "", false);
+    check(-2, {0x3D, 0xD8, 0, 0}, "", false);
+    check(-3, {0x3D, 0xD8, 'H', 0, 0, 0}, "", false);
+    check(-2, {'H', 0, 'i', 0}, "", false);
+    check(-1, {0, 0, 1}, "", false);
+    check(0, {0}, "", false);
+    check(2, {'H', 'i'}, "", false);
+    check(-2147483647, {}, "", false);
 }
 
 void actor_visual_census_accepts_empty_cutscene_aliases() {
@@ -2079,6 +2184,20 @@ void p8_texture_decoder_validates_mips_palette_and_rgba() {
     };
     expect(std::ranges::equal(texture.rgba8, expected),
            "P8 palette indices expand to RGBA in UE1 channel order");
+    for (const int tail : {1, 2}) {
+        const auto dual = files.write("textures/Dual" + std::to_string(tail) + ".utx",
+                                      make_p8_texture_package(76, 0, tail));
+        const auto decoded = hpvr::wand::load_hp1_p8_texture(dual, 1);
+        if (tail == 1) {
+            expect(decoded.status == Hp1ProfileStatus::ok &&
+                       decoded.compressed_mips_serialized && decoded.mips.size() == 1 &&
+                       decoded.rgba8 == texture.rgba8,
+                   "P8 chain precedes optional compressed chain");
+        } else {
+            expect(decoded.status != Hp1ProfileStatus::ok && decoded.rgba8.empty(),
+                   "compressed chain skip offset still validates");
+        }
+    }
 
     for (const auto package_version :
          std::array<std::uint16_t, 2>{69, 73}) {
@@ -2253,6 +2372,19 @@ void mpeg_loader_excludes_object_tail_and_incomplete_frames() {
     expect(decoded.status==Hp1ProfileStatus::ok,"MPEG complete frames load");
     expect(decoded.encoded_bytes.size()==834,"MPEG object metadata tail excluded");
     expect(decoded.sample_rate==22050 && decoded.channel_count==1,"MPEG format retained");
+    Bytes wave{'R','I','F','F'};
+    append_u32(wave,36+834);
+    wave.insert(wave.end(),{'W','A','V','E','f','m','t',' '});
+    append_u32(wave,16);append_u16(wave,1);append_u16(wave,1);
+    append_u32(wave,22050);append_u32(wave,44100);append_u16(wave,2);append_u16(wave,16);
+    wave.insert(wave.end(),{'d','a','t','a'});append_u32(wave,834);
+    wave.insert(wave.end(),frame.begin(),frame.end());
+    wave.insert(wave.end(),frame.begin(),frame.end());
+    path=root.write("sounds/PcmWithSync.uax",package_with(wave));
+    expect(hpvr::wand::load_hp1_pcm_sound(path,1).status==Hp1ProfileStatus::ok,
+        "PCM containing MPEG-like sample bytes remains valid WAVE");
+    expect(hpvr::wand::load_hp1_mpeg_sound(path,1).status!=Hp1ProfileStatus::ok,
+        "PCM sample bytes are never mistaken for raw MPEG frames");
     frame.resize(20);
     path=root.write("sounds/Truncated.uax",package_with(frame));
     decoded=hpvr::wand::load_hp1_mpeg_sound(path,1);
@@ -2282,6 +2414,8 @@ int main() {
     player_start_census_decodes_only_direct_level_actor_properties();
     actor_visual_census_retains_slots_and_instance_overrides();
     actor_visual_census_accepts_empty_cutscene_aliases();
+    actor_visual_census_decodes_string_encodings();
+    actor_visual_census_decodes_station_routes();
     model_census_decodes_only_bounded_collection_framing();
     skeletal_mesh_census_decodes_exact_ue1_framing();
     bsp_topology_decodes_and_validates_active_cross_indices();

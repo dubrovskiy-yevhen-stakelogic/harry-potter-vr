@@ -51,6 +51,10 @@
 #include "hpvr/quest_cinematic.h"
 #include "hpvr/quest_map_events.h"
 #include "hpvr/quest_gnome.h"
+#include "hpvr/quest_peeves_battle.h"
+#include "hpvr/quest_peeves_projectile.h"
+#include "hpvr/quest_malfoy.h"
+#include "hpvr/quest_firecracker.h"
 #include "hpvr/quest_gnome_visibility.h"
 #include "hpvr/quest_vertex_layout.h"
 #include "hpvr/quest_award_facing.h"
@@ -95,6 +99,8 @@ constexpr float kMetersPerUnrealUnit = 0.02F;
 constexpr float kTau = 6.28318530717958647692F;
 constexpr std::uint32_t kPolyNotSolid = 0x00000008U;
 constexpr float kWalkableNormalY = 0.64F;
+// Backing panel plus every glyph of a full notice.
+constexpr std::size_t kErrorNoticeVertexCapacity=6*(1+kErrorNoticeLines*kErrorNoticeColumns);
 constexpr float kGroundContactEpsilonMeters = 0.006F;
 constexpr float kStageReferenceFootY = -42.0F * kMetersPerUnrealUnit;
 constexpr float kStageGroundSearchDownMeters = 0.45F;
@@ -843,7 +849,8 @@ bool LoadWorldMetadata(
     if (tutorial&&!LoadChildSystem(census, player_start, player_start_yaw, &metadata.children)) return false;
     metadata.actor_count = census.actors.size();
     if (!LoadIntroCutscene(census, player_start, player_start_yaw,
-                           &metadata.intro_cutscene,tutorial?"cutscene4":AsciiFold(map_package.stem().string())=="lev_tut2"?"cutscene10":"cutscene0",tutorial)) {
+                           &metadata.intro_cutscene,tutorial?"cutscene4":AsciiFold(map_package.stem().string())=="lev_tut2"?"cutscene10":
+                           AsciiFold(map_package.stem().string())=="lev_tut3b"?"cutscene1":"cutscene0",tutorial)) {
         HPVR_LOGE("[hpvr.quest.cutscene.data] status=REJECTED "
                   "object=CutScene4");
         return false;
@@ -1610,6 +1617,9 @@ std::optional<std::array<float,3>> CinematicTarget(const IntroCutscene& scene,co
         return loc.position;
     }
     for(const auto& track:scene.tracks)if(AsciiFold(track.alias)==scene.camera_target){
+        for(const auto& actor:actors)if(actor.actor_reference==track.actor_reference){
+            auto p=AddVector(actor.base_origin,actor.cutscene_offset);p[1]+=.9F;return p;
+        }
         auto p=track.position;if(!track.camera)p[1]+=.9F;return p;
     }
     return std::nullopt;
@@ -1754,25 +1764,30 @@ bool ClearCapsuleSegment(const std::vector<CollisionTriangle>& triangles,
     return true;
 }
 bool BeginClimb(const std::vector<CollisionTriangle>& triangles,
-                const std::array<float,3>& current,const std::array<float,3>& request,ClimbMotion* climb){
+                const std::array<float,3>& current,const std::array<float,3>& request,ClimbMotion* climb,float minimum_rise=.34F){
     const float length=std::hypot(request[0],request[2]);if(!climb||length<0.00001F)return false;
     const std::array<float,3> dir{request[0]/length,0,request[2]/length};
     const float foot=current[1]-kPlayerCapsuleHalfHeightMeters;
     // Reach a nearby ledge, never the top of a distant wall. Both legs of the
     // mantle are swept with the same capsule used by ordinary locomotion.
-    for(float distance=0.45F;distance<=1.05F;distance+=0.10F){
+    for(float distance=0.45F;distance<=0.76F;distance+=0.10F){
         auto landing=AddVector(current,ScaleVector(dir,distance));
-        float top=std::numeric_limits<float>::infinity();
+        std::vector<float> tops;
         for(const auto& t:triangles){float y;
             if(std::abs(t.normal[1])>=kWalkableNormalY &&
                CollisionTriangleHeightAtXZ(t,landing[0],landing[2],&y) &&
-               y>foot+0.34F && y<=foot+2.8F)top=std::min(top,y);
+               y>foot+minimum_rise && y<=foot+2.8F)tops.push_back(y);
         }
-        if(!std::isfinite(top))continue;
-        landing[1]=top+kPlayerCapsuleHalfHeightMeters;
-        auto corner=current;corner[1]=landing[1];
-        if(!ClearCapsuleSegment(triangles,current,corner)||!ClearCapsuleSegment(triangles,corner,landing))continue;
-        *climb={true,current,corner,landing};return true;
+        std::ranges::sort(tops);
+        tops.erase(std::unique(tops.begin(),tops.end()),tops.end());
+        // A thick platform exposes both its underside and its top. A blocked
+        // lower candidate must not hide the reachable upper landing.
+        for(const float top:tops){
+            landing[1]=top+kPlayerCapsuleHalfHeightMeters;
+            auto corner=current;corner[1]=landing[1];
+            if(!ClearCapsuleSegment(triangles,current,corner)||!ClearCapsuleSegment(triangles,corner,landing))continue;
+            *climb={true,current,corner,landing};return true;
+        }
     }
     return false;
 }
@@ -2058,7 +2073,57 @@ struct BeanDraw {
     std::array<std::array<float,3>,17> emission_path{};
     unsigned emission_points=0; // Runtime sweep path, never part of cooked geometry.
     std::array<float,3> attachment_offset{};
+    unsigned card_id=0; // Resolved from owned actor metadata, not stored in the geometry cache.
+    float card_min_y=0,card_floor=-std::numeric_limits<float>::infinity();
 };
+bool RestoreCardGroundClearance(const std::vector<GpuVertex>& vertices,std::vector<BeanDraw>& pickups,
+                                const std::vector<CollisionTriangle>& collision){
+    for(auto& card:pickups)if(card.kind==2||card.kind==4){
+        if(!card.count||!card.frames||card.first>vertices.size()||
+           card.frames>(vertices.size()-card.first)/card.count)return false;
+        card.card_min_y=std::numeric_limits<float>::infinity();
+        const auto end=card.first+static_cast<std::size_t>(card.count)*card.frames;
+        for(std::size_t i=card.first;i<end;++i){
+            if(!std::isfinite(vertices[i].position[1]))return false;
+            card.card_min_y=std::min(card.card_min_y,vertices[i].position[1]);
+        }
+        float floor;
+        if(FindPropGroundBelow(collision,card.position,&floor))card.card_floor=floor;
+    }
+    return true;
+}
+float CardRenderHeight(const BeanDraw& card,float origin_y,float scale){
+    return std::max(origin_y,card.card_floor+.12F-scale*card.card_min_y);
+}
+
+bool RestorePickupCardIds(const wand::Hp1ActorVisualCensus& census,std::vector<BeanDraw>& pickups){
+    if(census.status!=wand::Hp1ProfileStatus::ok)return false;
+    std::vector<unsigned> ids(pickups.size());
+    const auto class_id=[](const std::string& name){
+        const auto cls=AsciiFold(name);
+        return cls=="hprops.wcmerlin"?1U:cls=="hprops.wctoke"?28U:chest::RewardCardId(cls);
+    };
+    for(std::size_t i=0;i<pickups.size();++i){
+        const auto& pickup=pickups[i];
+        if(pickup.kind!=4)continue;
+        for(const auto& actor:census.actors){
+            if(actor.actor_reference==pickup.actor_reference)ids[i]=class_id(actor.qualified_class_name);
+            if(actor.actor_reference!=pickup.source_actor)continue;
+            for(const auto& property:actor.serialized_properties){
+                const auto key=AsciiFold(property.name);
+                const auto index=static_cast<unsigned>(std::max<std::int64_t>(0,property.array_index));
+                const bool chest_reward=key=="ejectedobjects"&&
+                    chest::RewardActor(actor.actor_reference,index)==pickup.actor_reference;
+                const bool spawned=key=="spawnclass"&&0x30000000+actor.actor_reference==pickup.actor_reference;
+                if((chest_reward||spawned)&&!property.object_path.empty())
+                    ids[i]=class_id("hprops."+property.object_path.back());
+            }
+        }
+        if(!ids[i]||!campaign::CardMask(ids[i]))return false;
+    }
+    for(std::size_t i=0;i<pickups.size();++i)pickups[i].card_id=ids[i];
+    return true;
+}
 
 std::array<float,3> BeanWorldPosition(const BeanDraw& bean){
     if(!bean.source_actor)return AddVector(bean.position,bean.attachment_offset);
@@ -2108,10 +2173,11 @@ bool LoadOwnedBeans(const std::filesystem::path& root,const std::filesystem::pat
     struct RewardSource { std::int32_t actor; std::array<float,3> emission,landing; };
     std::map<std::int32_t,RewardSource> rewards;
     const auto map_name=AsciiFold(map.stem().string());
-    if(map_name=="lev_tut1b"||map_name=="lev_tut3")for(const auto& pot:census.actors){
+    const bool castle_rewards=map_name=="lev_tut3"||map_name=="lev_tut3b";
+    if(map_name=="lev_tut1b"||castle_rewards)for(const auto& pot:census.actors){
         const auto cls=AsciiFold(pot.qualified_class_name);
         const bool cauldron=cls=="hprops.bronzecauldron";
-        const bool chest=map_name=="lev_tut3"&&chest::IsChest(cls);
+        const bool chest=castle_rewards&&chest::IsChest(cls);
         if(!cauldron&&!chest&&!cls.starts_with("hprops.flipendovase"))continue;
         const auto def=std::ranges::find_if(table.exports,[&](const auto& e){
             return e.qualified_class_name=="Core.Class"&&!e.object_path.empty()&&AsciiFold(e.object_path.back())==cls.substr(7);});
@@ -2119,7 +2185,7 @@ bool LoadOwnedBeans(const std::filesystem::path& root,const std::filesystem::pat
         const auto defaults=wand::inspect_hp1_class_visual_defaults(package,def->reference);
         if(defaults.status!=wand::Hp1ProfileStatus::ok)return false;
         std::vector<wand::Hp1ClassDefaultProperty> properties;
-        if(chest&&cls=="hprops.ironchest"){
+        if(chest&&(cls=="hprops.ironchest"||cls=="hprops.woodchest")){
             const auto base=std::ranges::find_if(table.exports,[](const auto& e){
                 return e.qualified_class_name=="Core.Class"&&!e.object_path.empty()&&AsciiFold(e.object_path.back())=="bronzechest";
             });
@@ -2175,14 +2241,14 @@ bool LoadOwnedBeans(const std::filesystem::path& root,const std::filesystem::pat
             rewards.emplace(actor.actor_reference,RewardSource{pot.actor_reference,emission,landing});
         }
     }
-    if(map_name=="lev_tut3")for(const auto& source:census.actors){
+    if(castle_rewards)for(const auto& source:census.actors){
         if(AsciiFold(source.qualified_class_name)!="hpbase.spawnthingy")continue;
         std::string spawn_class;
         for(const auto& property:source.serialized_properties)
             if(AsciiFold(property.name)=="spawnclass"&&property.object_reference_serialized)
                 for(const auto& part:property.object_path){if(!spawn_class.empty())spawn_class+='.';spawn_class+=part;}
         const auto name=AsciiFold(spawn_class);
-        if(!name.starts_with("hprops.")||!name.ends_with("bean"))continue;
+        if(!name.starts_with("hprops.")||(!name.ends_with("bean")&&!chest::RewardCardId(name)))continue;
         auto actor=source;
         actor.actor_reference=0x30000000+source.actor_reference;
         actor.qualified_class_name=spawn_class;actor.hidden=false;actor.draw_scale=1;
@@ -2221,7 +2287,7 @@ bool LoadOwnedBeans(const std::filesystem::path& root,const std::filesystem::pat
     }
     HPVR_LOGI("[hpvr.quest.beans] status=READY actors=%zu colors=%zu",beans.size(),meshes.size());
     for(const auto& actor:census.actors)if((map_name=="lev_tut1"&&(actor.actor_reference==1778||actor.actor_reference==1617))||
-        (map_name=="lev_tut3"&&AsciiFold(actor.qualified_class_name)=="harrypotter.chocolatefrog"&&!actor.hidden)){
+        (castle_rewards&&AsciiFold(actor.qualified_class_name)=="harrypotter.chocolatefrog"&&!actor.hidden)){
         const bool frog=AsciiFold(actor.qualified_class_name)=="harrypotter.chocolatefrog";
         const auto pkg=root/(frog?"System/HarryPotter.u":"System/HProps.u");
         if(frog){
@@ -2282,22 +2348,33 @@ bool LoadOwnedBeans(const std::filesystem::path& root,const std::filesystem::pat
             {v.texture_uv[0],v.texture_uv[1]},{0,0},mesh.layer_base+v.texture_layer,v.polygon_flags,0,0xe8e8e8U});
         beans.push_back(pickup);
     }
-    if(AsciiFold(map.stem().string())=="lev_tut2"||AsciiFold(map.stem().string())=="lev_tut3"){
+    if(map_name=="lev_tut2"||castle_rewards){
         const auto manifest=wand::build_hp1_character_manifest(root,map,0,{},true);
-        if(manifest.status!=wand::Hp1ProfileStatus::ok)return false;
+        if(manifest.status!=wand::Hp1ProfileStatus::ok){
+            HPVR_LOGE("[hpvr.quest.cards] status=MANIFEST_FAILED error=%s",manifest.error.c_str());return false;
+        }
         auto cards=manifest.actors;
-        if(map_name=="lev_tut3")for(const auto& reward:pickup_actors)if(chest::RewardCardId(AsciiFold(reward.qualified_class_name))){
-            const auto icon=std::ranges::find_if(manifest.actors,[](const auto& actor){return AsciiFold(actor.qualified_class_name)=="hprops.wctoke";});
+        const auto icon_class=std::ranges::find_if(table.exports,[](const auto& e){return e.qualified_class_name=="Core.Class"&&
+            !e.object_path.empty()&&AsciiFold(e.object_path.back())=="wizzardcardicon";});
+        if(icon_class==table.exports.end())return false;
+        const auto icon=wand::inspect_hp1_class_visual_defaults(package,icon_class->reference);
+        if(icon.status!=wand::Hp1ProfileStatus::ok||icon.mesh_reference<=0){
+            HPVR_LOGE("[hpvr.quest.cards] status=ICON_FAILED error=%s",icon.error.c_str());return false;
+        }
+        if(castle_rewards)for(const auto& reward:pickup_actors)if(rewards.contains(reward.actor_reference)&&chest::RewardCardId(AsciiFold(reward.qualified_class_name))){
             const auto def=std::ranges::find_if(table.exports,[&](const auto& e){return e.qualified_class_name=="Core.Class"&&
                 !e.object_path.empty()&&AsciiFold(e.object_path.back())==AsciiFold(reward.qualified_class_name).substr(7);});
-            if(icon==manifest.actors.end()||def==table.exports.end())return false;
+            if(def==table.exports.end())return false;
             const auto defaults=wand::inspect_hp1_class_visual_defaults(package,def->reference);
             if(defaults.status!=wand::Hp1ProfileStatus::ok)return false;
-            auto card=*icon;card.actor_reference=reward.actor_reference;card.qualified_class_name=reward.qualified_class_name;
+            wand::Hp1CharacterActor card;card.mesh_package=package;card.mesh_reference=icon.mesh_reference;card.draw_scale=icon.draw_scale;
+            card.actor_reference=reward.actor_reference;card.qualified_class_name=reward.qualified_class_name;
             card.location_unreal=reward.location_unreal;card.skins.clear();
             for(const auto& property:defaults.serialized_properties)if(AsciiFold(property.name)=="skin"&&property.object_reference>0)
                 card.skins.push_back({0,package,property.object_reference});
-            if(card.skins.empty())return false;
+            if(card.skins.empty()){
+                HPVR_LOGE("[hpvr.quest.cards] status=SKIN_MISSING class=%s",reward.qualified_class_name.c_str());return false;
+            }
             cards.push_back(std::move(card));
         }
         for(auto actor:cards){
@@ -2314,14 +2391,18 @@ bool LoadOwnedBeans(const std::filesystem::path& root,const std::filesystem::pat
             }
             LoadedStaticMesh mesh;
             if(!LoadStaticMesh(actor.mesh_package.string(),actor.mesh_reference,layers,&mesh)||
-               layers+mesh.report.texture_layer_count>kMaximumCombinedTextureLayers)return false;
+               layers+mesh.report.texture_layer_count>kMaximumCombinedTextureLayers){
+                HPVR_LOGE("[hpvr.quest.cards] status=MESH_FAILED class=%s",actor.qualified_class_name.c_str());return false;
+            }
             for(const auto& skin:actor.skins){
                 if(skin.material_slot>=mesh.report.texture_layer_count)return false;
                 const bool masked=std::ranges::any_of(mesh.vertices,[&](const auto& v){
                     return v.texture_layer==skin.material_slot&&(v.polygon_flags&2U)!=0;
                 });
                 const auto texture=wand::load_hp1_p8_texture(skin.package,skin.reference,masked);
-                if(texture.status!=wand::Hp1ProfileStatus::ok||texture.mips.empty())return false;
+                if(texture.status!=wand::Hp1ProfileStatus::ok||texture.mips.empty()){
+                    HPVR_LOGE("[hpvr.quest.cards] status=TEXTURE_FAILED ref=%d error=%s",skin.reference,texture.error.c_str());return false;
+                }
                 const auto& mip=texture.mips.front();
                 constexpr std::size_t size=HPVR_HP1_SKELETAL_TEXTURE_SIZE;
                 for(std::size_t y=0;y<size;++y)for(std::size_t x=0;x<size;++x){
@@ -2851,11 +2932,20 @@ bool LoadOwnedCharacters(
     IntroCutscene intro;
     const bool flying_lesson=AsciiFold(map_package.stem().string())=="lev_tut2";
     const bool charms_lesson=AsciiFold(map_package.stem().string())=="lev_tut3";
-    if (!LoadIntroCutscene(census, player_start, player_start_yaw, &intro,tutorial?"cutscene4":flying_lesson?"cutscene10":"cutscene0",tutorial)) return false;
+    const bool hogwarts_return=AsciiFold(map_package.stem().string())=="lev_tut3b";
+    if (!LoadIntroCutscene(census, player_start, player_start_yaw, &intro,tutorial?"cutscene4":flying_lesson?"cutscene10":hogwarts_return?"cutscene1":"cutscene0",tutorial)) return false;
     const auto triangles = BuildCollisionTriangles(map_vertices, map_vertex_count);
     std::set<std::string> challenge_clips{"breathe","breath","walk","run","roll","stop","idle","talk1","talk2","float","attack","hit","die","faint","stunned"};
     if(flying_lesson)challenge_clips.insert("hover");
+    if(hogwarts_return)for(const auto* name:{"grab","scheming","look","attackfloat","throwobject1","throwobject2","shot","fly","hover",
+        "strafeleft","straferight","throw","knockback","knockdown","lookdownhall","drop","takeoff"})
+        challenge_clips.insert(name);
     if(charms_lesson)for(const auto* name:{"runattack","runattackbite","knockback","downbreath","downdizzy","look","fidget_1"})challenge_clips.insert(name);
+    if(hogwarts_return)for(const auto& a:census.actors)for(const auto& p:a.serialized_properties){
+        const auto key=AsciiFold(p.name);
+        if(p.text_value_serialized&&(key=="cutwalkanim"||key=="walkanimname"||key=="cuttalkanim"||key=="cutidleanim"))
+            challenge_clips.insert(AsciiFold(p.text_value));
+    }
     if(!tutorial)for(const auto& a:census.actors)for(const auto& p:a.serialized_properties)
         if(p.text_value_serialized&&AsciiFold(p.name).starts_with("cast")&&AsciiFold(p.text_value).starts_with("animate "))
             challenge_clips.insert(AsciiFold(p.text_value.substr(8)));
@@ -2873,7 +2963,7 @@ bool LoadOwnedCharacters(
         const bool child = actor.actor_reference >= 0x10000000;
         const auto cls=AsciiFold(actor.qualified_class_name);
         const bool apparition=tutorial?actor.actor_reference==3148:cls=="harrypotter.nhnick";
-        const bool ghost=(tutorial&&actor.actor_reference==2968)||apparition;
+        const bool ghost=(tutorial&&actor.actor_reference==2968)||apparition||(hogwarts_return&&cls=="tut3.tut3peeves");
         const bool classroom=tutorial&&IsClassroomActor(actor.actor_reference);
         const bool story_cast=ghost||classroom||actor.actor_reference==1510||actor.actor_reference==1627||actor.actor_reference==1538||
             actor.actor_reference==1618||actor.actor_reference==1296||actor.actor_reference==777;
@@ -2884,9 +2974,12 @@ bool LoadOwnedCharacters(
             })) continue;
         const bool broom_cast=cls=="harrypotter.broomharry"||cls=="tut2.broomhooch";
         const bool flying_scene_cast=flying_lesson&&std::ranges::any_of(intro.tracks,[&](const auto& t){return !t.camera&&t.actor_reference==actor.actor_reference;});
+        const bool return_cast=hogwarts_return&&(cls.starts_with("hub2.")||cls=="tut3.tut3peeves"||
+            cls=="harrypotter.bossrailmove"||cls=="harrypotter.hedwig"||cls=="tut1.tut1fred"||cls=="tut1.tut1george"||
+            cls.starts_with("harrypotter.gen_fem_")||cls.starts_with("harrypotter.gen_male_"));
         const bool charms_cast=charms_lesson&&(cls.find("hermione")!=std::string::npos||cls.find("flitwick")!=std::string::npos||
             cls.rfind("harrypotter.gen_fem_",0)==0||cls.rfind("harrypotter.gen_male_",0)==0);
-        if(!tutorial&&!broom_cast&&!flying_scene_cast&&!charms_cast&&cls!="harrypotter.harry"&&cls!="tut1.tut1quirrell"&&cls!="tut1.tut1gnome"&&
+        if(!tutorial&&!broom_cast&&!flying_scene_cast&&!charms_cast&&!return_cast&&cls!="harrypotter.harry"&&cls!="tut1.tut1quirrell"&&cls!="tut1.tut1gnome"&&
            cls!="harrypotter.nhnick"&&cls!="tut1.flipbarrel"&&cls!="tut1.cutharry")continue;
         const auto package = actor.mesh_package.string();
         const auto& object = actor.object_name;
@@ -2926,15 +3019,15 @@ bool LoadOwnedCharacters(
         if (skin.status != wand::Hp1ProfileStatus::ok ||
             animation.status != wand::Hp1ProfileStatus::ok) return false;
         CharacterDraw draw;
-        draw.player=tutorial?actor.actor_reference==kHarryActorReference:cls=="harrypotter.harry"||cls=="harrypotter.broomharry";draw.flying=ghost;
+        draw.player=tutorial?actor.actor_reference==kHarryActorReference:cls=="harrypotter.harry"||cls=="harrypotter.broomharry";draw.flying=ghost||(hogwarts_return&&cls=="harrypotter.hedwig");
         draw.child_template = child;
-        draw.enabled = tutorial?(!ron_cast&&!ghost):cls!="tut1.cutharry";
+        draw.enabled = (tutorial?(!ron_cast&&!ghost):cls!="tut1.cutharry")&&!actor.hidden_by_default;
         draw.actor_reference = actor.actor_reference;
         draw.object_name = object;
         draw.class_name = class_name;
         draw.vertex_count = static_cast<std::uint32_t>(mesh.vertices.size());
         draw.base_yaw = static_cast<float>(actor.rotation_units[1]) * kTau / 65536.0F + player_start_yaw;
-        const bool charms_student=charms_lesson&&(cls.starts_with("harrypotter.gen_fem_")||cls.starts_with("harrypotter.gen_male_"));
+        const bool charms_student=(charms_lesson||hogwarts_return)&&(cls.starts_with("harrypotter.gen_fem_")||cls.starts_with("harrypotter.gen_male_"));
         if(charms_student||(charms_lesson&&cls=="tut3.tut3flitwick"))
             draw.base_yaw=player_start_yaw+kTau*.5F-static_cast<float>(actor.rotation_units[1])*kTau/65536.0F;
         draw.yaw = draw.base_yaw;
@@ -2944,7 +3037,7 @@ bool LoadOwnedCharacters(
             actor.location_unreal.z * kMetersPerUnrealUnit - player_start.position_m[1],
             -actor.location_unreal.x * kMetersPerUnrealUnit - player_start.position_m[2]}, player_start_yaw);
         float floor = draw.base_origin[1];
-        if (!ghost && !broom_cast && !FindPropGroundBelow(triangles, draw.base_origin, &floor)) {
+        if (!draw.flying && !broom_cast && !FindPropGroundBelow(triangles, draw.base_origin, &floor)) {
             HPVR_LOGE("[hpvr.quest.characters] status=GROUND_REJECTED actor=%s",object.c_str());return false;
         }
         draw.base_origin[1] = floor;
@@ -2978,7 +3071,7 @@ bool LoadOwnedCharacters(
             if(name=="breath")name="breathe"; // Harry's authored idle uses the singular name.
             if(name=="talk")name=std::ranges::any_of(animation.sequences,[](const auto& s){return AsciiFold(s.name)=="talk2";})?"talk1":"talk2";
             if(name=="trot")name="run"; // The twins' authored locomotion clip.
-            if(ghost&&name=="float")name=apparition?"breathe":"run";
+            if(ghost&&name=="float"&&!hogwarts_return)name=apparition?"breathe":"run";
             if(!tutorial&&!challenge_clips.contains(name))continue;
             if(!tutorial&&draw.clips.contains(name))continue;
             if(classroom&&name!="breathe")continue;
@@ -3121,6 +3214,7 @@ std::array<float,3> CrossVector(const std::array<float,3>& left,const std::array
 #include "quest_challenge_scene.inl"
 #include "quest_broom_scene.inl"
 #include "quest_charms_scene.inl"
+#include "quest_return_scene.inl"
 #include "quest_character_checkpoint.inl"
 #include "quest_broom_avatar.inl"
 #include "quest_broom_visuals.inl"
@@ -3151,6 +3245,7 @@ bool AppendFrontGeometry(QuestFrontEnd& front,std::vector<GpuVertex>& vertices,
         range.count=static_cast<std::uint32_t>(vertices.size())-range.first;ranges.emplace(key,range);
     };
     auto emit=[&](){emit_quads(layout.DrawKey(),layout.Quads(false));};
+    if(!front.assets.owl_letter.empty()){layout.screen=FrontScreen::Letter;layout.selection=0;emit();}
     layout.screen=FrontScreen::Vr;
     const auto same_quad=[](const FrontQuad& a,const FrontQuad& b){
         return a.x==b.x&&a.y==b.y&&a.w==b.w&&a.h==b.h&&a.u==b.u&&a.v==b.v&&
@@ -3200,7 +3295,7 @@ bool AppendFrontGeometry(QuestFrontEnd& front,std::vector<GpuVertex>& vertices,
     }
     for(const auto screen:{FrontScreen::Levels,FrontScreen::LevelSlots,FrontScreen::LevelStart}){
         layout.screen=screen;
-        for(unsigned i=0;i<(screen==FrontScreen::Levels?static_cast<unsigned>(kQuestMaps.size()+1):screen==FrontScreen::LevelSlots?4U:2U);++i){layout.selection=i;emit();}
+        for(unsigned i=0;i<(screen==FrontScreen::Levels?kPlayableQuestMapCount+1:screen==FrontScreen::LevelSlots?4U:2U);++i){layout.selection=i;emit();}
     }
     layout.screen=FrontScreen::Main;for(unsigned i=0;i<5;++i){layout.selection=i;emit();}
     layout.screen=FrontScreen::Slots;
@@ -3243,6 +3338,10 @@ bool AppendFrontGeometry(QuestFrontEnd& front,std::vector<GpuVertex>& vertices,
         emit_quads("hurt_"+std::to_string(health),hurt);
     }
     layout.progress.health=100;
+    if(front.assets.has_boss_art)for(unsigned hits=0;hits<=4;++hits)
+        emit_quads("peeves_health_"+std::to_string(hits),layout.PeevesHealthQuads(hits,true));
+    if(front.assets.has_boss_art)for(unsigned hits=0;hits<=3;++hits)
+        emit_quads("malfoy_health_"+std::to_string(hits),layout.MalfoyHealthQuads(hits,true));
     if(front.assets.map_id==1||front.assets.map_id==3)for(unsigned stars=0;stars<=(front.assets.map_id==3?6U:8U);++stars){
         emit_quads("stars_"+std::to_string(stars),layout.ChallengeStarQuads(stars));
         emit_quads("report_stars_"+std::to_string(stars),layout.ChallengeStarQuads(stars,true));
@@ -3795,6 +3894,11 @@ struct QuestScene::State {
     std::int32_t harry_actor=kHarryActorReference;
     ChallengeRuntime challenge;
     CharmsRuntime charms;
+    ReturnRuntime hogwarts_return;
+    ReturnAppleVisual return_apple;
+    ReturnAppleVisual return_scroll;
+    ReturnCrackerVisual return_cracker;
+    ReturnMalfoyRuntime return_duel;
     BroomRuntime broom;
     BroomVisuals broom_visuals;
     BroomAvatar broom_avatar;
@@ -3841,7 +3945,7 @@ struct QuestScene::State {
     std::array<float,3> peeves_from{},peeves_to{};
     std::array<float,3> peeves_trigger{},peeves_home{};
     std::array<float,3> peeves_retreat{},peeves_path_a{},peeves_path_b{};
-    struct BumpState { bool near=false; float cooldown=0; std::size_t next=0; };
+    struct BumpState { bool near=false; float cooldown=0; std::size_t next=0; bool purchase_armed=false; };
     std::map<std::int32_t,BumpState> bump_states;
     std::int32_t bump_actor=0;
     float bump_cooldown=0,bump_restore_yaw=0;
@@ -3955,6 +4059,12 @@ struct QuestScene::State {
     void* candle_particle_mapped=nullptr;
     std::uint32_t candle_particle_capacity=0;
     unsigned perf_count=0;
+    VkBuffer notice_buffer=VK_NULL_HANDLE;
+    VkDeviceMemory notice_memory=VK_NULL_HANDLE;
+    void* notice_mapped=nullptr;
+    unsigned notice_count=0;
+    std::string notice_text;
+    bool notice_dirty=true;
     VkImage texture_image = VK_NULL_HANDLE;
     VkDeviceMemory texture_memory = VK_NULL_HANDLE;
     VkImageView texture_view = VK_NULL_HANDLE;
@@ -3972,6 +4082,10 @@ struct QuestScene::State {
     VkPipeline death_pipeline = VK_NULL_HANDLE;
     VkPipeline frontend_pipeline = VK_NULL_HANDLE;
     VkPipeline ghost_pipeline = VK_NULL_HANDLE;
+    // Peeves: depth-only pass, then blended colour at equal depth, so his own
+    // back faces cannot paint over his face while he fades.
+    VkPipeline ghost_prepass_pipeline = VK_NULL_HANDLE;
+    VkPipeline ghost_equal_pipeline = VK_NULL_HANDLE;
     VkBuffer wand_vertex_buffer = VK_NULL_HANDLE;
     VkDeviceMemory wand_vertex_memory = VK_NULL_HANDLE;
     VkPipelineLayout wand_pipeline_layout = VK_NULL_HANDLE;
@@ -4007,6 +4121,8 @@ bool QuestScene::LoadFromOwnedData(const std::filesystem::path& data_root,const 
     }
     state.map_id=map_id;state.harry_actor=map_id==0?kHarryActorReference:map_id==1?1102:map_id==3?346:75;
     SceneLoadTrace load_trace(save_root,map_id);
+    // Silent rejections become the reason shown on the main-menu error notice.
+    const auto reject=[&](const char* reason){SceneLoadTrace::Note(save_root,map_id,reason);return false;};
     const std::filesystem::path map_package = data_root / descriptor->package_path;
     try {
         hpvr_hp1_player_start_report player_start{};
@@ -4023,6 +4139,7 @@ bool QuestScene::LoadFromOwnedData(const std::filesystem::path& data_root,const 
                 "[hpvr.quest.scene.data] status=PLAYER_START_REJECTED "
                 "result=%u report=%u error=%s",
                 player_status, player_start.status, player_start.error);
+            SceneLoadTrace::Note(save_root,map_id,std::string("PLAYER START: ")+player_start.error);
             return false;
         }
 
@@ -4032,7 +4149,7 @@ bool QuestScene::LoadFromOwnedData(const std::filesystem::path& data_root,const 
         WorldMetadata world;
         if (!LoadWorldMetadata(data_root, map_package, player_start,
                                player_start_yaw, &world)) {
-            return false;
+            return reject("WORLD METADATA");
         }
         PreparedGeometry geometry;
         bool prepared=false;
@@ -4052,62 +4169,67 @@ bool QuestScene::LoadFromOwnedData(const std::filesystem::path& data_root,const 
                 load_trace.Stage("ASSET_CACHE_READY");
             }catch(const std::exception& e){
                 HPVR_LOGE("[hpvr.quest.scene.prepared] status=REBUILD map=%u reason=%s",map_id,e.what());
+                SceneLoadTrace::Note(save_root,map_id,std::string("SCENE CACHE REJECTED: ")+e.what());
                 load_trace.Stage("ASSET_CACHE_REJECTED_REBUILD");
             }
         }
         if(!prepared){
             if(!PrepareGeometryFromOwnedData(data_root,map_id,player_start,player_start_yaw,world,geometry,
-                [&](const char* stage){load_trace.Stage(stage);}))return false;
+                [&](const char* stage){load_trace.Stage(stage);}))return reject("RUNTIME SCENE PREPARATION");
             HPVR_LOGI("[hpvr.quest.scene.prepared] status=RUNTIME_PREPARED map=%u",map_id);
         }
         const auto quest_census=wand::inspect_hp1_actor_visuals(map_package);
         GridVisualRestoreStats grid_visuals;
         if(!RestorePreparedGridVisuals(geometry,data_root,map_package,quest_census,&grid_visuals)){
-            HPVR_LOGE("[hpvr.quest.grid.visual] status=REJECTED");return false;
+            HPVR_LOGE("[hpvr.quest.grid.visual] status=REJECTED");return reject("GRID MOVER VISUALS");
         }
         HPVR_LOGI("[hpvr.quest.grid.visual] status=READY movers=%u vertices=%u new_layers=%u",
             grid_visuals.movers,grid_visuals.vertices,grid_visuals.texture_layers_added);
         if(map_id==1||map_id==3){
             if(!prepared)geometry.vertices.reserve(geometry.vertices.size()+prepared_codec::kMaxFrontendVertexReserve+kPreparedGnomeVertexReserve);
             const auto clips=RestorePreparedGnomeClips(geometry,data_root);
-            if(!clips.valid){HPVR_LOGE("[hpvr.quest.gnomes.clips] status=REJECTED reason=%s",clips.error);return false;}
+            if(!clips.valid){HPVR_LOGE("[hpvr.quest.gnomes.clips] status=REJECTED reason=%s",clips.error);return reject("GNOME ANIMATION CLIPS");}
             HPVR_LOGI("[hpvr.quest.gnomes.clips] status=READY actors=%zu clips=%zu vertices=%zu",clips.actors,clips.clips,clips.vertices);
             const auto dark=wand::repair_hp1_bsp_dark_lightmaps(map_package,kMaximumTriangles,
                 geometry.decoded_lightmaps,geometry.lightmap_width,geometry.lightmap_height,geometry.lightmaps);
-            if(dark.status!=wand::Hp1ProfileStatus::ok){HPVR_LOGE("[hpvr.quest.darklight] status=REJECTED reason=%s",dark.error.c_str());return false;}
+            if(dark.status!=wand::Hp1ProfileStatus::ok){HPVR_LOGE("[hpvr.quest.darklight] status=REJECTED reason=%s",dark.error.c_str());return reject("DARK LIGHTMAPS");}
             HPVR_LOGI("[hpvr.quest.darklight] status=READY lights=%zu tiles=%zu texels=%zu staged_bytes=%zu",
                 dark.dark_light_actor_count,dark.affected_lightmaps,dark.changed_texels,dark.staged_bytes);
         }
+        if(!RestorePickupCardIds(quest_census,geometry.beans)){
+            HPVR_LOGE("[hpvr.quest.cards] status=REJECTED reason=missing_owned_card_id");return false;
+        }
         const auto prop_restore=RestorePreparedPropOrientations(geometry,quest_census,player_start,player_start_yaw);
-        if(!prop_restore.valid){HPVR_LOGE("[hpvr.quest.props.orientation] status=REJECTED reason=%s",prop_restore.error);return false;}
+        if(!prop_restore.valid){HPVR_LOGE("[hpvr.quest.props.orientation] status=REJECTED reason=%s",prop_restore.error);return reject("PROP ORIENTATIONS");}
         HPVR_LOGI("[hpvr.quest.props.orientation] status=RESTORED props=%zu vertices=%zu",prop_restore.props,prop_restore.vertices);
         const auto candle_restore=RestorePreparedCandleFixtures(geometry);
         HPVR_LOGI("[hpvr.quest.fixtures] restored=%zu removed_flame_faces=%zu wick_anchors=%zu",candle_restore.fixtures,candle_restore.removed_faces,candle_restore.wick_anchors);
         state.ambient_emitters=RestorePreparedAmbientParticles(geometry,quest_census,player_start,player_start_yaw);
         HPVR_LOGI("[hpvr.quest.ambient] blue_emitters=%zu",state.ambient_emitters.size());
-        if(map_id==3){state.mirrors=FindMirrorSurfaces(geometry.vertices,geometry.map_vertices);BindMirrorMovers(state.mirrors,geometry.doors);}
+        if(map_id==3||map_id==kHogwartsReturnMapId){state.mirrors=FindMirrorSurfaces(geometry.vertices,geometry.map_vertices);BindMirrorMovers(state.mirrors,geometry.doors);}
         HPVR_LOGI("[hpvr.quest.mirror] surfaces=%zu",state.mirrors.size());
         auto loaded_vertices=std::move(geometry.vertices);
         if(map_id==3)AppendWaterSurfaceGeometry(state.mirrors,loaded_vertices);
         auto loaded_textures=std::move(geometry.textures);
         auto loaded_collision_triangles=std::move(geometry.collision);
+        if(map_id==kHogwartsReturnMapId)OrientReturnStudentDoors(geometry.doors);
         auto loaded_doors=std::move(geometry.doors);
         auto loaded_character_draws=std::move(geometry.characters);
         if(map_id==2){
             const auto player=std::ranges::find_if(loaded_character_draws,[](const auto& draw){return draw.player;});
-            if(player==loaded_character_draws.end()||!BuildBroomAvatar(data_root,loaded_vertices,*player,state.broom_avatar))return false;
+            if(player==loaded_character_draws.end()||!BuildBroomAvatar(data_root,loaded_vertices,*player,state.broom_avatar))return reject("BROOM AVATAR");
             HPVR_LOGI("[hpvr.quest.broom.avatar] body=%d vertices=%u frames=%u hidden_triangles=%u broom_triangles=%u",
                 !state.broom_avatar.broom_only,state.broom_avatar.vertex_count,state.broom_avatar.frame_count,
                 state.broom_avatar.removed_triangles,state.broom_avatar.broom_triangles);
         }
         auto loaded_texture_layers=geometry.texture_layers;
-        if(map_id==3&&!LoadLockParticles(data_root,quest_census,player_start,player_start_yaw,
+        if((map_id==3||map_id==kHogwartsReturnMapId)&&!LoadLockParticles(data_root,quest_census,player_start,player_start_yaw,
             geometry.texture_width,geometry.texture_height,loaded_textures,loaded_texture_layers,
-            state.lock_texture_layer,state.lock_emitters))return false;
-        if(map_id==3&&!LoadWingFeatherTexture(data_root,geometry.texture_width,geometry.texture_height,
-            loaded_textures,loaded_texture_layers,state.feather_texture_layer))return false;
+            state.lock_texture_layer,state.lock_emitters))return reject("LOCK SPARKLES - MISSING OR INVALID TEXTURES/HP_FX.UTX");
+        if((map_id==3||map_id==kHogwartsReturnMapId)&&!LoadWingFeatherTexture(data_root,geometry.texture_width,geometry.texture_height,
+            loaded_textures,loaded_texture_layers,state.feather_texture_layer))return reject("FEATHER TEXTURE - SYSTEM/HPPARTICLE.U");
         if(map_id==2&&!LoadBroomVisuals(data_root,geometry.texture_width,geometry.texture_height,
-            loaded_textures,loaded_texture_layers,state.broom_visuals))return false;
+            loaded_textures,loaded_texture_layers,state.broom_visuals))return reject("BROOM VISUALS");
         const auto map_vertex_count=geometry.map_vertices;
         float minimum_light=1.0F,maximum_light=0.0F;
         double accumulated_light=0.0;
@@ -4124,7 +4246,8 @@ bool QuestScene::LoadFromOwnedData(const std::filesystem::path& data_root,const 
         const auto loaded_character_frame_vertex_count=geometry.character_frame_vertices;
         const auto loaded_animation_frame_count=geometry.animation_frames;
         QuestSpellTargets loaded_spell_targets;
-        if(!loaded_spell_targets.SetTargets(geometry.targets))return false;
+        if(!loaded_spell_targets.SetTargets(geometry.targets))return reject("SPELL TARGETS");
+        if(!RestoreCardGroundClearance(loaded_vertices,geometry.beans,loaded_collision_triangles))return reject("CARD GROUND CLEARANCE");
         state.beans=std::move(geometry.beans);state.knights=std::move(geometry.knights);
         state.challenge.props=std::move(geometry.challenge_props);
         state.prop_aim_triangles=std::move(geometry.prop_aim);
@@ -4140,45 +4263,55 @@ bool QuestScene::LoadFromOwnedData(const std::filesystem::path& data_root,const 
                 data_root, scene.texture_layer_width,
                 scene.texture_layer_height, &loaded_textures,
                 &loaded_texture_layers, &loaded_fire_texture_layer)) {
-            return false;
+            return reject("FIRE TEXTURE");
         }
         std::vector<WandGpuVertex> loaded_wand;
         if (!LoadOwnedWand(data_root, &loaded_wand)) {
-            return false;
+            return reject("WAND MODEL - SYSTEM/HPBASE.U");
         }
         load_trace.Stage("PICKUPS_AND_WAND_READY");
         const auto symbol=wand::load_hp1_spell_profile(data_root/"system/HPBase.u",data_root/"Maps/Lev_Tut1.unr","FlipPattern","spellFlip");
-        if(symbol.status!=wand::Hp1ProfileStatus::ok||symbol.template_points.size()<2)return false;
+        if(symbol.status!=wand::Hp1ProfileStatus::ok||symbol.template_points.size()<2)return reject("FLIPENDO PATTERN - SYSTEM/HPBASE.U");
         std::vector<std::array<float,2>> marker_pattern;
         for(const auto& point:symbol.template_points)marker_pattern.push_back({point.x,point.y});
         state.target_marker=BuildTargetMarkerBatch(marker_pattern);
-        if(map_id==3)for(unsigned i=0;i<state.charms_markers.size();++i){
+        if(map_id==3||map_id==kHogwartsReturnMapId)for(unsigned i=0;i<state.charms_markers.size();++i){
             const auto profile=wand::load_hp1_spell_profile(data_root/"system/HPBase.u",data_root/"Maps/Lev_Tut3.unr",
                 i?"LevPattern":"AlohoPattern",i?"SPELLLEV":"spellAloho");
-            if(profile.status!=wand::Hp1ProfileStatus::ok)return false;
+            if(profile.status!=wand::Hp1ProfileStatus::ok)return reject("CHARMS SPELL PATTERN - SYSTEM/HPBASE.U");
             std::vector<std::array<float,2>> points;for(const auto& point:profile.template_points)points.push_back({point.x,point.y});
-            state.charms_markers[i]=BuildTargetMarkerBatch(points);if(!state.charms_markers[i].valid())return false;
+            state.charms_markers[i]=BuildTargetMarkerBatch(points);if(!state.charms_markers[i].valid())return reject("CHARMS SPELL MARKER");
         }
         const auto sparkle=wand::load_hp1_p8_texture(data_root/"system/HPParticle.u",3);
         if(!state.target_marker.valid()||sparkle.status!=wand::Hp1ProfileStatus::ok||
             sparkle.object_name!="Sparkle_3"||sparkle.mips.empty()||
-            sparkle.mips.front().width!=32||sparkle.mips.front().height!=32)return false;
+            sparkle.mips.front().width!=32||sparkle.mips.front().height!=32)return reject("SPELL SPARKLE TEXTURE - SYSTEM/HPPARTICLE.U");
         const auto marker_atlas=BuildTargetMarkerAtlas(sparkle.rgba8,32,32);
         if(marker_atlas.empty()||scene.texture_layer_width!=kTargetMarkerAtlasSize||
-            scene.texture_layer_height!=kTargetMarkerAtlasSize||loaded_texture_layers>=kMaximumCombinedTextureLayers)return false;
+            scene.texture_layer_height!=kTargetMarkerAtlasSize||loaded_texture_layers>=kMaximumCombinedTextureLayers)return reject("TARGET MARKER ATLAS");
         state.target_marker_texture_layer=loaded_texture_layers++;
         loaded_textures.insert(loaded_textures.end(),marker_atlas.begin(),marker_atlas.end());
         HPVR_LOGI("[hpvr.quest.target] source=HPParticle.Les_SpellShape texture=Sparkle_3 pattern=FlipPattern particles=%zu draws_per_eye=1",
             kTargetMarkerParticles);
         if (!LoadFrontAssets(data_root,&state.frontend.assets,map_id)) {
             HPVR_LOGE("[hpvr.quest.frontend] status=ASSETS_FAILED error=%s",state.frontend.assets.error.c_str());
+            SceneLoadTrace::Note(save_root,map_id,"MENU ASSETS: "+state.frontend.assets.error);
             return false;
         }
         state.smoke_texture_layer=loaded_texture_layers+state.frontend.assets.smoke;
         if(scene.texture_layer_width!=256 || scene.texture_layer_height!=256 ||
             !AppendFrontGeometry(state.frontend,loaded_vertices,loaded_textures,loaded_texture_layers,
-                state.front_draws,state.front_vertex_count))return false;
+                state.front_draws,state.front_vertex_count))return reject("MENU GEOMETRY");
+        if(map_id==kHogwartsReturnMapId){
+            if(!LoadReturnScroll(data_root,loaded_vertices,loaded_textures,loaded_texture_layers,state.return_scroll))return reject("HEDWIG SCROLL MESH");
+            state.front_vertex_count+=state.return_scroll.count;
+        }
+        if(map_id==kHogwartsReturnMapId&&!LoadReturnApple(data_root,loaded_vertices,
+            loaded_textures,loaded_texture_layers,state.return_apple))return false;
+        if(map_id==kHogwartsReturnMapId&&!LoadReturnCracker(data_root,loaded_vertices,
+            loaded_textures,loaded_texture_layers,state.return_cracker))return false;
         state.frontend.saves=save_root;
+        for(const auto& bean:state.beans)if(bean.kind!=0)state.frontend.assets.non_bean_pickups.push_back(bean.actor_reference);
         state.frontend.progress.map_id=map_id;
         state.frontend.vr=ReadVrSettings(save_root.parent_path());
         state.frontend.RefreshSlots();
@@ -4197,28 +4330,34 @@ bool QuestScene::LoadFromOwnedData(const std::filesystem::path& data_root,const 
                                    all_dialogue,
                                    data_root / "Cache/Audio")) {
             HPVR_LOGE("[hpvr.quest.audio] status=CONFIGURE_REJECTED");
-            return false;
+            return reject("AUDIO CONFIGURATION - CACHE/AUDIO");
         }
         load_trace.Stage("DIALOGUE_READY_MUSIC_BEGIN");
         state.ambient_position=world.ambient_position;state.ambient_radius=world.ambient_radius;state.ambient_volume=world.ambient_volume;
         state.audio.SetAmbientLoopGain(map_id==3?0.0F:1.0F);
-        if(!state.audio.ConfigureMusic(state.frontend.assets.music,data_root/"Cache/Audio"))return false;
+        if(!state.audio.ConfigureMusic(state.frontend.assets.music,data_root/"Cache/Audio"))return reject("MUSIC - CACHE/AUDIO");
         load_trace.Stage("MUSIC_READY");
         state.frog_sound=state.audio.DialogueClipCount();
-        if(!state.audio.ConfigureTutorialFrog(state.frontend.assets.frog_pickup))return false;
+        if(!state.audio.ConfigureTutorialFrog(state.frontend.assets.frog_pickup))return reject("FROG PICKUP SOUND");
         const auto card_sound=GameplayDialogueIndex(state.frontend.assets,"pickup_wizardcard2");
-        if(!card_sound)return false;state.card_sound=*card_sound;
+        if(!card_sound)return reject("CARD PICKUP SOUND");state.card_sound=*card_sound;
+        if(!state.audio.ConfigureCardPickup(*card_sound))return reject("CARD PICKUP CHANNEL");
+        if(map_id==kHogwartsReturnMapId){
+            if(!state.audio.ConfigureScrollPickup(state.frontend.assets.scroll_pickup))return reject("SCROLL PICKUP SOUND");
+            const auto appearance=GameplayDialogueIndex(state.frontend.assets,"wizardcard_rotate");
+            if(!appearance||!state.audio.ConfigureCardAppearance(*appearance))return reject("CARD APPEARANCE CHANNEL");
+        }
         const auto star_sound=GameplayDialogueIndex(state.frontend.assets,"pickup_star");
-        if(!star_sound)return false;state.star_sound=*star_sound;
+        if(!star_sound)return reject("STAR PICKUP SOUND");state.star_sound=*star_sound;
         const auto bean_sound=GameplayDialogueIndex(state.frontend.assets,"pickup11");
-        if(!bean_sound||!state.audio.ConfigureBeanPickup(*bean_sound))return false;
+        if(!bean_sound||!state.audio.ConfigureBeanPickup(*bean_sound))return reject("BEAN PICKUP SOUND");
         HPVR_LOGI("[hpvr.quest.audio.pickup] sound=pickup11 channel=DEDICATED_RETRIGGER");
         state.audio.SelectMusic(0);
         load_trace.Stage("AUDIO_READY");
         HPVR_LOGI("[hpvr.quest.frontend] status=READY story_pages=14 save_slots=3 start=MAIN_MENU spell_lock=STORY");
         state.vertices = std::move(loaded_vertices);
         state.doors = std::move(loaded_doors);
-        const auto challenge_topology = (map_id == 1 || map_id == 3)
+        const auto challenge_topology = IsWalkingSpellMap(map_id)
             ? wand::load_hp1_bsp_topology(map_package) : wand::Hp1BspTopology{};
         const wand::Hp1ChallengeAbyssLighting abyss_lighting(challenge_topology, quest_census, map_id == 1);
         if (abyss_lighting.Enabled()) {
@@ -4230,7 +4369,7 @@ bool QuestScene::LoadFromOwnedData(const std::filesystem::path& data_root,const 
             const float c = std::cos(player_start_yaw), s = std::sin(player_start_yaw);
             state.abyss_scene_to_source = {-s,c,0,0, 0,0,1,0, -c,-s,0,0,
                 -player_start.position_m[2],player_start.position_m[0],player_start.position_m[1],1};
-            if (state.abyss_fog.count != 12) return false;
+            if (state.abyss_fog.count != 12) return reject("ABYSS FOG");
             HPVR_LOGI("[hpvr.quest.abyss.volume] source=AUTHORED_PORTAL_UNION rim=1008 rectangles=%u model=ANALYTIC_HEIGHT extra_passes=0",
                 state.abyss_fog.count);
         }
@@ -4250,7 +4389,7 @@ bool QuestScene::LoadFromOwnedData(const std::filesystem::path& data_root,const 
         std::size_t relit_mover_vertices = 0, relit_fixture_vertices = 0;
         if (!state.dark_lights.empty()) {
             const auto fixture_end = std::size_t(map_vertex_count) + loaded_fixture_vertex_count;
-            if (fixture_end > state.vertices.size()) return false;
+            if (fixture_end > state.vertices.size()) return reject("FIXTURE VERTICES");
             for (std::size_t i = map_vertex_count; i < fixture_end; ++i) {
                 auto& vertex = state.vertices[i];
                 const std::array<float, 3> position{vertex.position[0], vertex.position[1], vertex.position[2]};
@@ -4266,7 +4405,7 @@ bool QuestScene::LoadFromOwnedData(const std::filesystem::path& data_root,const 
         }
         for(auto& door:state.doors){
             const auto all=std::span<const GpuVertex>(state.vertices);
-            if(door.first_vertex>all.size()||door.vertex_count>all.size()-door.first_vertex)return false;
+            if(door.first_vertex>all.size()||door.vertex_count>all.size()-door.first_vertex)return reject("DOOR VERTICES");
             door.two_sided=mover_visibility::MoverNeedsTwoSided(all.subspan(door.first_vertex,door.vertex_count));
             if (!state.dark_lights.empty()) {
                 // C45 caches treated bDarkLight as positive. Rebuild only this
@@ -4285,7 +4424,7 @@ bool QuestScene::LoadFromOwnedData(const std::filesystem::path& data_root,const 
         std::size_t abyss_fixture_vertices = 0, abyss_mover_vertices = 0;
         if (abyss_lighting.Enabled()) {
             const auto fixture_end = std::size_t(map_vertex_count) + loaded_fixture_vertex_count;
-            if (fixture_end > state.vertices.size()) return false;
+            if (fixture_end > state.vertices.size()) return reject("FIXTURE VERTICES");
             for (std::size_t i = map_vertex_count; i < fixture_end; ++i) {
                 auto& vertex = state.vertices[i];
                 if (vertex.has_lightmap) continue;
@@ -4333,10 +4472,22 @@ bool QuestScene::LoadFromOwnedData(const std::filesystem::path& data_root,const 
         state.authored_light_count = world.lights.size();
         state.intro_cutscene = std::move(world.intro_cutscene);
         state.initial_intro=state.intro_cutscene;
-        if(map_id==1||map_id==3){
-            if(!LoadChallengeMetadata(quest_census,player_start,player_start_yaw,state.challenge,map_id==3?23:15))return false;
+        if(map_id==kHogwartsReturnMapId){
+            ReturnMetadata metadata;
+            const auto navigation=wand::inspect_hp1_navigation(data_root/descriptor->package_path);
+            if(!LoadReturnMetadata(quest_census,player_start,player_start_yaw,metadata))return reject("RETURN MAP METADATA");
+            if(!ResolveReturnRoutes(quest_census,navigation,player_start,player_start_yaw,metadata))return reject("PEEVES FLIGHT ROUTES");
+            if(!ConfigureReturnPeeves(state.hogwarts_return,metadata,state.character_draws))return reject("PEEVES CONFIGURATION");
+            if(!ConfigureReturnMalfoy(quest_census,player_start,player_start_yaw,state.character_draws,state.return_duel))return reject("MALFOY DUEL CONFIGURATION");
+            if(!LoadReturnOwls(quest_census,navigation,player_start,player_start_yaw,state.hogwarts_return.owls))return reject("HEDWIG FLIGHT ROUTES");
+            for(const auto& owl:state.hogwarts_return.owls)state.frontend.assets.non_bean_pickups.push_back(owl.actor);
+            HPVR_LOGI("[hpvr.quest.return.owl] owls=%zu",state.hogwarts_return.owls.size());
+            state.harry_actor=metadata.harry_actor;
+        }
+        if(IsWalkingSpellMap(map_id)){
+            if(!LoadChallengeMetadata(quest_census,player_start,player_start_yaw,state.challenge,map_id==3?23:map_id==4?16:15,map_id==kHogwartsReturnMapId))return reject("CHALLENGE METADATA");
             if(map_id==1)SetBridgeProfessor(state.character_draws,false);
-            if(!state.challenge.zones.Load(challenge_topology,quest_census))return false;
+            if(!state.challenge.zones.Load(challenge_topology,quest_census))return reject("CHALLENGE ZONES");
             state.challenge.source_origin={player_start.position_m[0],player_start.position_m[1],player_start.position_m[2]};
             state.challenge.source_yaw=player_start_yaw;
             state.challenge.collision_base=state.collision_triangles.size();
@@ -4347,12 +4498,12 @@ bool QuestScene::LoadFromOwnedData(const std::filesystem::path& data_root,const 
             state.intro_cutscene.playing=false;
             RebuildChallengeCollision();
             if(map_id==3&&!LoadCharmsMetadata(data_root,quest_census,player_start,player_start_yaw,
-                state.challenge.props,state.charms,&state.vertices))return false;
+                state.challenge.props,state.charms,&state.vertices))return reject("CHARMS SCENE LAYOUT");
             if(map_id==3)BindCharmsKnightTargets(state.challenge,quest_census,player_start,player_start_yaw);
             if(map_id==3)RebuildChallengeCollision();
         }else if(map_id==2){
             if(!LoadBroomMetadata(data_root,quest_census,player_start,player_start_yaw,state.broom)||
-               !LoadChallengeMetadata(quest_census,player_start,player_start_yaw,state.challenge,14))return false;
+               !LoadChallengeMetadata(quest_census,player_start,player_start_yaw,state.challenge,14))return reject("BROOM LESSON METADATA");
             for(const auto& a:state.character_draws)if(a.actor_reference==state.broom.lesson.player_reference){
                 state.broom.start_head=a.base_origin;state.broom.start_head[1]+=kPlayerCapsuleHalfHeightMeters+kPlayerEyeHeightMeters;
                 state.broom.start_yaw=a.base_yaw;
@@ -4372,23 +4523,23 @@ bool QuestScene::LoadFromOwnedData(const std::filesystem::path& data_root,const 
             if(actor.actor_reference==866)state.peeves_path_a=ActorLocalPosition(actor,player_start,player_start_yaw);
             if(actor.actor_reference==886)state.peeves_path_b=ActorLocalPosition(actor,player_start,player_start_yaw);
         }
-        if(!LoadIntroCutscene(quest_census,player_start,player_start_yaw,&state.ron_intro,"cutscene51"))return false;
-        if(!LoadIntroCutscene(quest_census,player_start,player_start_yaw,&state.ron_lead,"cutscene0"))return false;
+        if(!LoadIntroCutscene(quest_census,player_start,player_start_yaw,&state.ron_intro,"cutscene51"))return reject("INTRO CUTSCENE");
+        if(!LoadIntroCutscene(quest_census,player_start,player_start_yaw,&state.ron_lead,"cutscene0"))return reject("INTRO CUTSCENE");
         MakeRonLead(state.ron_lead);
         if(!LoadIntroCutscene(quest_census,player_start,player_start_yaw,&state.twins_transfer,"cutscene6")||
-           !LoadIntroCutscene(quest_census,player_start,player_start_yaw,&state.peeves_departure,"cutscene5"))return false;
+           !LoadIntroCutscene(quest_census,player_start,player_start_yaw,&state.peeves_departure,"cutscene5"))return reject("INTRO CUTSCENE");
         PrepareTwinsTransfer(state.twins_transfer);
         PreparePeevesDeparture(state.peeves_departure);
         if(!LoadIntroCutscene(quest_census,player_start,player_start_yaw,&state.twins_intro,"cutscene52") ||
            !LoadIntroCutscene(quest_census,player_start,player_start_yaw,&state.next_room,"cutscene54")||
-           !LoadIntroCutscene(quest_census,player_start,player_start_yaw,&state.jump_finish,"cutscene55"))return false;
+           !LoadIntroCutscene(quest_census,player_start,player_start_yaw,&state.jump_finish,"cutscene55"))return reject("INTRO CUTSCENE");
         for(unsigned i=0;i<4;++i){
             constexpr std::array<const char*,4> names{"cutscene56","cutscene1","cutscene58","cutscene59"};
-            if(!LoadIntroCutscene(quest_census,player_start,player_start_yaw,&state.story_encounters[i],names[i]))return false;
+            if(!LoadIntroCutscene(quest_census,player_start,player_start_yaw,&state.story_encounters[i],names[i]))return reject("INTRO CUTSCENE");
         }
         state.intro_cutscene.playing=false;
         if(!LoadIntroCutscene(quest_census,player_start,player_start_yaw,&state.card_scene,"cutscene3")||
-           !LoadIntroCutscene(quest_census,player_start,player_start_yaw,&state.lesson_exit,"cutscene60"))return false;
+           !LoadIntroCutscene(quest_census,player_start,player_start_yaw,&state.lesson_exit,"cutscene60"))return reject("INTRO CUTSCENE");
         std::erase_if(state.card_scene.tracks,[](const auto& t){return t.cast_slot>=5;});
         for(auto& t:state.card_scene.tracks)for(auto& command:t.commands){
             if(AsciiFold(command)=="teleport swaplocfred")command="MoveTo NewFredLoc";
@@ -4443,6 +4594,13 @@ bool QuestScene::LoadFromOwnedData(const std::filesystem::path& data_root,const 
             state.intro_cutscene.locations.size(),
             state.audio.DialogueClipCount());
         const auto read_stats=package_reads.stats();
+        if(state.audio.DialogueClipCount()!=ExpectedSceneAudioClipCount(state.frontend.assets)){
+            const auto detail="AUDIO CLIP COUNT expected="+std::to_string(ExpectedSceneAudioClipCount(state.frontend.assets))+
+                " actual="+std::to_string(state.audio.DialogueClipCount());
+            load_trace.Stage("AUDIO_LAYOUT_REJECTED");
+            HPVR_LOGE("[hpvr.quest.scene.data] %s",detail.c_str());
+            return reject(detail.c_str());
+        }
         if(!IsLoaded()){
             load_trace.Stage("CPU_LAYOUT_REJECTED");
             HPVR_LOGE("[hpvr.quest.scene.data] status=CPU_LAYOUT_REJECTED map=%u characters=%zu doors=%zu scenes=%zu vertices=%zu layers=%u",
@@ -4456,8 +4614,10 @@ bool QuestScene::LoadFromOwnedData(const std::filesystem::path& data_root,const 
     } catch (const std::exception& error) {
         HPVR_LOGE("[hpvr.quest.scene.data] status=EXCEPTION error=%s",
                   error.what());
+        SceneLoadTrace::Note(save_root,map_id,error.what());
     } catch (...) {
         HPVR_LOGE("[hpvr.quest.scene.data] status=UNKNOWN_EXCEPTION");
+        SceneLoadTrace::Note(save_root,map_id,"UNKNOWN EXCEPTION");
     }
     return false;
 }
@@ -4481,7 +4641,7 @@ bool QuestScene::CreateGpu(const VkPhysicalDevice physical_device,
     state.queue_family = queue_family;
     const auto gpu_stage=[&](const char* name){SceneLoadTrace::Append(state.frontend.saves,state.map_id,name);};
     if(!state.reflections.Create(physical_device,device,queue,queue_family,width,height,color_format,depth_format)){DestroyGpu();return false;}
-    if(!state.mirror_target.Create(physical_device,device,state.map_id==3?width:1,state.map_id==3?height:1,color_format,depth_format,static_cast<unsigned>(state.mirrors.size()))){DestroyGpu();return false;}
+    if(!state.mirror_target.Create(physical_device,device,!state.mirrors.empty()?width:1,!state.mirrors.empty()?height:1,color_format,depth_format,static_cast<unsigned>(state.mirrors.size()))){DestroyGpu();return false;}
     gpu_stage("GPU_REFLECTION_RESOURCES_READY");
 
     VkPhysicalDeviceProperties device_properties{};
@@ -5103,7 +5263,7 @@ bool QuestScene::CreateGpu(const VkPhysicalDevice physical_device,
     const bool mover_ok=CheckVk(vkCreateGraphicsPipelines(device,VK_NULL_HANDLE,1,&pipeline_info,nullptr,&state.mover_pipeline),"vkCreateGraphicsPipelines(mover_sidedness)");
     rasterization.cullMode=VK_CULL_MODE_NONE;
     bool mirror_ok=true;
-    if(state.map_id==3){
+    if(state.map_id==3||state.map_id==kHogwartsReturnMapId){
         auto mirror_push=push_range;mirror_push.stageFlags=VK_SHADER_STAGE_VERTEX_BIT|VK_SHADER_STAGE_FRAGMENT_BIT;
         auto mirror_layout_info=pipeline_layout_info;mirror_layout_info.pPushConstantRanges=&mirror_push;
         mirror_ok=vkCreatePipelineLayout(device,&mirror_layout_info,nullptr,&state.mirror_layout)==VK_SUCCESS;
@@ -5148,8 +5308,17 @@ bool QuestScene::CreateGpu(const VkPhysicalDevice physical_device,
     blend_attachment.srcAlphaBlendFactor=VK_BLEND_FACTOR_ONE;
     blend_attachment.dstAlphaBlendFactor=VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
     blend_attachment.alphaBlendOp=VK_BLEND_OP_ADD;
-    const bool ghost_ok=CheckVk(vkCreateGraphicsPipelines(device,VK_NULL_HANDLE,1,&pipeline_info,
+    bool ghost_ok=CheckVk(vkCreateGraphicsPipelines(device,VK_NULL_HANDLE,1,&pipeline_info,
         nullptr,&state.ghost_pipeline),"vkCreateGraphicsPipelines(ghost_depth_test)");
+    depth.depthCompareOp=VK_COMPARE_OP_LESS_OR_EQUAL;
+    ghost_ok=CheckVk(vkCreateGraphicsPipelines(device,VK_NULL_HANDLE,1,&pipeline_info,
+        nullptr,&state.ghost_equal_pipeline),"vkCreateGraphicsPipelines(ghost_equal_depth)")&&ghost_ok;
+    const auto color_mask=blend_attachment.colorWriteMask;
+    depth.depthCompareOp=VK_COMPARE_OP_LESS;depth.depthWriteEnable=VK_TRUE;
+    blend_attachment.blendEnable=VK_FALSE;blend_attachment.colorWriteMask=0;
+    ghost_ok=CheckVk(vkCreateGraphicsPipelines(device,VK_NULL_HANDLE,1,&pipeline_info,
+        nullptr,&state.ghost_prepass_pipeline),"vkCreateGraphicsPipelines(ghost_depth_prepass)")&&ghost_ok;
+    blend_attachment.colorWriteMask=color_mask;
     depth.depthWriteEnable=VK_TRUE;blend_attachment.blendEnable=VK_FALSE;
     vkDestroyShaderModule(device, fragment_shader, nullptr);
     vkDestroyShaderModule(device, vertex_shader, nullptr);
@@ -5340,6 +5509,12 @@ bool QuestScene::CreateGpu(const VkPhysicalDevice physical_device,
         vkMapMemory(device,state.perf_memory,0,VK_WHOLE_SIZE,0,&state.perf_mapped)!=VK_SUCCESS){
         DestroyGpu();return false;
     }
+    if(!CreateBuffer(physical_device,device,kErrorNoticeVertexCapacity*sizeof(GpuVertex),VK_BUFFER_USAGE_VERTEX_BUFFER_BIT,
+        VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT|VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,&state.notice_buffer,&state.notice_memory)||
+        vkMapMemory(device,state.notice_memory,0,VK_WHOLE_SIZE,0,&state.notice_mapped)!=VK_SUCCESS){
+        DestroyGpu();return false;
+    }
+    state.notice_dirty=true;
     gpu_stage("GPU_ALL_PIPELINES_READY");
     if(state.map_id==2&&(!CreateBuffer(physical_device,device,kBroomHoopVertexCapacity*sizeof(ParticleGpuVertex),VK_BUFFER_USAGE_VERTEX_BUFFER_BIT,
         VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT|VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,&state.broom_particle_buffer,&state.broom_particle_memory)||
@@ -5431,6 +5606,8 @@ void QuestScene::DestroyGpu() {
     }
     if(state.frontend_pipeline!=VK_NULL_HANDLE)vkDestroyPipeline(state.device,state.frontend_pipeline,nullptr);
     if(state.ghost_pipeline!=VK_NULL_HANDLE)vkDestroyPipeline(state.device,state.ghost_pipeline,nullptr);
+    if(state.ghost_prepass_pipeline!=VK_NULL_HANDLE)vkDestroyPipeline(state.device,state.ghost_prepass_pipeline,nullptr);
+    if(state.ghost_equal_pipeline!=VK_NULL_HANDLE)vkDestroyPipeline(state.device,state.ghost_equal_pipeline,nullptr);
     if (state.wand_pipeline_layout != VK_NULL_HANDLE) {
         vkDestroyPipelineLayout(state.device, state.wand_pipeline_layout,
                                 nullptr);
@@ -5496,6 +5673,10 @@ void QuestScene::DestroyGpu() {
     if(state.perf_buffer)vkDestroyBuffer(state.device,state.perf_buffer,nullptr);
     if(state.perf_memory)vkFreeMemory(state.device,state.perf_memory,nullptr);
     state.perf_mapped=nullptr;state.perf_buffer=VK_NULL_HANDLE;state.perf_memory=VK_NULL_HANDLE;state.perf_count=0;
+    if(state.notice_mapped)vkUnmapMemory(state.device,state.notice_memory);
+    if(state.notice_buffer)vkDestroyBuffer(state.device,state.notice_buffer,nullptr);
+    if(state.notice_memory)vkFreeMemory(state.device,state.notice_memory,nullptr);
+    state.notice_mapped=nullptr;state.notice_buffer=VK_NULL_HANDLE;state.notice_memory=VK_NULL_HANDLE;state.notice_count=0;
     if (state.wand_vertex_buffer != VK_NULL_HANDLE) {
         vkDestroyBuffer(state.device, state.wand_vertex_buffer, nullptr);
     }
@@ -5545,6 +5726,7 @@ void QuestScene::DestroyGpu() {
     state.pipeline = VK_NULL_HANDLE;
     state.frontend_pipeline = VK_NULL_HANDLE;
     state.ghost_pipeline = VK_NULL_HANDLE;
+    state.ghost_prepass_pipeline = state.ghost_equal_pipeline = VK_NULL_HANDLE;
     state.wand_pipeline_layout = VK_NULL_HANDLE;
     state.wand_pipeline = VK_NULL_HANDLE;
     state.effect_pipeline = VK_NULL_HANDLE;
@@ -5575,6 +5757,36 @@ void QuestScene::SetPerformance(const PerformanceSnapshot& performance){
             x+=10.8F;
         }
     }
+}
+void QuestScene::RefreshErrorNotice(){
+    auto& s=*state_;if(!s.notice_mapped)return;
+    const auto& text=s.frontend.error_notice;
+    if(!s.notice_dirty&&text==s.notice_text)return;
+    s.notice_dirty=false;s.notice_text=text;s.notice_count=0;
+    const auto glyph=s.front_draws.find("glyph_65");
+    if(text.empty()||glyph==s.front_draws.end()||!glyph->second.count)return;
+    // Same quad encoding as baked menu tiles, in 640x480 menu units above the logo.
+    const auto base=s.vertices[glyph->second.first].texture_layer-s.frontend.assets.font;
+    auto* out=static_cast<GpuVertex*>(s.notice_mapped);
+    const auto quad=[&](float x,float y,float w,float h,float u,float v,float uw,float vh,std::uint32_t layer,std::uint32_t tint){
+        if(s.notice_count+6>kErrorNoticeVertexCapacity)return;
+        const float px=(x-320)*.004375F,py=(240-y)*.004375F,pw=w*.004375F,ph=h*.004375F;
+        for(const auto& corner:std::array<std::array<float,2>,6>{{{0,0},{0,1},{1,1},{0,0},{1,1},{1,0}}})
+            out[s.notice_count++]={{px+corner[0]*pw,py-corner[1]*ph,0},{u+corner[0]*uw,v+corner[1]*vh},{0,0},
+                layer,0x40000002U,0U,tint};
+    };
+    const auto lines=ErrorNoticeLines(text);
+    const float top=236-17*float(lines.size())-10;
+    quad(20,top,600,17*float(lines.size())+14,0,0,1,1,base+s.frontend.assets.white,0x100a40);
+    for(std::size_t row=0;row<lines.size();++row){
+        float x=28;
+        for(const unsigned char ch:lines[row]){
+            if(ch>32&&ch<127)quad(x,top+7+17*float(row),9,12.6F,float(ch%16*16+2)/256,float(ch/16*16+2)/256,5.0F/256,7.0F/256,
+                base+s.frontend.assets.font,row==0?0x7070ff:0xffffff);
+            x+=10.8F;
+        }
+    }
+    HPVR_LOGE("[hpvr.quest.frontend] status=ERROR_NOTICE text=%s",text.c_str());
 }
 void QuestScene::ToggleVrMenu(){
     if(!IsGpuReady())return;
@@ -5630,7 +5842,7 @@ void QuestScene::RecordDraw(
     // Scene rendering continues behind world-anchored VR panels.
     const AuthoredDarkLightPush no_dark_lights{};
     auto map_lights=no_dark_lights;
-    if(state.map_id==2||state.map_id==3){
+    if(state.map_id==2||state.map_id==3||state.map_id==kHogwartsReturnMapId){
         Matrix4 inverse{};
         auto eye=state.last_player;
         if(InvertReflectionMatrix(view_projection,inverse)&&std::abs(inverse[11])>1e-6F){
@@ -5661,7 +5873,7 @@ void QuestScene::RecordDraw(
             if(state.map_id==2&&state.broom.hoop_indices.contains(prop.reference))continue;
             // These owned meshes have single-sided materials and coincident
             // inner/outer faces. Drawing their backs produces depth fighting.
-            const bool single_sided=state.map_id==3&&(chest::IsChest(prop.name)||prop.name=="hprops.knight");
+            const bool single_sided=(state.map_id==3||state.map_id==kHogwartsReturnMapId)&&(chest::IsChest(prop.name)||prop.name=="hprops.knight");
             vkCmdBindPipeline(command_buffer,VK_PIPELINE_BIND_POINT_GRAPHICS,
                 single_sided?state.mover_pipeline:state.pipeline);
             const auto range=ChallengePropDrawRange(prop,ChallengeActivated(state.frontend.progress,prop.reference),state.bean_time);
@@ -5748,7 +5960,7 @@ void QuestScene::RecordDraw(
                   animated_first_vertex, 0);
     };
     for(std::size_t i=0;i<state.character_draws.size();++i)
-        if(state.map_id!=0?!state.character_draws[i].flying:state.character_draws[i].actor_reference!=3148)draw_character(i);
+        if(state.map_id!=0?(!state.character_draws[i].flying||AsciiFold(state.character_draws[i].class_name)=="harrypotter.hedwig"):state.character_draws[i].actor_reference!=3148)draw_character(i);
     for(const auto& bean:state.beans){
         if(bean.source_actor&&!ChallengeRewardsReady(state.challenge.props,bean.source_actor,state.frontend.progress))continue;
         if(state.map_id==0&&bean.kind==1&&state.frontend.progress.frog_taken)continue;
@@ -5757,8 +5969,10 @@ void QuestScene::RecordDraw(
         if(!collecting&&std::ranges::binary_search(state.frontend.progress.collected_beans,bean.actor_reference))continue;
         const float angle=collecting?state.card_pickup.angle():bean.kind==1?bean.yaw:state.bean_time*1.8F+bean.actor_reference;
         const float scale=collecting?state.card_pickup.scale():1.0F,c=std::cos(angle)*scale,s=std::sin(angle)*scale;
-        const auto p=BeanWorldPosition(bean);
-        const Matrix4 model{c,0,-s,0,0,scale,0,0,s,0,c,0,p[0],p[1]+(bean.kind==1||collecting?0:.06F*std::sin(angle*2)),p[2],1};
+        auto p=BeanWorldPosition(bean);
+        p[1]+=bean.kind==1||collecting?0:.06F*std::sin(angle*2);
+        if(bean.kind==2||bean.kind==4)p[1]=CardRenderHeight(bean,p[1],scale);
+        const Matrix4 model{c,0,-s,0,0,scale,0,0,s,0,c,0,p[0],p[1],p[2],1};
         const auto mvp=MultiplyMatrices(view_projection,model);
         vkCmdPushConstants(command_buffer,state.pipeline_layout,VK_SHADER_STAGE_VERTEX_BIT,0,sizeof(float)*mvp.size(),mvp.data());
         const auto frame=std::min(bean.frames-1,static_cast<unsigned>(std::fmod(state.bean_time,bean.duration)/bean.duration*bean.frames));
@@ -5813,10 +6027,54 @@ void QuestScene::RecordDraw(
         vkCmdDraw(command_buffer,avatar.vertex_count,1,frame*avatar.vertex_count,0);
         vkCmdBindVertexBuffers(command_buffer,0,1,&state.vertex_buffer,&offset);
     }
+    if(state.map_id==kHogwartsReturnMapId)for(const auto& owl:state.hogwarts_return.owls){
+        if(!owl.scroll_visible||ChallengeCollected(state.frontend.progress,owl.actor))continue;
+        const auto p=owl.scroll;
+        const Matrix4 model{1,0,0,0,0,1,0,0,0,0,1,0,p[0],p[1],p[2],1};
+        const auto mvp=MultiplyMatrices(view_projection,model);
+        vkCmdPushConstants(command_buffer,state.pipeline_layout,VK_SHADER_STAGE_VERTEX_BIT,0,sizeof(float)*mvp.size(),mvp.data());
+        vkCmdDraw(command_buffer,state.return_scroll.count,1,state.return_scroll.first,0);
+    }
+    if(state.map_id==kHogwartsReturnMapId)for(const auto& candy:state.return_duel.crackers){
+        if(!cracker::Active(candy))continue;
+        const auto& visual=state.return_cracker;
+        const char* name=candy.fuse<1.05F?"shake":candy.fuse<2?"swell":candy.phase==cracker::Phase::Ground?"hit":"flying";
+        const auto& clip=visual.clips.at(name);
+        const float time=std::fmod(std::string_view(name)=="swell"?std::max(0.F,2.F-candy.fuse)*2.F:candy.age,clip.duration);
+        const auto frame=std::min(clip.frame_count-1,static_cast<unsigned>(time/clip.duration*clip.frame_count));
+        const float angle=candy.phase==cracker::Phase::Flying?candy.age*8.F:0,c=std::cos(angle),s=std::sin(angle);
+        const Matrix4 model{c,s,0,0,-s,c,0,0,0,0,1,0,candy.position[0],candy.position[1],candy.position[2],1};
+        const auto mvp=MultiplyMatrices(view_projection,model);
+        vkCmdPushConstants(command_buffer,state.pipeline_layout,VK_SHADER_STAGE_VERTEX_BIT,0,sizeof(float)*mvp.size(),mvp.data());
+        vkCmdDraw(command_buffer,visual.count,1,clip.first_vertex+frame*visual.count,0);
+    }
+    if(state.map_id==kHogwartsReturnMapId)for(const auto& apple:state.hogwarts_return.apples){
+        if(!apple.active)continue;
+        const float angle=apple.age*9.6F,c=std::cos(angle),s=std::sin(angle);
+        const Matrix4 model{c,s,0,0,-s,c,0,0,0,0,1,0,apple.position[0],apple.position[1],apple.position[2],1};
+        const auto mvp=MultiplyMatrices(view_projection,model);
+        vkCmdPushConstants(command_buffer,state.pipeline_layout,VK_SHADER_STAGE_VERTEX_BIT,0,sizeof(float)*mvp.size(),mvp.data());
+        vkCmdDraw(command_buffer,state.return_apple.count,1,state.return_apple.first,0);
+    }
     RecordMirrorComposite(command_buffer,view_projection,width,height);
     vkCmdBindPipeline(command_buffer,VK_PIPELINE_BIND_POINT_GRAPHICS,state.ghost_pipeline);
-    for(std::size_t i=0;i<state.character_draws.size();++i)
-        if(state.map_id!=0?state.character_draws[i].flying:state.character_draws[i].actor_reference==3148)draw_character(i);
+    for(std::size_t i=0;i<state.character_draws.size();++i){
+        if(!(state.map_id!=0?(state.character_draws[i].flying&&AsciiFold(state.character_draws[i].class_name)!="harrypotter.hedwig"):state.character_draws[i].actor_reference==3148))continue;
+        auto actor_lights=no_dark_lights;
+        const bool boss=state.map_id==kHogwartsReturnMapId&&state.character_draws[i].actor_reference==state.hogwarts_return.metadata.peeves_actor;
+        if(boss)actor_lights.position_radius[1][3]=-peeves::Presentation(state.hogwarts_return.battle.motion).opacity;
+        vkCmdPushConstants(command_buffer,state.pipeline_layout,VK_SHADER_STAGE_VERTEX_BIT,
+            sizeof(float)*16,sizeof(actor_lights),&actor_lights);
+        if(!boss){draw_character(i);continue;}
+        // Nearest surface only: without this his own back faces overpaint his face.
+        vkCmdBindPipeline(command_buffer,VK_PIPELINE_BIND_POINT_GRAPHICS,state.ghost_prepass_pipeline);
+        draw_character(i);
+        vkCmdBindPipeline(command_buffer,VK_PIPELINE_BIND_POINT_GRAPHICS,state.ghost_equal_pipeline);
+        draw_character(i);
+        vkCmdBindPipeline(command_buffer,VK_PIPELINE_BIND_POINT_GRAPHICS,state.ghost_pipeline);
+    }
+    vkCmdPushConstants(command_buffer,state.pipeline_layout,VK_SHADER_STAGE_VERTEX_BIT,
+        sizeof(float)*16,sizeof(no_dark_lights),&no_dark_lights);
 }
 
 void QuestScene::RecordFrontDraw(VkCommandBuffer command_buffer,const Matrix4& view_projection)const{
@@ -5839,6 +6097,11 @@ void QuestScene::RecordFrontDraw(VkCommandBuffer command_buffer,const Matrix4& v
             if(common!=state.front_draws.end())vkCmdDraw(command_buffer,common->second.count,1,common->second.first,0);
         }
         vkCmdDraw(command_buffer,found->second.count,1,found->second.first,0);
+        if(state.frontend.screen==FrontScreen::Main&&state.notice_count){
+            vkCmdBindVertexBuffers(command_buffer,0,1,&state.notice_buffer,&offset);
+            vkCmdDraw(command_buffer,state.notice_count,1,0,0);
+            vkCmdBindVertexBuffers(command_buffer,0,1,&state.vertex_buffer,&offset);
+        }
         if(state.frontend.screen==FrontScreen::Vr){
             for(const auto& key:{"vr_scale_"+std::to_string(state.frontend.vr.render_scale),"vr_ssr_"+std::to_string(state.frontend.vr.ssr),"vr_hz_"+std::to_string(state.frontend.vr.refresh_rate),"vr_voice_status_"+std::to_string(state.voice_status),
                 "vr_turning_"+std::to_string(static_cast<int>(state.frontend.vr.turning_mode)),"vr_turn_speed_"+std::to_string(state.frontend.vr.smooth_turn_speed),"vr_gpu_boost_"+std::to_string(int(state.frontend.vr.gpu_boost))}){
@@ -5848,10 +6111,7 @@ void QuestScene::RecordFrontDraw(VkCommandBuffer command_buffer,const Matrix4& v
         }
         if(state.frontend.screen==FrontScreen::Pause||state.frontend.screen==FrontScreen::Report){
             const auto& p=state.frontend.progress;
-            const auto nonbeans=static_cast<std::size_t>(std::ranges::count_if(state.beans,[&](const auto& b){
-                return b.kind!=0&&std::ranges::binary_search(p.collected_beans,b.actor_reference);
-            }));
-            const auto bean_count=p.banked_beans+p.collected_beans.size()-std::min(nonbeans,p.collected_beans.size());
+            const auto bean_count=state.frontend.ReportValue(0);
             const auto draw=[&](const std::string& key){
                 const auto value=state.front_draws.find(key);
                 if(value!=state.front_draws.end())vkCmdDraw(command_buffer,value->second.count,1,value->second.first,0);
@@ -5910,11 +6170,20 @@ void QuestScene::RecordHudDraw(VkCommandBuffer command_buffer,const Matrix4& vie
         if(star!=state.front_draws.end())vkCmdDraw(command_buffer,star->second.count,1,star->second.first,0);
     }
     if(cutscene)return;
+    if(state.map_id==kHogwartsReturnMapId&&peeves::Active(state.hogwarts_return.battle.motion)){
+        const auto bar=state.front_draws.find("peeves_health_"+
+            std::to_string(std::min(peeves::kMaximumHits,state.hogwarts_return.battle.motion.hits_left)));
+        if(bar!=state.front_draws.end())vkCmdDraw(command_buffer,bar->second.count,1,bar->second.first,0);
+    }
+    if(state.map_id==kHogwartsReturnMapId&&state.return_duel.motion.phase!=malfoy::Phase::Idle&&
+       state.return_duel.motion.phase!=malfoy::Phase::Lost&&
+       state.return_duel.motion.phase!=malfoy::Phase::Complete){
+        const auto remaining=3U-std::min(3U,state.return_duel.motion.hits);
+        const auto bar=state.front_draws.find("malfoy_health_"+std::to_string(remaining));
+        if(bar!=state.front_draws.end())vkCmdDraw(command_buffer,bar->second.count,1,bar->second.first,0);
+    }
     if(state.bean_hud_time>0){
-        const auto& p=state.frontend.progress;
-        const auto cards=std::ranges::count_if(state.beans,[&](const auto& b){return (b.kind==4||b.kind==1)&&std::ranges::binary_search(p.collected_beans,b.actor_reference);});
-        const auto nonbeans=static_cast<std::size_t>(cards)+(IsWalkingChallenge(state.map_id)?p.challenge_stars:0U);
-        const auto bean_count=p.banked_beans+p.collected_beans.size()-std::min(nonbeans,p.collected_beans.size());
+        const auto bean_count=state.frontend.ReportValue(0);
         const auto beans=state.front_draws.find("hud_"+std::to_string(std::min<std::size_t>(512,bean_count)));
         if(beans!=state.front_draws.end())vkCmdDraw(command_buffer,beans->second.count,1,beans->second.first,0);
     }
@@ -5967,7 +6236,7 @@ void QuestScene::RecordWandDraw(
     const std::array<float, 16>& wand_mvp,
     const std::array<float, 4>& color_multiplier) const {
     const State& state = *state_;
-    if (!IsGpuReady() || state.map_id==2) {
+    if (!IsGpuReady() || state.map_id==2 || (state.map_id==kHogwartsReturnMapId&&ReturnCarrying(state.return_duel))) {
         return;
     }
     VkViewport viewport{};
@@ -6449,7 +6718,8 @@ bool QuestScene::CanCast() const{
     const auto& s=*state_;
     if(!MapAllowsSpellInput(s.map_id,SpellInputPath::Gesture))return false;
     if(s.death_time>=0)return false;
-    if(IsWalkingChallenge(s.map_id))return s.tracking_active&&!s.challenge.complete&&!IsCutscenePlaying()&&!IsFrontEndVisible()&&
+    if(s.map_id==kHogwartsReturnMapId&&ReturnCarrying(s.return_duel))return false;
+    if(IsWalkingSpellMap(s.map_id))return s.tracking_active&&!s.challenge.complete&&!IsCutscenePlaying()&&!IsFrontEndVisible()&&
         (s.map_id!=3||s.charms.active_lesson<0||(s.charms.lesson_wait==0&&!s.charms.finish_pending&&!s.audio.DialogueBusy()));
     const bool lesson=s.frontend.progress.quest_stage==20&&s.lesson_intro_started&&
         s.lesson_wait==0&&!s.audio.DialogueBusy()&&!s.lesson_finish_pending&&s.frontend.progress.lesson_passes<4;
@@ -6746,7 +7016,7 @@ void QuestScene::SaveCheckpoint(bool authored){
     State& state=*state_;auto& saved=state.frontend.progress;
     if(state.map_id==2){SaveBroomProgress();return;}
     if(state.death_time>=0)return;
-    if(IsWalkingChallenge(state.map_id)){
+    if(IsWalkingSpellMap(state.map_id)){
         if(!state.challenge.graph.healthy())return;
         // A menu save persists the last book/level-start snapshot, never a
         // transient position on a moving platform or in front of a fall.
@@ -6764,7 +7034,7 @@ void QuestScene::SaveCheckpoint(bool authored){
         if(state.map_id==3)saved.charms_state=SaveCharmsState(state.charms);
         saved.player=SafeCheckpointHead(state.last_player,state.climb,state.jump);saved.yaw=state.last_yaw;
         saved.graph_state=state.challenge.graph.Serialize();saved.challenge_stars=state.challenge.graph.star_count();
-        std::ostringstream physical;physical<<"CHALLENGE_WORLD 3 "<<std::setprecision(9)<<state.doors.size()<<' ';
+        std::ostringstream physical;physical<<"CHALLENGE_WORLD "<<(state.map_id==kHogwartsReturnMapId?5:3)<<' '<<std::setprecision(9)<<state.doors.size()<<' ';
         for(const auto& d:state.doors){physical<<d.actor_reference<<' '<<d.phase<<' '<<d.opening<<' '<<d.completion_sent<<' '<<d.hold<<' '<<d.loop_started<<' ';
             for(float v:d.grid_offset)physical<<v<<' ';for(float v:d.grid_target)physical<<v<<' ';
             physical<<std::quoted(movers::SaveMotion(d.motion))<<' ';}
@@ -6777,6 +7047,8 @@ void QuestScene::SaveCheckpoint(bool authored){
         physical<<state.challenge.active_scene<<' '<<state.challenge.complete<<' '<<state.challenge.pending_scenes.size();
         for(auto ref:state.challenge.pending_scenes)physical<<' '<<ref;
         physical<<' '<<state.challenge.gnome_active.size();for(auto ref:state.challenge.gnome_active)physical<<' '<<ref;
+        if(state.map_id==kHogwartsReturnMapId)physical<<' '<<std::quoted(SaveReturnBattle(state.hogwarts_return));
+        if(state.map_id==kHogwartsReturnMapId)physical<<' '<<std::quoted(SaveReturnDuel(state.return_duel));
         saved.world_state=physical.str();
         state.challenge_start_checkpoint=saved;state.challenge_start_checkpoint_valid=true;
         const bool committed=state.frontend.Save();
@@ -6833,7 +7105,7 @@ void QuestScene::UpdateFrontEnd(const LocomotionInput& input,bool confirm,bool b
     case FrontAction::OpenCommunity:state.community_requested=true;break;
     case FrontAction::StartSelectedLevel:{
         const auto prior=campaign::PerfectPriorProgress(front.selected_map);
-        if(!prior){front.message="LEVEL PROGRESS PRESET IS NOT AVAILABLE";break;}
+        if(!prior){front.ShowError("LEVEL PROGRESS PRESET IS NOT AVAILABLE");break;}
         state.travel_origin=old_progress;state.travel_progress={};
         state.travel_progress.map_id=front.selected_map;
         state.travel_progress.phase=front.selected_map!=0?2:1;state.travel_progress.page=14;
@@ -6853,7 +7125,7 @@ void QuestScene::UpdateFrontEnd(const LocomotionInput& input,bool confirm,bool b
         front.BeginGame();state.audio.SelectMusic(state.map_id==0?2:front.assets.level_music_index);
         if(state.map_id==1&&front.progress.quest_stage==0&&!ChallengeActivated(front.progress,3606))StartChallengeScene(3606);
         if(state.map_id==2&&state.broom.phase==0&&!state.intro_cutscene.playing)StartBroomScene("intro",0);
-        if(state.map_id==3&&front.progress.quest_stage==0){
+        if((state.map_id==3||state.map_id==kHogwartsReturnMapId)&&front.progress.quest_stage==0){
             front.progress.quest_stage=1;
             for(const auto& [ref,scene]:state.challenge.scenes)if(scene.play_on_load&&!ChallengeActivated(front.progress,ref)){
                 StartChallengeScene(ref);break;
@@ -6959,6 +7231,13 @@ void QuestScene::UpdateBasicCast(const ViewPose& wand,bool tracked,bool held,flo
     const bool active=state.death_time<0&&!IsGestureLesson()&&BasicSpellGameplayAllowed(state.map_id,state.frontend.progress.quest_stage,state.challenge.complete)&&tracked&&state.tracking_active&&!state.frontend.Visible()&&!IsCutscenePlaying()&&BuildRigidTransform(wand,&model);
     const std::array<float,3> direction{-model[8],-model[9],-model[10]};
     const auto tip=AddVector({model[12],model[13],model[14]},ScaleVector(direction,0.34F));
+    if(state.map_id==kHogwartsReturnMapId){
+        const bool carrying=ReturnCarrying(state.return_duel);
+        (void)UpdateReturnHand(state.return_duel,tip,direction,active,held);
+        if(carrying){state.basic_cast={};state.aim_actor=0;state.wand_lock_valid=false;
+            state.wand_cast_consumed=held;state.wand_was_held=held;state.voice_repeat.Cancel();
+            state.audio.SetWandDrawing(false);return;}
+    }
     if(state.map_id==3)UpdateCharmsWand(tip,direction,active,held);
     const bool manual=UsesGestureCasting(state.frontend.vr.casting_mode)&&CanCast();
     // Retain a target for the release frame: gesture dispatch follows this update.
@@ -7008,7 +7287,7 @@ void QuestScene::UpdateBasicCast(const ViewPose& wand,bool tracked,bool held,flo
             if(hit&&far>=near&&far>0)distance=std::min(distance,near);
         }
     }
-    if(active&&aiming&&!locked&&!state.wand_cast_consumed&&IsWalkingChallenge(state.map_id)&&!state.charms.held_block){
+    if(active&&aiming&&!locked&&!state.wand_cast_consumed&&IsWalkingSpellMap(state.map_id)&&!state.charms.held_block){
         float target_distance=24;
         const auto target=FindChallengeSpellTarget(tip,direction,&target_distance,&state.aim_minimum,&state.aim_maximum);
         if(target&&target_distance<=distance+.03F){state.aim_actor=target;distance=target_distance;}
@@ -7030,7 +7309,7 @@ void QuestScene::UpdateBasicCast(const ViewPose& wand,bool tracked,bool held,flo
         if(state.wand_cast_consumed||state.voice_cast_this_hold||(manual&&state.wand_lock_valid)){
             state.basic_cast.flying=false;return;
         }
-        if(IsWalkingChallenge(state.map_id)&&state.aim_actor){
+        if(IsWalkingSpellMap(state.map_id)&&state.aim_actor){
             std::array<float,3> launch_direction{};
             if(NormalizeVector(SubtractVector(state.basic_cast.destination,tip),&launch_direction))
                 LaunchChallengeSpell(tip,launch_direction,tip,++state.automatic_cast_serial);
@@ -7109,7 +7388,9 @@ void QuestScene::AdvanceIntroCutscene(const float delta_seconds) {
         "111dumbledoreinfo3", "111dumbledoreinfo4", "dumbledore_01"}};
     const auto dialogue_index = [&kDialogueNames,&state](const std::string& value)
         -> std::optional<std::size_t> {
-        const auto folded = AsciiFold(value);
+        auto folded = dialogue::Argument(value);
+        if(const auto alias=state.frontend.assets.dialogue_aliases.find(folded);alias!=state.frontend.assets.dialogue_aliases.end())
+            folded=AsciiFold(alias->second);
         std::size_t audio_index=19;
         for(std::size_t i=0;i<state.frontend.assets.gameplay_audio.size();++i){
             if(i==1)continue;
@@ -7292,10 +7573,12 @@ void QuestScene::AdvanceIntroCutscene(const float delta_seconds) {
                 if (auto* actor = character_for(track.actor_reference)) {
                     const bool running=state.map_id==1?AsciiFold(actor->class_name)!="tut1.tut1quirrell":
                         actor->actor_reference!=1672&&actor->actor_reference!=1510&&actor->actor_reference!=777;
-                    const std::string requested=track.walk_clip.empty()?(running?"run":"walk"):track.walk_clip;
+                    const std::string requested=track.walk_clip.empty()?
+                        (actor->clips.contains("nevilleremeberallwalk")?"nevilleremeberallwalk":running?"run":"walk"):track.walk_clip;
                     const std::string clip=actor->clips.contains(requested)?requested:
                         actor->clips.contains("walk")?"walk":"breathe";
                     if(actor->active_clip!=clip){actor->active_clip=clip;actor->animation_time=0.0F;}
+                    actor->animation_loop=true;
                     if (std::hypot(delta[0], delta[2]) > 0.001F)
                         actor->desired_yaw = std::atan2(delta[0], delta[2]);
                 }
@@ -7311,7 +7594,7 @@ void QuestScene::AdvanceIntroCutscene(const float delta_seconds) {
                 track.moving = true;
                 break;
             }
-            if (op == "talk" || op == "say" || (op.size()==5 && op.starts_with("talk") && op[4]>='0' && op[4]<='6')) {
+            if (dialogue::SpeechCommand(op)&&(op!="emote"||state.map_id==kHogwartsReturnMapId)) {
                 const auto index = dialogue_index(argument);
                 if (index.has_value() && (state.restoring || state.audio.PlayDialogue(*index))) {
                     track.delay_seconds = std::max(
@@ -7343,7 +7626,8 @@ void QuestScene::AdvanceIntroCutscene(const float delta_seconds) {
             }
             if (op == "trigger") {
                 if(state.map_id==2){DispatchBroomEvent(argument);continue;}
-                if(IsWalkingChallenge(state.map_id)){(void)state.challenge.graph.Dispatch(argument);continue;}
+                if(state.map_id==kHogwartsReturnMapId&&LaunchReturnOwl(state.hogwarts_return,state.character_draws,AsciiFold(argument)))continue;
+                if(IsWalkingSpellMap(state.map_id)){(void)state.challenge.graph.Dispatch(argument);continue;}
                 if(AsciiFold(argument)=="spawnwizardcard"){
                     state.frontend.progress.card_awarded=true;SaveCheckpoint();
                     HPVR_LOGI("[hpvr.quest.reward] status=CARD_AWARDED beans_required=25");
@@ -7362,7 +7646,7 @@ void QuestScene::AdvanceIntroCutscene(const float delta_seconds) {
                 scene.cues.insert("cutend");scene.harry_released=true;scene.camera_active=false;
                 track.finished=true;
                 if(auto* actor=character_for(track.actor_reference))actor->active_clip="breathe";
-                if(IsWalkingChallenge(state.map_id))state.challenge.complete=true;
+                if(IsWalkingSpellMap(state.map_id))state.challenge.complete=true;
                 if(state.map_id==2)state.broom.complete=true;
                 HPVR_LOGI("[hpvr.quest.lesson] status=LEARNED next_map=%s travel=%s",argument.c_str(),state.map_id==0?"QUEUED_AFTER_SCENE":"NEXT_MAP_BOUNDARY");
                 break;
@@ -7420,6 +7704,8 @@ void QuestScene::AdvanceIntroCutscene(const float delta_seconds) {
     }
     if(FinishJumpCameraTour(scene))
         HPVR_LOGI("[hpvr.quest.jump_lesson] status=CAMERA_TAIL_SKIPPED cue=CutEnd dialogue=FINISHED");
+    if(state.map_id==kHogwartsReturnMapId&&state.frontend.vr.first_person_cutscenes&&ReleaseReturnCameraTail(scene))
+        HPVR_LOGI("[hpvr.quest.cutscene] status=CAMERA_TAIL_RELEASED object=cutscene4");
     if(ReleaseCutsceneControlIfReady(scene)){
         HPVR_LOGI("[hpvr.quest.cutscene] status=CONTROL_RELEASED object=%s background_tracks=CONTINUE",scene.object_name.c_str());
     }
@@ -7466,6 +7752,7 @@ void QuestScene::Advance(const float delta_seconds) {
         return;
     }
     if(state.map_id==1){AdvanceChallenge(delta_seconds);return;}
+    if(state.map_id==kHogwartsReturnMapId){AdvanceChallenge(delta_seconds);return;}
     if(state.map_id==3){AdvanceCharms(delta_seconds);return;}
     if(state.map_id==2){AdvanceBroom(delta_seconds);return;}
     state.spell_targets.Advance(delta_seconds);
@@ -7841,7 +8128,7 @@ bool QuestScene::ResolvePlayerMovement(
     const float mantle_step=std::clamp(state.physics_step,0.0F,.05F)*1.6F;
     if(state.jump_pending){state.jump_pending=false;
         if(StartJump(state.collision_triangles,capsule_center,state.jump))HPVR_LOGI("[hpvr.quest.jump] status=STARTED button=A");}
-    if(IsWalkingChallenge(state.map_id)&&!state.jump.active&&!state.climb.active){
+    if(IsWalkingSpellMap(state.map_id)&&!state.jump.active&&!state.climb.active){
         const auto next=AddVector(capsule_center,{requested_displacement[0],0,requested_displacement[2]});float ground=0;
         if(!FindCollisionGroundHeight(state.collision_triangles,next[0],next[2],capsule_center[1]-kPlayerCapsuleHalfHeightMeters,&ground)&&
             ClearCapsuleSegment(state.collision_triangles,capsule_center,next)){
@@ -7851,17 +8138,17 @@ bool QuestScene::ResolvePlayerMovement(
     }
     if(state.jump.active){
         if(state.jump.elapsed>6.0F){
-            if(IsWalkingChallenge(state.map_id)){BeginChallengeDeath("FALL_WATCHDOG");*output={};return true;}
+            if(IsWalkingSpellMap(state.map_id)){BeginChallengeDeath("FALL_WATCHDOG");*output={};return true;}
             state.placement=state.frontend.progress;state.placement.player=state.jump.safe_origin;
             state.placement.player[1]+=kPlayerEyeHeightMeters;state.placement.yaw=state.last_yaw;
             state.restore_pending=true;state.jump={};*output={};return true;
         }
         const bool ok=StepJump(state.collision_triangles,state.jump,capsule_center,requested_displacement,state.physics_step,output);
-        if(ok&&state.jump.active&&output->blocked_substeps&&
+        if(ok&&state.jump.active&&
            std::hypot(requested_displacement[0],requested_displacement[2])>.0001F&&
-           BeginClimb(state.collision_triangles,AddVector(capsule_center,output->displacement),requested_displacement,&state.climb)){
-            // An airborne ledge contact becomes a completed mantle, not a
-            // six-second stuck jump. Grabbing no longer requires a held stick.
+           BeginClimb(state.collision_triangles,AddVector(capsule_center,output->displacement),requested_displacement,&state.climb,.04F)){
+            // Reach the lip before the capsule hits the wall. Waiting for
+            // body contact lets a jumping player fall below a reachable edge.
             state.climb.start=state.jump.safe_origin;state.jump={};
             HPVR_LOGI("[hpvr.quest.climb] status=AIRBORNE_LEDGE_GRAB");
         }
@@ -7879,7 +8166,7 @@ bool QuestScene::ResolvePlayerMovement(
         // A moving column can interrupt a captured mantle. Its start may be
         // the last book, so rewinding only Harry would retain closed doors and
         // consumed triggers on the far side of that checkpoint.
-        if(IsWalkingChallenge(state.map_id)){BeginChallengeDeath("MANTLE_INTERRUPTED");*output={};return true;}
+        if(IsWalkingSpellMap(state.map_id)){BeginChallengeDeath("MANTLE_INTERRUPTED");*output={};return true;}
         state.placement=state.frontend.progress;state.placement.player=state.climb.start;
         state.placement.player[1]+=kPlayerEyeHeightMeters;state.placement.yaw=state.last_yaw;
         state.restore_pending=true;*output={};return true;
@@ -7890,7 +8177,7 @@ bool QuestScene::ResolvePlayerMovement(
         return false;
     }
     const auto stage=state.frontend.progress.quest_stage;
-    if(IsWalkingChallenge(state.map_id)&&output->blocked_substeps&&std::hypot(requested_displacement[0],requested_displacement[2])>.0001F){
+    if(IsWalkingSpellMap(state.map_id)&&output->blocked_substeps&&std::hypot(requested_displacement[0],requested_displacement[2])>.0001F){
         for(std::size_t i=0;i<state.doors.size();++i){const auto& d=state.doors[i];
             if(!d.grid||std::hypot(d.grid_target[0]-d.grid_offset[0],d.grid_target[2]-d.grid_offset[2])>.005F)continue;
             std::array<float,3> low{1e9F,1e9F,1e9F},high{-1e9F,-1e9F,-1e9F};
@@ -7906,7 +8193,7 @@ bool QuestScene::ResolvePlayerMovement(
     const bool lesson_room=InClimbLesson(state.twins_intro,state.next_room,capsule_center)||
         (stage>=10&&InClimbLesson(state.next_room,state.jump_finish,capsule_center))||
         (stage>=12&&InClimbLesson(state.jump_finish,state.story_encounters[3],capsule_center));
-    if((IsWalkingChallenge(state.map_id)||(stage>=6&&lesson_room))&&output->blocked_substeps&&
+    if((IsWalkingSpellMap(state.map_id)||(stage>=6&&lesson_room))&&output->blocked_substeps&&
         std::hypot(output->displacement[0],output->displacement[2])<climb_distance*0.25F&&
         BeginClimb(state.collision_triangles,capsule_center,requested_displacement,&state.climb))
         return StepClimb(state.collision_triangles,state.climb,capsule_center,mantle_step,output);
@@ -7962,8 +8249,8 @@ std::int32_t QuestScene::FindChallengeSpellTarget(const std::array<float,3>& ori
     for(const auto& zone:state.challenge.spatial)if(zone.spell){
         if(state.map_id==3&&zone.spell_name=="spellaloho"&&!state.frontend.progress.lesson_best[1])continue;
         const auto* node=state.challenge.graph.Find(zone.reference);if(!node||!node->active||node->consumed)continue;
-        test(zone.reference,AddVector(zone.position,{-zone.radius,-zone.height,-zone.radius}),
-        AddVector(zone.position,{zone.radius,zone.height,zone.radius}));
+        {const float e=SpatialExtentXZ(zone);test(zone.reference,AddVector(zone.position,{-e,-zone.height,-e}),
+        AddVector(zone.position,{e,zone.height,e}));}
     }
     for(const auto& prop:state.challenge.props)if(prop.spell_target&&!ChallengeActivated(state.frontend.progress,prop.reference)){
         if(state.map_id==3&&chest::IsChest(prop.name)&&!state.frontend.progress.lesson_best[1])continue;
@@ -7971,8 +8258,11 @@ std::int32_t QuestScene::FindChallengeSpellTarget(const std::array<float,3>& ori
     }
     if(state.map_id==3&&state.frontend.progress.lesson_best[2])for(const auto& [ref,block]:state.charms.blocks)
         if(!block.plate)test(ref,AddVector(block.minimum,block.offset),AddVector(block.maximum,block.offset));
-    for(const auto& a:state.character_draws)if(a.enabled&&!a.player&&!a.flying){
-        const auto cls=AsciiFold(a.class_name);if(cls!="tut1.tut1gnome"&&cls!="tut1.flipbarrel")continue;
+    for(const auto& a:state.character_draws)if(a.enabled&&!a.player){
+        const bool boss=state.map_id==kHogwartsReturnMapId&&a.actor_reference==state.hogwarts_return.metadata.peeves_actor;
+        const auto cls=AsciiFold(a.class_name);
+        if(boss){if(!peeves::Vulnerable(state.hogwarts_return.battle.motion))continue;}
+        else if(a.flying||(cls!="tut1.tut1gnome"&&cls!="tut1.flipbarrel"))continue;
         if(cls=="tut1.tut1gnome"&&state.map_id==3&&!state.challenge.gnome_active.contains(a.actor_reference))continue;
         if(cls=="tut1.tut1gnome"&&state.challenge.gnome_hits.contains(a.actor_reference)&&state.challenge.gnome_hits.at(a.actor_reference)>0)continue;
         if(cls=="tut1.flipbarrel"&&state.challenge.barrel_stage>=4)continue;
@@ -8003,7 +8293,7 @@ std::int32_t QuestScene::FindChallengeSpellTarget(const std::array<float,3>& ori
 void QuestScene::LaunchChallengeSpell(const std::array<float,3>& origin,const std::array<float,3>& direction,
     const std::array<float,3>& tip,std::uint64_t serial){
     auto& state=*state_;
-    if(!IsWalkingChallenge(state.map_id)||!CanCast())return;
+    if(!IsWalkingSpellMap(state.map_id)||!CanCast())return;
     float distance=24;
     auto target=FindChallengeSpellTarget(origin,direction,&distance);
     auto destination=AddVector(origin,ScaleVector(direction,distance));
@@ -8040,7 +8330,7 @@ bool QuestScene::DispatchFlipendo(const FlipendoEvent& event) {
     if(!CanCast())return true;
     auto& state=*state_;
     if(state.map_id==3&&state.charms.active_lesson>=0){SubmitCharmsLesson(event.score);return true;}
-    if(IsWalkingChallenge(state.map_id)){
+    if(IsWalkingSpellMap(state.map_id)){
         if(event.spell!=ActiveGestureSpell())return true;
         SpellTargetResult validation{};
         if(!state.spell_targets.Consume(event,&validation))return false;
@@ -8113,11 +8403,17 @@ bool QuestScene::IsLoaded() const {
         if (door.first_vertex != expected_vertices) return false;
         expected_vertices += door.vertex_count;
     }
-    if(state.front_vertex_count>state.vertices.size()||
+    const auto auxiliary_vertices=static_cast<std::uint64_t>(state.front_vertex_count)+state.return_apple.count+state.return_cracker.total;
+    if(auxiliary_vertices>state.vertices.size()||
+       (state.map_id==kHogwartsReturnMapId&&(!state.return_apple.count||
+        static_cast<std::uint64_t>(state.return_apple.first)+state.return_apple.count!=state.return_cracker.first||
+        !state.return_cracker.count||static_cast<std::uint64_t>(state.return_cracker.first)+state.return_cracker.total!=state.vertices.size()))||
        !ValidateRuntimeVertexLayout(state.character_draws,state.beans,state.mirrors,expected_vertices,
-           state.vertices.size()-state.front_vertex_count))return false;
+           state.vertices.size()-auxiliary_vertices))return false;
     expected_vertices=state.vertices.size();
-    const bool map_specific=state.map_id==3?
+    const bool map_specific=state.map_id==kHogwartsReturnMapId?
+        (state.challenge.graph.healthy()&&state.challenge.scenes.size()==16&&state.doors.size()==22&&
+         state.hogwarts_return.metadata.peeves_actor&&state.return_duel.actor&&state.return_cracker.clips.size()==4):state.map_id==3?
         ValidateCharmsSceneLayout(state.challenge,state.charms,state.doors.size(),state.fixture_actor_count,state.character_draws):state.map_id==2?
         (state.broom.lesson.valid&&state.challenge.graph.healthy()&&state.challenge.scenes.size()==14&&
          state.fixture_actor_count>0&&state.character_draws.size()==7):state.map_id==1?
@@ -8141,7 +8437,7 @@ bool QuestScene::IsLoaded() const {
            state.script_actor_count > 0 &&
            state.authored_light_count > 0 &&
            state.intro_cutscene.available &&
-           state.audio.DialogueClipCount() == 19+state.frontend.assets.gameplay_audio.size() &&
+           state.audio.DialogueClipCount() == ExpectedSceneAudioClipCount(state.frontend.assets) &&
            state.audio.IsConfigured() &&
            state.spell_targets.TargetCount() ==
                state.character_draws.size();

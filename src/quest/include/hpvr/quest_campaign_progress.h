@@ -66,7 +66,7 @@ struct LevelStart {
 // A single perfect story clear of earlier maps, without repeatable menu farming.
 // Map-local actor IDs, stars and event state belong to the fresh selected map.
 inline std::optional<LevelStart> PerfectPriorProgress(unsigned selected_map){
-    if(selected_map>3)return std::nullopt;
+    if(selected_map>4)return std::nullopt;
     LevelStart result;
     result.completed_maps=(1U<<selected_map)-1U;
     if(selected_map>0){
@@ -86,6 +86,14 @@ inline std::optional<LevelStart> PerfectPriorProgress(unsigned selected_map){
         result.banked_beans+=4;
         result.lesson_best[kBroomLesson]=100;result.lesson_points[kBroomLesson]=20;
         AddHousePoints(result.house_points,20,0x48505658U);
+    }
+    if(selected_map>3){
+        result.earned_cards|=CardMask(28)|CardMask(10);result.banked_beans+=83;
+        for(const auto lesson:{kAlohomoraLesson,kWingardiumLesson}){
+            result.lesson_best[lesson]=100;result.lesson_points[lesson]=LessonPoints(4);
+            AddHousePoints(result.house_points,LessonPoints(4),0x48505660U+lesson);
+        }
+        AddHousePoints(result.house_points,20,0x48505664U);
     }
     return result;
 }

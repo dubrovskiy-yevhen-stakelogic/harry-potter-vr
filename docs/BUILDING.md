@@ -2,7 +2,8 @@
 
 Source code for the native Meta Quest 3 port.
 It includes the opening tutorials, Flipendo lesson, Flipendo Challenge,
-Broomstick Training and the Alohomora / Charms level.
+Broomstick Training, the Alohomora / Charms level and Hogwarts Return
+with the Peeves encounter and Malfoy duel.
 See [README](../README.md) for features, controls and limitations.
 
 ## Layout

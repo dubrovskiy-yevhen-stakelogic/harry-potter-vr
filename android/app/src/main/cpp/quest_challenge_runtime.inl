@@ -5,8 +5,8 @@ bool QuestScene::ConsumeMapTransition(unsigned* map,ProgressSave* progress,unsig
 }
 void QuestScene::AbortMapTransition(const char* message){
     auto& s=*state_;s.travel_pending=false;s.travel_blocked=true;
-    s.frontend.progress=s.travel_origin;s.frontend.screen=FrontScreen::Main;s.frontend.selection=0;
-    s.frontend.message=message?message:"MAP LOAD FAILED";s.front_anchor_valid=false;
+    s.frontend.progress=s.travel_origin;
+    s.frontend.ShowError(message?message:"MAP LOAD FAILED");s.front_anchor_valid=false;
     s.audio.StopDialogue();s.audio.SelectMusic(0);
     HPVR_LOGE("[hpvr.quest.travel] status=FAILED old_map=%u reason=%s saves=UNCHANGED",s.map_id,s.frontend.message.c_str());
 }
@@ -20,6 +20,18 @@ void QuestScene::RequestChallengeTravel(){
     next.player={0,kPlayerEyeHeightMeters,0};next.yaw=0;
     s.travel_progress=std::move(next);s.travel_slot=s.frontend.slot;s.travel_pending=true;
     HPVR_LOGI("[hpvr.quest.travel] status=REQUESTED from=Lev_Tut1 to=Lev_Tut1b");
+}
+void QuestScene::RequestReturnTravel(){
+    auto& s=*state_;if(s.map_id!=kCharmsTrainingMapId||s.travel_pending||s.travel_blocked)return;
+    s.travel_origin=s.frontend.progress;auto next=s.frontend.progress;
+    next.completed_maps|=1U<<kCharmsTrainingMapId;
+    for(const auto& bean:s.beans)if(bean.kind==0&&std::binary_search(next.collected_beans.begin(),next.collected_beans.end(),bean.actor_reference))++next.banked_beans;
+    next.map_id=kHogwartsReturnMapId;next.phase=2;next.page=14;next.quest_stage=0;
+    next.collected_beans.clear();next.activated_events.clear();next.challenge_stars=0;
+    next.graph_state.clear();next.world_state.clear();next.charms_state.clear();
+    next.player={0,kPlayerEyeHeightMeters,0};next.yaw=0;
+    s.travel_progress=std::move(next);s.travel_slot=s.frontend.slot;s.travel_pending=true;
+    HPVR_LOGI("[hpvr.quest.travel] status=REQUESTED from=Lev_Tut3 to=Lev_Tut3b");
 }
 void QuestScene::RebuildChallengeCollision(){
     auto& s=*state_;if(s.map_id==0)return;
@@ -51,7 +63,7 @@ void QuestScene::RebuildChallengeCollision(){
 }
 template<class SceneState>
 std::string InitialChallengeWorldSnapshot(const SceneState& state){
-    std::ostringstream physical;physical<<"CHALLENGE_WORLD 3 "<<std::setprecision(9)<<state.doors.size()<<' ';
+    std::ostringstream physical;physical<<"CHALLENGE_WORLD "<<(state.map_id==kHogwartsReturnMapId?5:3)<<' '<<std::setprecision(9)<<state.doors.size()<<' ';
     for(const auto& d:state.doors){
         physical<<d.actor_reference<<' '<<d.phase<<' '<<d.opening<<' '<<d.completion_sent<<' '<<d.hold<<' '<<d.loop_started<<' ';
         for(float v:d.grid_offset)physical<<v<<' ';for(float v:d.grid_target)physical<<v<<' ';
@@ -67,6 +79,8 @@ std::string InitialChallengeWorldSnapshot(const SceneState& state){
     physical<<state.challenge.active_scene<<' '<<state.challenge.complete<<' '<<state.challenge.pending_scenes.size();
     for(auto ref:state.challenge.pending_scenes)physical<<' '<<ref;
     physical<<' '<<state.challenge.gnome_active.size();for(auto ref:state.challenge.gnome_active)physical<<' '<<ref;
+    if(state.map_id==kHogwartsReturnMapId)physical<<' '<<std::quoted(SaveReturnBattle(state.hogwarts_return));
+    if(state.map_id==kHogwartsReturnMapId)physical<<' '<<std::quoted(SaveReturnDuel(state.return_duel));
     return physical.str();
 }
 void QuestScene::RestoreTransferredProgress(const ProgressSave& progress,unsigned slot){
@@ -78,7 +92,7 @@ void QuestScene::RestoreTransferredProgress(const ProgressSave& progress,unsigne
     if(s.map_id==0){RestoreCurrentProgress();return;}
     if(s.map_id==2){RestoreBroomProgress();return;}
     if(s.map_id==3&&!RestoreCharmsState(s.charms,progress.charms_state)){
-        s.frontend.screen=FrontScreen::Main;s.frontend.message="INVALID CHARMS CHECKPOINT";return;
+        s.frontend.ShowError("INVALID CHARMS CHECKPOINT");return;
     }
     auto& p=s.frontend.progress;
     if(!s.challenge_initial_checkpoint_valid){
@@ -99,15 +113,18 @@ void QuestScene::RestoreTransferredProgress(const ProgressSave& progress,unsigne
     s.challenge_start_checkpoint=std::move(initial);s.challenge_start_checkpoint_valid=true;
     auto graph=s.challenge.graph;
     if(!p.graph_state.empty()&&!graph.Restore(p.graph_state)){
-        s.frontend.screen=FrontScreen::Main;s.frontend.message="SAVE EVENT DATA DOES NOT MATCH THIS MAP";return;
+        s.frontend.ShowError("SAVE EVENT DATA DOES NOT MATCH THIS MAP");return;
     }
     std::int32_t resume_scene=0;
     if(!p.world_state.empty()){
         // Parse into copies so an invalid bank never partially mutates the world.
         auto doors=s.doors;auto actors=s.character_draws;std::map<std::int32_t,unsigned> hits;
+        auto return_runtime=s.hogwarts_return;
+        auto return_duel=s.return_duel;
         std::vector<std::int32_t> pending;std::set<std::int32_t> active_gnomes;
         std::istringstream in(p.world_state);std::string magic;unsigned version=0,count=0,barrel=0;float barrel_time=0;bool complete=false;
-        bool valid=bool(in>>magic>>version>>count)&&magic=="CHALLENGE_WORLD"&&(version>=1&&version<=3)&&count==doors.size();
+        bool valid=bool(in>>magic>>version>>count)&&magic=="CHALLENGE_WORLD"&&
+            (s.map_id==kHogwartsReturnMapId?version==5:(version>=1&&version<=3))&&count==doors.size();
         const auto finite=[](float v){return std::isfinite(v)&&std::abs(v)<2000;};
         for(auto& d:doors){std::int32_t ref=0;in>>ref>>d.phase>>d.opening>>d.completion_sent>>d.hold;
             if(version>=2)in>>d.loop_started;
@@ -147,18 +164,43 @@ void QuestScene::RestoreTransferredProgress(const ProgressSave& progress,unsigne
                 valid=valid&&active_gnomes.insert(ref).second&&std::ranges::any_of(actors,[&](const auto& a){
                     return a.actor_reference==ref&&a.enabled&&AsciiFold(a.class_name)=="tut1.tut1gnome";});}
         }
+        if(version==5&&s.map_id==kHogwartsReturnMapId){
+            std::string battle;in>>std::quoted(battle);
+            valid=valid&&bool(in)&&RestoreReturnBattle(return_runtime,battle);
+            const auto* boss=graph.Find(return_runtime.metadata.peeves_actor);
+            valid=valid&&boss&&boss->signaled==return_runtime.battle.motion.completion_sent;
+            const auto actor=std::ranges::find_if(actors,[&](const auto& a){return a.actor_reference==return_runtime.metadata.peeves_actor;});
+            if(actor==actors.end())valid=false;
+            else if(return_runtime.battle.motion.phase!=peeves::Phase::Dormant){
+                const auto delta=SubtractVector(AddVector(actor->base_origin,actor->cutscene_offset),return_runtime.battle.position);
+                valid=valid&&DotVector(delta,delta)<.000001F&&actor->enabled==(return_runtime.battle.motion.phase!=peeves::Phase::Complete);
+            }
+            std::string duel;in>>std::quoted(duel);valid=valid&&bool(in)&&RestoreReturnDuel(return_duel,duel);
+            if(malfoy::Active(return_duel.motion)||return_duel.motion.phase==malfoy::Phase::Knockdown||return_duel.motion.phase==malfoy::Phase::DefeatPause){
+                const auto draco=std::ranges::find_if(actors,[&](const auto& a){return a.actor_reference==return_duel.actor;});
+                if(draco==actors.end())valid=false;
+                else {const auto d=SubtractVector(AddVector(draco->base_origin,draco->cutscene_offset),return_duel.motion.position);
+                    valid=valid&&DotVector(d,d)<.000001F;}
+            }
+        }
         valid=valid&&bool(in);
         in>>std::ws;valid=valid&&in.eof();
-        if(!valid){s.frontend.screen=FrontScreen::Main;s.frontend.message="INVALID MAP CHECKPOINT";return;}
+        if(!valid){s.frontend.ShowError("INVALID MAP CHECKPOINT");return;}
+        if(s.map_id==kHogwartsReturnMapId)OrientReturnStudentDoors(doors);
         s.doors=std::move(doors);s.character_draws=std::move(actors);s.challenge.gnome_hits=std::move(hits);
+        if(s.map_id==kHogwartsReturnMapId){s.hogwarts_return=std::move(return_runtime);s.return_duel=std::move(return_duel);}
         s.challenge.barrel_stage=barrel;s.challenge.barrel_time=barrel_time;s.challenge.complete=complete;
         s.challenge.pending_scenes=std::move(pending);s.challenge.gnome_active=std::move(active_gnomes);
     }
     s.challenge.graph=std::move(graph);s.intro_cutscene.playing=false;s.challenge.active_scene=0;
+    if(s.map_id==kHogwartsReturnMapId&&!p.world_state.empty())
+        (void)AdvanceReturnPeeves(s.hogwarts_return,s.character_draws,s.challenge.graph,0,p.player);
     if(s.map_id==1)SetBridgeProfessor(s.character_draws,ChallengeActivated(p,4807)&&resume_scene!=4807);
     s.challenge.checkpoint_pending=false;
     s.challenge.authored_checkpoint_pending=p.world_state.empty();
     if(p.world_state.empty()){
+        if(s.map_id==kHogwartsReturnMapId){s.hogwarts_return.battle={};s.hogwarts_return.apples={};
+            s.return_duel.motion={};s.return_duel.crackers={};s.return_duel.hand_valid=s.return_duel.throw_armed=s.return_duel.trigger_held=false;}
         s.challenge.pending_scenes.clear();s.challenge.complete=false;s.challenge.gnome_active.clear();s.challenge.gnome_hits.clear();
     }
     s.challenge.gnome_motion.clear();s.challenge.grid_hit_positions.clear();
@@ -193,7 +235,7 @@ void QuestScene::RestoreTransferredProgress(const ProgressSave& progress,unsigne
             bean.emission_time=activated?1.0F:0.0F;
         }
     }
-    if(s.map_id==3)for(auto& bean:s.beans)if(bean.source_actor&&
+    if(s.map_id==3||s.map_id==kHogwartsReturnMapId)for(auto& bean:s.beans)if(bean.source_actor&&
         std::ranges::none_of(s.challenge.props,[&](const auto& prop){return prop.reference==bean.source_actor;})){
         const bool activated=ChallengeActivated(p,bean.source_actor);
         if(activated)PrepareChallengeBeanEmission(bean,BeanSpawnerSource(bean,s.challenge.props),s.collision_triangles,&p.player);
@@ -206,14 +248,15 @@ void QuestScene::RestoreTransferredProgress(const ProgressSave& progress,unsigne
     for(std::size_t i=0;i<s.character_draws.size();++i)(void)s.spell_targets.SetSceneOffset(i,s.character_draws[i].cutscene_offset);
     s.placement=p;s.placement.player=s.last_player;s.restore_pending=true;
     s.death_time=-1;s.death_duration=0;s.death_checkpoint_valid=false;
-    if(p.health>0&&(p.world_state.empty()||p.world_state.starts_with("CHALLENGE_WORLD 3 "))){
+    const auto current_bank=s.map_id==kHogwartsReturnMapId?"CHALLENGE_WORLD 5 ":"CHALLENGE_WORLD 3 ";
+    if(p.health>0&&(p.world_state.empty()||p.world_state.starts_with(current_bank))){
         s.challenge_start_checkpoint=p;
         s.challenge_start_checkpoint.player=s.last_player;
         s.challenge_start_checkpoint.yaw=s.last_yaw;
         if(s.challenge_start_checkpoint.graph_state.empty())s.challenge_start_checkpoint.graph_state=s.challenge.graph.Serialize();
         if(s.challenge_start_checkpoint.world_state.empty())s.challenge_start_checkpoint.world_state=InitialChallengeWorldSnapshot(s);
         s.challenge_start_checkpoint_valid=true;
-    }else if(!p.world_state.empty()&&!p.world_state.starts_with("CHALLENGE_WORLD 3 ")){
+    }else if(!p.world_state.empty()&&!p.world_state.starts_with(current_bank)){
         // Older versions saved arbitrary frame positions. Their exact historical
         // book snapshot cannot be reconstructed. Keep the old bank unchanged;
         // recover at a touched book with its existing world progress, or at the
@@ -246,7 +289,7 @@ void QuestScene::RestoreTransferredProgress(const ProgressSave& progress,unsigne
 }
 void QuestScene::BeginChallengeDeath(const char* reason) const {
     auto& s=*state_;
-    if(!IsWalkingChallenge(s.map_id)||s.death_time>=0)return;
+    if(!IsWalkingSpellMap(s.map_id)||s.death_time>=0)return;
     SceneLoadTrace::Event(s.frontend.saves,s.map_id,std::string("DEATH reason=")+reason+
         " player="+std::to_string(s.last_player[0])+","+std::to_string(s.last_player[1])+","+std::to_string(s.last_player[2]));
     ProgressSave checkpoint;
@@ -254,12 +297,12 @@ void QuestScene::BeginChallengeDeath(const char* reason) const {
     const bool memory=s.challenge_start_checkpoint_valid&&s.challenge_start_checkpoint.health>0&&
         !s.challenge_start_checkpoint.world_state.empty()&&checked_graph.Restore(s.challenge_start_checkpoint.graph_state);
     const bool disk=!memory&&ReadProgress(s.frontend.saves,s.frontend.slot,&checkpoint)&&checkpoint.map_id==s.map_id&&checkpoint.health>0&&
-        checkpoint.world_state.starts_with("CHALLENGE_WORLD 3 ")&&
+        checkpoint.world_state.starts_with(s.map_id==kHogwartsReturnMapId?"CHALLENGE_WORLD 5 ":"CHALLENGE_WORLD 3 ")&&
         !checkpoint.graph_state.empty()&&!checkpoint.world_state.empty()&&checked_graph.Restore(checkpoint.graph_state);
     if(!disk){
         if(!memory){
-            s.audio.StopDialogue();s.frontend.screen=FrontScreen::Main;
-            s.frontend.message="NO VALID LEVEL CHECKPOINT";s.front_anchor_valid=false;return;
+            s.audio.StopDialogue();
+            s.frontend.ShowError("NO VALID LEVEL CHECKPOINT");s.front_anchor_valid=false;return;
         }
         checkpoint=s.challenge_start_checkpoint;
     }
@@ -332,6 +375,15 @@ void QuestScene::StartChallengeScene(std::int32_t reference){
         const float wait=OpenCharmsCutsceneDoors(reference,s.doors);
         for(auto& track:scene.tracks)track.delay_seconds=std::max(track.delay_seconds,wait);
     }
+    if(s.map_id==kHogwartsReturnMapId&&scene.object_name=="cutscene8"){
+        float wait=0;
+        for(const auto& door:s.doors)if(door.tag=="frontdoor"&&!door.opening)
+            wait=std::max(wait,door.open_seconds+.25F);
+        if(wait>0){
+            (void)s.challenge.graph.Dispatch("gooutdis");
+            for(auto& track:scene.tracks)track.delay_seconds=std::max(track.delay_seconds,wait);
+        }
+    }
     if(s.map_id==1&&reference==4807)SetBridgeProfessor(s.character_draws,false);
     GroundCutsceneCast(scene,s.character_draws,s.collision_triangles);
     if(s.map_id==3&&reference==1526){
@@ -343,6 +395,8 @@ void QuestScene::StartChallengeScene(std::int32_t reference){
     }
     if(s.map_id==1)(void)award::RestoreProfessorFacing(reference,scene.locations,s.character_draws);
     if(s.map_id==3&&s.frontend.vr.first_person_cutscenes)FaceCharmsCinematicTarget(scene,s.character_draws);
+    if(s.map_id==kHogwartsReturnMapId&&scene.object_name=="cutscene8"&&s.frontend.vr.first_person_cutscenes)
+        FaceReturnCinematicTarget(scene,s.character_draws);
     s.audio.StopDialogue();s.front_anchor_valid=false;
     HPVR_LOGI("[hpvr.quest.challenge.scene] status=STARTED ref=%d name=%s",reference,scene.object_name.c_str());
 }
@@ -365,14 +419,19 @@ void QuestScene::AdvanceChallenge(float seconds){
             if(const auto sound=GameplayDialogueIndex(s.frontend.assets,"chest_landing"))
                 (void)s.audio.PlayWorldEffect(*sound,.85F);
     }
-    for(auto& bean:s.beans)if(bean.source_actor&&ChallengeRewardsReady(c.props,bean.source_actor,p))
+    for(auto& bean:s.beans)if(bean.source_actor&&ChallengeRewardsReady(c.props,bean.source_actor,p)){
+        if(bean.kind==4&&bean.emission_time==0&&s.map_id==kHogwartsReturnMapId)s.audio.PlayCardAppearance();
         bean.emission_time=std::min(1.0F,bean.emission_time+step);
+    }
     c.hurt_time=std::max(0.0F,c.hurt_time-step);s.health_flash_time=std::max(0.0F,s.health_flash_time-step);
     const bool playing=s.intro_cutscene.playing;
     const bool controlled=IsCutscenePlaying();
     AdvanceIntroCutscene(step);
+    if(s.map_id==kHogwartsReturnMapId)AdvanceReturnOwls(s.hogwarts_return,s.character_draws,step);
     if(s.map_id==3&&s.frontend.vr.first_person_cutscenes&&IsCutscenePlaying())
         FaceCharmsCinematicTarget(s.intro_cutscene,s.character_draws);
+    if(s.map_id==kHogwartsReturnMapId&&s.frontend.vr.first_person_cutscenes&&IsCutscenePlaying())
+        FaceReturnCinematicTarget(s.intro_cutscene,s.character_draws);
     for(auto& a:s.character_draws){a.animation_time+=step;a.yaw+=std::clamp(std::remainder(a.desired_yaw-a.yaw,kTau),-8*step,8*step);}
     if(controlled&&!IsCutscenePlaying()){
         SceneLoadTrace::Event(s.frontend.saves,s.map_id,"CUTSCENE_RELEASE ref="+std::to_string(c.active_scene));
@@ -391,6 +450,30 @@ void QuestScene::AdvanceChallenge(float seconds){
     // Collision and platform support must agree on the same physical feet.
     // The presentation head changes height when the user crouches or stands.
     if(s.player_capsule_valid&&!s.restore_pending)body=s.player_capsule;
+    if(IsCutscenePlaying())for(const auto& actor:s.character_draws)if(actor.player)
+        body=AddVector(AddVector(actor.base_origin,actor.cutscene_offset),{0,kPlayerCapsuleHalfHeightMeters,0});
+    if(s.map_id==kHogwartsReturnMapId)for(auto& owl:s.hogwarts_return.owls){
+        if(owl.drop_pending){
+            owl.drop_pending=false;RememberChallengeEvent(p,owl.actor);c.checkpoint_pending=true;
+            if(const auto sound=GameplayDialogueIndex(s.frontend.assets,"owl_hoot2"))(void)s.audio.PlayWorldEffect(*sound,.8F);
+        }
+        if(!owl.scroll_visible&&ChallengeActivated(p,owl.actor)&&!ChallengeCollected(p,owl.actor)){
+            owl.scroll_visible=true;owl.scroll=owl.leg.station_position;
+        }
+        if(!owl.scroll_visible||ChallengeCollected(p,owl.actor))continue;
+        float ground=-std::numeric_limits<float>::infinity();
+        for(const auto& triangle:s.collision_triangles){float height;
+            if(triangle.normal[1]>=kWalkableNormalY&&CollisionTriangleHeightAtXZ(triangle,owl.scroll[0],owl.scroll[2],&height)&&
+                height<=owl.scroll[1])ground=std::max(ground,height);
+        }
+        owl.fall_speed+=9.5F*step;owl.scroll[1]=std::max(ground+.15F,owl.scroll[1]-owl.fall_speed*step);
+        if(!IsCutscenePlaying()&&CanCollectBean(s.collision_triangles,body,owl.scroll)){
+            p.collected_beans.insert(std::lower_bound(p.collected_beans.begin(),p.collected_beans.end(),owl.actor),owl.actor);
+            owl.scroll_visible=false;c.checkpoint_pending=true;
+            s.audio.PlayScrollPickup();
+            s.frontend.screen=FrontScreen::Letter;s.frontend.selection=0;s.front_anchor_valid=false;
+        }
+    }
     // Scripted actors still touch class-proximity triggers during cinematics.
     // Player triggers remain gated below until control is returned.
     for(auto& zone:c.spatial){
@@ -398,11 +481,7 @@ void QuestScene::AdvanceChallenge(float seconds){
         if(zone.proximity_class.empty()||zone.proximity_class=="harry"||zone.proximity_class=="wingardiumblock")continue;
         bool inside=false;
         for(const auto& actor:s.character_draws){
-            if(!actor.enabled)continue;
-            const auto cls=AsciiFold(actor.class_name);
-            if(cls!=zone.proximity_class&&!cls.ends_with("."+zone.proximity_class))continue;
-            const auto d=SubtractVector(AddVector(actor.base_origin,actor.cutscene_offset),zone.position);
-            if(std::hypot(d[0],d[2])<=zone.radius&&std::abs(d[1])<=zone.height+kPlayerCapsuleHalfHeightMeters){inside=true;break;}
+            if(CharacterTouchesProximity(actor,zone)){inside=true;break;}
         }
         if(inside&&!zone.inside)(void)c.graph.Touch(zone.reference);
         zone.inside=inside;
@@ -419,7 +498,7 @@ void QuestScene::AdvanceChallenge(float seconds){
             auto position=zone.position;
             if(zone.checkpoint)position[1]+=.10F+.03F*std::sin(8*s.bean_time);
             const auto d=SubtractVector(body,position);
-            const bool inside=std::hypot(d[0],d[2])<=zone.radius&&std::abs(d[1])<=zone.height+kPlayerCapsuleHalfHeightMeters;
+            const bool inside=SpatialContainsXZ(zone,d)&&std::abs(d[1])<=zone.height+kPlayerCapsuleHalfHeightMeters;
             if(zone.checkpoint){
                 zone.arm_time=std::max(0.0F,zone.arm_time-step);
                 if(zone.arm_time==0&&std::hypot(d[0],d[2])>2)zone.armed=true;
@@ -438,8 +517,8 @@ void QuestScene::AdvanceChallenge(float seconds){
             if(ChallengeCollected(p,pickup.actor_reference)||!CanCollectBean(s.collision_triangles,body,BeanWorldPosition(pickup)))continue;
             if(pickup.kind==4){
                 if(TakeBroomCard(p,s.card_pickup,pickup,s.bean_time,s.audio.DialogueDurationSeconds(s.card_sound))){
-                    p.earned_cards|=campaign::CardMask(chest::CardId(pickup.actor_reference));
-                    (void)s.audio.PlayWorldEffect(s.card_sound,.9F);s.bean_hud_time=4;
+                    p.earned_cards|=campaign::CardMask(pickup.card_id);
+                    s.audio.PlayCardPickup();s.bean_hud_time=4;
                     c.checkpoint_pending=true;
                 }
                 continue;
@@ -455,6 +534,56 @@ void QuestScene::AdvanceChallenge(float seconds){
             if(pickup.kind==3)(void)s.audio.PlayWorldEffect(s.star_sound,.85F);
             else s.audio.PlayBeanPickup();
             c.checkpoint_pending=true;
+        }
+    }
+    if(s.map_id==kHogwartsReturnMapId){
+        UpdateReflectedPlayerAnimation(s.charms,s.character_draws,body,step,IsCutscenePlaying());
+        if(controlled||IsCutscenePlaying())s.bump_states[s.hogwarts_return.metadata.merchant].purchase_armed=false;
+    }
+    if(s.map_id==kHogwartsReturnMapId&&!IsCutscenePlaying()){
+        s.bump_cooldown=std::max(0.F,s.bump_cooldown-step);
+        if(s.bump_actor&&!s.audio.DialogueBusy()){
+            for(auto& actor:s.character_draws)if(actor.actor_reference==s.bump_actor){
+                actor.active_clip="breathe";actor.desired_yaw=s.bump_restore_yaw;actor.animation_time=0;
+            }
+            s.bump_actor=0;
+        }
+        const auto& sale=s.hogwarts_return.metadata;
+        bool approached=false;
+        for(const auto& actor:s.character_draws)if(actor.actor_reference==sale.merchant&&actor.enabled){
+            const auto delta=SubtractVector(AddVector(AddVector(actor.base_origin,actor.cutscene_offset),{0,1.2F,0}),s.last_player);
+            approached=UpdateMerchantApproach(s.bump_states[sale.merchant].purchase_armed,controlled,std::sqrt(DotVector(delta,delta)));
+        }
+        const bool can_purchase=approached&&sale.sale_price&&!sale.sale_scene.empty()&&!ChallengeActivated(p,sale.merchant)&&
+            s.frontend.ReportValue(0)>=sale.sale_price;
+        for(const auto actor_index:ReturnContactOrder(s.character_draws,s.last_player,sale.merchant,can_purchase)){
+            auto& actor=s.character_draws[actor_index];
+            if(!actor.enabled||actor.player||actor.flying)continue;
+            const bool purchase=can_purchase&&actor.actor_reference==sale.merchant;
+            const auto profile=std::ranges::find_if(s.frontend.assets.bump_speech,[&](const auto& b){return b.actor_reference==actor.actor_reference;});
+            const bool has_speech=profile!=s.frontend.assets.bump_speech.end()&&!profile->lines.empty();
+            if(!purchase&&!has_speech)continue;
+            auto& contact=s.bump_states[actor.actor_reference];
+            auto position=AddVector(actor.base_origin,actor.cutscene_offset);position[1]+=1.2F;
+            const auto delta=SubtractVector(position,s.last_player);const float distance=std::sqrt(DotVector(delta,delta));
+            if(distance>2.3F)contact.near=false;
+            if(s.audio.DialogueBusy()||s.bump_cooldown>0||(contact.near&&!purchase)||distance>1.9F||distance<.01F)continue;
+            if(BasicRayDistance(s.collision_triangles,s.last_player,ScaleVector(delta,1/distance))<distance-.1F)continue;
+            if(purchase){
+                if(c.graph.Dispatch(sale.sale_scene)){
+                    p.spent_beans+=sale.sale_price;RememberChallengeEvent(p,sale.merchant);
+                    c.checkpoint_pending=true;contact.near=true;contact.purchase_armed=false;break;
+                }
+            }
+            if(!has_speech)continue;
+            const auto index=GameplayDialogueIndex(s.frontend.assets,profile->lines[contact.next%profile->lines.size()]);
+            if(!index||!s.audio.PlayDialogue(*index))continue;
+            contact.near=true;++contact.next;s.bump_cooldown=.25F;
+            s.bump_actor=actor.actor_reference;s.bump_restore_yaw=actor.desired_yaw;
+            actor.desired_yaw=std::atan2(-delta[0],-delta[2]);
+            actor.active_clip=actor.clips.contains("talknopoint")?"talknopoint":actor.clips.contains("talk2")?"talk2":"breathe";
+            actor.animation_time=0;actor.animation_loop=true;
+            break;
         }
     }
     (void)c.graph.Advance(step);
@@ -503,7 +632,10 @@ void QuestScene::AdvanceChallenge(float seconds){
                 break;}
             case MapEventKind::checkpoint:
                 c.authored_checkpoint_pending=true;HPVR_LOGI("[hpvr.quest.challenge.checkpoint] ref=%d",ref);break;
-            case MapEventKind::actor_spell:
+        case MapEventKind::actor_spell:
+            if(s.map_id==kHogwartsReturnMapId&&effect.actor_reference==s.hogwarts_return.metadata.peeves_actor){
+                (void)peeves::Hit(s.hogwarts_return.battle);break;
+            }
                 for(auto& a:s.character_draws)if(a.actor_reference==ref){
                     const auto cls=AsciiFold(a.class_name);
                     if(cls=="tut1.flipbarrel"&&c.barrel_time==0&&c.barrel_stage<4){c.barrel_time=.001F;a.active_clip=a.clips.contains("roll")?"roll":"breathe";c.checkpoint_pending=true;}
@@ -528,13 +660,24 @@ void QuestScene::AdvanceChallenge(float seconds){
                     }
                 }
                 break;
-            case MapEventKind::actor_trigger:
-                if(s.map_id==3&&effect.enabled)for(const auto& prop:c.props)
+        case MapEventKind::actor_trigger:
+            if(s.map_id==kHogwartsReturnMapId&&ref==s.return_duel.actor){
+                if(effect.enabled)for(auto& a:s.character_draws)if(a.actor_reference==ref){
+                    (void)malfoy::Activate(s.return_duel.motion,s.return_duel.config,AddVector(a.base_origin,a.cutscene_offset));
+                    break;
+                }
+                break;
+            }
+            if(s.map_id==kHogwartsReturnMapId&&effect.actor_reference==s.hogwarts_return.metadata.peeves_actor){
+                if(effect.enabled)(void)TriggerReturnPeeves(s.hogwarts_return,s.character_draws);
+                break;
+            }
+                if((s.map_id==3||s.map_id==kHogwartsReturnMapId)&&effect.enabled)for(const auto& prop:c.props)
                     if(prop.reference==ref&&prop.name=="hprops.padlock"){
                         RememberChallengeEvent(p,ref);c.checkpoint_pending=true;
                     }
                 if(s.map_id==3)StartCharmsLesson(ref);
-                if(s.map_id==3&&effect.enabled&&!ChallengeActivated(p,ref))
+                if((s.map_id==3||s.map_id==kHogwartsReturnMapId)&&effect.enabled&&!ChallengeActivated(p,ref))
                     if(std::ranges::any_of(s.beans,[&](const auto& bean){return bean.source_actor==ref;})){
                         RememberChallengeEvent(p,ref);c.checkpoint_pending=true;
                         for(auto& bean:s.beans)if(bean.source_actor==ref){
@@ -694,9 +837,40 @@ void QuestScene::AdvanceChallenge(float seconds){
             }
         }
     }
+    if(s.map_id==kHogwartsReturnMapId){
+        auto eye=body;eye[1]+=kPlayerEyeHeightMeters;
+        for(const auto& actor:s.character_draws)if(actor.actor_reference==s.hogwarts_return.metadata.peeves_actor)
+            eye[1]-=(actor.collision_min_y+actor.collision_max_y)*.5F-actor.base_origin[1];
+        float yaw=s.last_yaw;
+        if(IsCutscenePlaying())for(const auto& actor:s.character_draws)if(actor.player)yaw=actor.yaw+kTau*.5F;
+        ApproachReturnPeevesCamera(s.hogwarts_return,eye,yaw,step);
+        const auto battle=AdvanceReturnPeeves(s.hogwarts_return,s.character_draws,c.graph,step,body);
+        if(!s.hogwarts_return.voice.empty())if(const auto audio=GameplayDialogueIndex(s.frontend.assets,s.hogwarts_return.voice))
+            (void)s.audio.PlayWorldEffect(*audio,1.F);
+        unsigned damage=battle.contact_damage;
+        for(auto& apple:s.hogwarts_return.apples)damage+=peeves::AdvanceApple(apple,step,
+            s.collision_triangles,body,kPlayerCapsuleRadiusMeters,kPlayerCapsuleHalfHeightMeters,9.5F);
+        if(damage){
+            p.health=p.health>damage?p.health-damage:0;
+            s.health_flash_time=1;
+            if(p.health==0){BeginChallengeDeath("PEEVES_ATTACK");return;}
+        }
+    }
     for(std::size_t i=0;i<s.character_draws.size();++i)(void)s.spell_targets.SetSceneOffset(i,s.character_draws[i].cutscene_offset);
+    if(s.map_id==kHogwartsReturnMapId&&!IsCutscenePlaying()){
+        const auto duel=AdvanceReturnDuel(s.return_duel,s.character_draws,c.graph,step,s.collision_triangles,body);
+        const auto sound=[&](const char* name){if(const auto i=GameplayDialogueIndex(s.frontend.assets,name))(void)s.audio.PlayWorldEffect(*i,.85F);};
+        if(duel.thrown)sound("Malfoy_throws");
+        if(duel.picked_up)sound("MAL_candy_pickup");
+        if(duel.landed)sound("MAL_candy_hits_floor");
+        if(duel.exploded)sound("MAL_candy_explodes");
+        if(duel.damage){p.health=p.health>duel.damage?p.health-duel.damage:0;s.health_flash_time=1;
+            if(!p.health){(void)malfoy::Lose(s.return_duel.motion);BeginChallengeDeath("MALFOY_CRACKER");return;}}
+    }
     if(s.projectile.flying){
-        for(const auto& actor:s.character_draws)if(actor.actor_reference==c.impact_actor&&AsciiFold(actor.class_name)=="tut1.tut1gnome"){
+        for(const auto& actor:s.character_draws)if(actor.actor_reference==c.impact_actor&&
+            (AsciiFold(actor.class_name)=="tut1.tut1gnome"||
+             (s.map_id==kHogwartsReturnMapId&&actor.actor_reference==s.hogwarts_return.metadata.peeves_actor))){
             if(!actor.enabled||actor.collision_disabled){c.impact_actor=0;s.projectile.flying=false;break;}
             const auto current=AddVector(s.projectile.origin,ScaleVector(s.projectile.direction,s.projectile.distance_m));
             auto destination=AddVector(actor.collision_center,actor.cutscene_offset);
@@ -732,7 +906,7 @@ void QuestScene::AdvanceChallenge(float seconds){
     reduce_effects();
     c.grid_hit_positions.clear();
     if(!c.graph.healthy()){
-        s.frontend.screen=FrontScreen::Main;s.frontend.message="CHALLENGE EVENT ERROR - CHECKPOINT PRESERVED";
+        s.frontend.ShowError("CHALLENGE EVENT ERROR - CHECKPOINT PRESERVED");
         s.front_anchor_valid=false;s.audio.StopDialogue();c.checkpoint_pending=false;
         HPVR_LOGE("[hpvr.quest.challenge] event_graph=FAILED save=UNCHANGED");return;
     }
@@ -743,4 +917,9 @@ void QuestScene::AdvanceChallenge(float seconds){
     }
     c.checkpoint_pending=false;
     if(s.map_id==1&&c.complete&&!s.intro_cutscene.playing)RequestBroomTravel();
+    if(s.map_id==kHogwartsReturnMapId&&c.complete&&!s.intro_cutscene.playing&&!s.hogwarts_return.completion_shown){
+        s.hogwarts_return.completion_shown=true;
+        p.completed_maps|=1U<<kHogwartsReturnMapId;SaveCheckpoint(true);
+        s.frontend.ShowDemoNotice(true);s.front_anchor_valid=false;
+    }
 }

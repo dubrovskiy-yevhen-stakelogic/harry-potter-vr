@@ -43,7 +43,17 @@ struct ChallengeSpatial {
     bool spell=false,inside=false,checkpoint=false;
     float arm_time=1;bool armed=false; // SavePoint's initial proximity guard; not checkpoint data.
     std::string spell_name="spellflip",proximity_class;
+    // CT_Box triggers: CollisionRadius along the actor's local X and
+    // CollisionWidth along its local Y. yaw is the actor yaw minus the
+    // PlayerStart yaw, i.e. local X in scene space is (sin yaw, 0, -cos yaw).
+    bool box=false;float width=0,yaw=0;
 };
+inline bool SpatialContainsXZ(const ChallengeSpatial& zone,const std::array<float,3>& d){
+    if(!zone.box)return std::hypot(d[0],d[2])<=zone.radius;
+    const float c=std::cos(zone.yaw),s=std::sin(zone.yaw);
+    return std::abs(d[0]*s-d[2]*c)<=zone.radius&&std::abs(d[0]*c+d[2]*s)<=zone.width;
+}
+inline float SpatialExtentXZ(const ChallengeSpatial& zone){return zone.box?std::max(zone.radius,zone.width):zone.radius;}
 // CutScene50 swaps Quirrell4 into the offstage OutQ mark and places
 // AfterBridgeQ (Quirrell1) at NewQLoc. Do not ground the retired clone
 // back into the room, or expose the waiting replacement through the gate.
@@ -123,8 +133,22 @@ float ChallengeBeanSweepFraction(const std::vector<CollisionTriangle>& collision
     }
     return fraction;
 }
+bool RewardStatue(const std::string& name){return name=="hprops.knight"||name=="hprops.hunchbackwitch"||name=="hprops.gregorysmarmy";}
+bool CharacterMatchesProximity(const CharacterDraw& actor,const std::string& type){
+    const auto cls=AsciiFold(actor.class_name);
+    return cls==type||cls.ends_with("."+type)||
+        (type=="basechar"&&cls.starts_with("harrypotter.")&&!actor.flying);
+}
+bool CharacterTouchesProximity(const CharacterDraw& actor,ChallengeSpatial zone){
+    if(!actor.enabled||!CharacterMatchesProximity(actor,zone.proximity_class))return false;
+    const auto delta=SubtractVector(AddVector(actor.base_origin,actor.cutscene_offset),zone.position);
+    if(zone.proximity_class=="basechar"){
+        zone.radius+=actor.collision_radius;zone.width+=actor.collision_radius;
+    }
+    return SpatialContainsXZ(zone,delta)&&std::abs(delta[1])<=zone.height+kPlayerCapsuleHalfHeightMeters;
+}
 ChallengeProp BeanSpawnerSource(const BeanDraw& bean,const std::vector<ChallengeProp>& props){
-    for(const auto& prop:props)if(prop.name=="hprops.knight"){
+    for(const auto& prop:props)if(RewardStatue(prop.name)){
         bool contains=true;
         for(unsigned axis=0;axis<3;++axis)
             if(bean.emission[axis]<prop.minimum[axis]-.3F||bean.emission[axis]>prop.maximum[axis]+.3F)contains=false;
@@ -137,7 +161,7 @@ void PrepareChallengeBeanEmission(BeanDraw& bean,const ChallengeProp& source,con
     auto anchor=ScaleVector(AddVector(source.minimum,source.maximum),.5F);
     anchor[1]=std::clamp(bean.emission[1],source.minimum[1]+.12F,std::max(source.minimum[1]+.12F,source.maximum[1]));
     auto desired_origin=bean.emission,desired_landing=bean.position;
-    if((source.name=="hprops.knight"&&approach)||chest::IsChest(source.name)){
+    if(RewardStatue(source.name)||chest::IsChest(source.name)){
         auto direction=SubtractVector(approach?*approach:bean.position,anchor);direction[1]=0;
         float length=std::hypot(direction[0],direction[2]);
         if(!approach||length>8||length<.01F||ChallengeBeanSweepFraction(collision,source,*approach,anchor)<.99F){
@@ -174,7 +198,7 @@ void PrepareChallengeBeanEmission(BeanDraw& bean,const ChallengeProp& source,con
         desired_landing=AddVector(desired_origin,travel);
     }
     const auto sweep=[&](const auto& a,const auto& b){return ChallengeBeanSweepFraction(collision,source,a,b);};
-    if(approach&&source.name!="hprops.knight"){
+    if(approach&&!RewardStatue(source.name)&&!chest::IsChest(source.name)){
         const auto toward=SubtractVector(anchor,*approach);
         if(DotVector(toward,toward)<64){
             const float fraction=sweep(*approach,anchor);
@@ -199,10 +223,15 @@ void PrepareChallengeBeanEmission(BeanDraw& bean,const ChallengeProp& source,con
     };
     // Cached reward Y may have been grounded on the old wall-facing side.
     // Re-query at the restored destination for vases as well as cauldrons.
+    desired_landing[1]=origin[1];
     desired_landing=ground(desired_landing);
     bean.emission_path=props::BuildEmissionPath(origin,desired_landing,sweep,ground);
     bean.emission_points=static_cast<unsigned>(bean.emission_path.size());
     bean.emission=bean.emission_path.front();bean.position=bean.emission_path.back();
+    if(bean.kind==2||bean.kind==4){
+        float floor;
+        if(FindPropGroundBelow(collision,bean.position,&floor))bean.card_floor=floor;
+    }
 }
 std::array<float,3> MoverPoint(const DoorDraw& d,const std::array<float,3>& p){
     if(d.challenge)return AddVector(movers::TransformPoint(p,d.placement,d.motion.pose),d.grid_offset);
@@ -217,7 +246,9 @@ bool LoadChallengeProps(const std::filesystem::path& root,const std::filesystem:
     const auto manifest=wand::build_hp1_character_manifest(root,map,0,{},true);
     if(manifest.status!=wand::Hp1ProfileStatus::ok)return false;
     std::vector<CollisionTriangle> visible_support;
-    if(AsciiFold(map.stem().string())=="lev_tut3"){
+    const auto map_name=AsciiFold(map.stem().string());
+    const bool castle_props=map_name=="lev_tut3"||map_name=="lev_tut3b";
+    if(castle_props){
         auto visible=vertices;
         for(auto& vertex:visible)if(vertex.polygon_flags&1U)vertex.polygon_flags|=kPolyNotSolid;
         visible_support=BuildCollisionTriangles(visible,static_cast<std::uint32_t>(visible.size()));
@@ -240,7 +271,7 @@ bool LoadChallengeProps(const std::filesystem::path& root,const std::filesystem:
     for(const auto& a:ordered){
         const auto cls=AsciiFold(a.qualified_class_name);
         const bool savebook=cls=="harrypotter.savepoint";
-        const bool chest=AsciiFold(map.stem().string())=="lev_tut3"&&chest::IsChest(cls);
+        const bool chest=castle_props&&chest::IsChest(cls);
         const bool teachers_desk=AsciiFold(map.stem().string())=="lev_tut3"&&cls=="harrypotter.transteachersdesk";
         if((!cls.starts_with("hprops.")&&!savebook&&!teachers_desk)||cls.ends_with("bean")||cls=="hprops.star"||
            cls.starts_with("hprops.wc"))continue;
@@ -251,7 +282,7 @@ bool LoadChallengeProps(const std::filesystem::path& root,const std::filesystem:
         }
         if(!meshes.contains(key)){
             LoadedStaticMesh mesh;if(!LoadStaticMesh(a.mesh_package.string(),a.mesh_reference,layers,&mesh))return false;
-            if(AsciiFold(map.stem().string())=="lev_tut3"&&(chest||cls=="hprops.knight"))
+            if(castle_props&&(chest||cls=="hprops.knight"))
                 if(!PoseStaticMesh(a.mesh_package,a.mesh_reference,chest?"start":"idle",mesh))return false;
             for(const auto& skin:a.skins){
                 if(skin.material_slot>=mesh.report.texture_layer_count)return false;
@@ -296,7 +327,7 @@ bool LoadChallengeProps(const std::filesystem::path& root,const std::filesystem:
             }
         }
         if(chest)origin[1]+=.012F; // Separate the original zero-thickness bottom from the floor.
-        const float angle=AsciiFold(map.stem().string())=="lev_tut3"&&(savebook||chest||cls=="hprops.knight"||cls=="hprops.padlock")?
+        const float angle=castle_props&&(savebook||chest||RewardStatue(cls)||cls=="hprops.padlock")?
             yaw+kTau*.5F-a.rotation_units[1]*kTau/65536.0F:yaw+a.rotation_units[1]*kTau/65536.0F;
         const auto transform=[&](const std::array<float,3>& p){return AddVector(origin,RotateYaw({p[0]*draw_scale,p[1]*vertical_scale,p[2]*draw_scale},angle));};
         ChallengeProp prop;prop.reference=a.actor_reference;prop.name=cls;
@@ -421,7 +452,8 @@ bool LoadChallengeStars(const std::filesystem::path& root,const std::filesystem:
     HPVR_LOGI("[hpvr.quest.challenge.stars] count=%u",stars);return stars==expected_stars;
 }
 bool LoadChallengeMetadata(const wand::Hp1ActorVisualCensus& census,
-    const hpvr_hp1_player_start_report& start,float yaw,ChallengeRuntime& challenge,unsigned expected_scenes=15){
+    const hpvr_hp1_player_start_report& start,float yaw,ChallengeRuntime& challenge,unsigned expected_scenes=15,
+    bool hogwarts_return=false){
     if(!challenge.graph.Load(census))return false;
     for(const auto& a:census.actors){
         const auto cls=AsciiFold(a.qualified_class_name);
@@ -439,11 +471,31 @@ bool LoadChallengeMetadata(const wand::Hp1ActorVisualCensus& census,
             challenge.spatial.push_back({a.actor_reference,cls,AsciiFold(a.tag),AsciiFold(a.event),ActorLocalPosition(a,start,yaw),std::max(radius,.05F),
                 a.collision_height_serialized?a.collision_height*kMetersPerUnrealUnit:checkpoint?.6F:.8F,spell,false,checkpoint,1,false,"spellflip",{}});
             auto& zone=challenge.spatial.back();
+            bool spell_name_serialized=false,box=false;float width=0;
             for(const auto& property:a.serialized_properties){
                 const auto name=AsciiFold(property.name);
-                if(name=="spellname"&&property.text_value_serialized)zone.spell_name=AsciiFold(property.text_value);
+                if(name=="spellname"&&property.text_value_serialized){zone.spell_name=AsciiFold(property.text_value);spell_name_serialized=true;}
                 if(name=="classproximitytype"&&property.object_reference_serialized&&!property.object_path.empty())
                     zone.proximity_class=AsciiFold(property.object_path.back());
+                if(name=="collidetype"&&property.value.size()==1)box=property.value[0]==2;
+                if(name=="collisionwidth"&&property.value.size()==4){
+                    float value=0;std::memcpy(&value,property.value.data(),4);
+                    if(std::isfinite(value)&&value>0&&value<10000)width=value*kMetersPerUnrealUnit;
+                }
+                // Map 4 authors the padlock's spell only as the eSpellType enum.
+                if(hogwarts_return&&!spell_name_serialized&&name=="evulnerabletospell"&&property.value.size()==1){
+                    if(property.value[0]==0x01)zone.spell_name="spellaloho";
+                    else if(property.value[0]==0x0d)zone.spell_name="spellflip";
+                }
+            }
+            // Released maps keep their tuned cylinders; the Peeves arena needs
+            // the authored thin box or its doors seal before Harry enters.
+            if(hogwarts_return&&box&&width>0){
+                zone.box=true;zone.width=width;zone.yaw=a.rotation_units[1]*kTau/65536-yaw;
+            }
+            if(hogwarts_return&&zone.proximity_class=="basechar"){
+                if(!a.collision_radius_serialized)zone.radius=.4F;
+                if(!a.collision_height_serialized)zone.height=.4F;
             }
         }
         const auto object=AsciiFold(a.object_name);

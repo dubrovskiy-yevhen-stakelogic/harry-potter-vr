@@ -18,6 +18,15 @@ int main(int argc,char**argv){
  }
  hpvr::quest::QuestFrontEnd f;
  if(!hpvr::quest::LoadFrontAssets(argv[1],&f.assets,map_id)){std::cerr<<f.assets.error;return 3;}
+ if(map_id==hpvr::quest::kHogwartsReturnMapId){
+  const auto& scroll=f.assets.scroll_pickup;
+  if(scroll.status!=hpvr::wand::Hp1ProfileStatus::ok||scroll.samples.empty()||
+     scroll.object_name!="pickup_page"||std::ranges::any_of(f.assets.gameplay_audio,
+       [](const auto& clip){return clip.object_name=="pickup_page";})){
+   std::cerr<<"Scroll pickup must load as original PCM, not an MPEG cache entry\n";return 3;
+  }
+  std::cout<<"SCROLL_PCM=PASS samples="<<scroll.samples.size()<<" rate="<<scroll.sample_rate<<'\n';
+ }
  f.progress.map_id=map_id;
  const std::filesystem::path output(argv[2]);std::filesystem::create_directories(output);
  std::ofstream plan(output/"audio-plan.tsv");
@@ -30,9 +39,10 @@ int main(int argc,char**argv){
  for(const auto&p:f.assets.story)emit(p.voice,false);
  for(const auto&m:f.assets.music)emit(m,true);
  for(const auto&m:f.assets.gameplay_audio)emit(m,false);
- auto image=[&](const std::string& name,bool hud=false){
+ auto image=[&](const std::string& name,bool hud=false,int boss_hits=-1){
   std::vector<unsigned char> pixels(640*480*3,0);
   auto quads=hud?f.HudQuads(14,true):f.Quads();
+  if(boss_hits>=0){const auto boss=f.PeevesHealthQuads(static_cast<unsigned>(boss_hits),true);quads.insert(quads.end(),boss.begin(),boss.end());}
   if(hud){
    const auto badge=f.HousePointQuads();quads.insert(quads.end(),badge.begin(),badge.end());
    unsigned value=165,place=0;
@@ -76,6 +86,8 @@ int main(int argc,char**argv){
  f.screen=hpvr::quest::FrontScreen::Report;image("report.ppm");
  f.screen=hpvr::quest::FrontScreen::Objective;image("objective.ppm");
  image("hud.ppm",true);
+ if(map_id==hpvr::quest::kHogwartsReturnMapId)for(unsigned hits=0;hits<=4;++hits)
+  image("peeves-health-"+std::to_string(hits)+".ppm",true,static_cast<int>(hits));
  f.screen=hpvr::quest::FrontScreen::Vr;f.selection=1;image("vr-settings.ppm");
  f.progress.health=90;image("hud-damaged.ppm",true);
  f.screen=hpvr::quest::FrontScreen::Debug;f.selection=0;image("debugger.ppm");

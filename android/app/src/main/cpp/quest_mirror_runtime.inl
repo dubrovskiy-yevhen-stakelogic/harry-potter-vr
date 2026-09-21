@@ -5,7 +5,7 @@ struct MirrorPush {
 static_assert(sizeof(MirrorPush)==128);
 void QuestScene::RecordMirrorCapture(VkCommandBuffer command,const Matrix4& projection){
     auto& s=*state_;s.captured_mirrors.assign(s.mirrors.size(),false);
-    if(!IsGpuReady()||s.map_id!=3||!s.frontend.WorldVisible()||s.mirrors.empty())return;
+    if(!IsGpuReady()||(s.map_id!=3&&s.map_id!=kHogwartsReturnMapId)||!s.frontend.WorldVisible()||s.mirrors.empty())return;
     Matrix4 inverse{};
     if(!InvertReflectionMatrix(projection,inverse)||std::abs(inverse[11])<1e-7F)return;
     const std::array<float,3> eye{inverse[8]/inverse[11],inverse[9]/inverse[11],inverse[10]/inverse[11]};

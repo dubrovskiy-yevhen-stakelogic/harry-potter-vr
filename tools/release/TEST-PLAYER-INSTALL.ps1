@@ -57,6 +57,7 @@ Assert-HpvrReject { Get-HpvrMapInputs $owned $false $true } 'Broom map requires 
 Assert-HpvrTest (@(Get-HpvrMapInputs $owned $true).Count -eq 2) 'Broom file presence does not expand older release selection'
 Assert-HpvrReject { Get-HpvrMapInputs $owned $true $true $true } 'Missing Charms map rejected'
 [IO.File]::WriteAllBytes((Join-Path $owned 'Maps/Lev_Tut3.unr'), [byte[]](10,11,12))
+[IO.File]::WriteAllBytes((Join-Path $owned 'Maps/Lev_Tut3b.unr'), [byte[]](13,14,15))
 Assert-HpvrTest (@(Get-HpvrMapInputs $owned $true $true $true).Count -eq 4) 'Four-map selection includes Charms'
 Assert-HpvrReject { Get-HpvrMapInputs $owned $true $false $true } 'Charms cannot bypass broom map'
 [IO.File]::WriteAllBytes((Join-Path $owned 'system\HP.exe'), [byte[]](77,90))
@@ -117,6 +118,9 @@ Assert-HpvrReject { Get-HpvrReleaseMapIds ([pscustomobject]@{versionCode=56;mapI
 Assert-HpvrTest (@(Get-HpvrReleaseMapIds ([pscustomobject]@{versionCode=57})).Count -eq 1) 'New version alone cannot silently expand a legacy manifest'
 Assert-HpvrTest ((@(Get-HpvrReleaseMapIds ([pscustomobject]@{versionCode=71;mapIds=@(0,1,2,3)})) -join ',') -eq '0,1,2,3') 'Current release supports four maps'
 Assert-HpvrReject { Get-HpvrReleaseMapIds ([pscustomobject]@{versionCode=70;mapIds=@(0,1,2,3)}) } 'Old APK cannot claim four-map installer contract'
+Assert-HpvrTest ((@(Get-HpvrReleaseMapIds ([pscustomobject]@{versionCode=85;mapIds=@(0,1,2,3,4)})) -join ',') -eq '0,1,2,3,4') 'Release 0.1.4 selects all five maps'
+Assert-HpvrReject { Get-HpvrReleaseMapIds ([pscustomobject]@{versionCode=84;mapIds=@(0,1,2,3,4)}) } 'Development APK cannot claim five-map release contract'
+Assert-HpvrReject { Get-HpvrReleaseMapIds ([pscustomobject]@{versionCode=85;mapIds=@(0,1,2,3,4,5)}) } 'Unrestored sixth map is rejected'
 foreach ($badMaps in @(@(0,1,1), @(0,2,1), @(0,1,3), @(0,1,2,3))) {
     Assert-HpvrReject { Get-HpvrReleaseMapIds ([pscustomobject]@{versionCode=57;mapIds=$badMaps}) } 'Three-map release rejects duplicate, reordered, or unsupported maps'
 }
@@ -224,6 +228,20 @@ $script:graphCalls.Clear()
 $closure=Get-HpvrDependencySet $owned 'synthetic-graph.exe' ($broomMapIds -contains 1) ($broomMapIds -contains 2)
 Assert-HpvrTest ($script:graphCalls.Count -eq 3 -and $closure.Inputs.Relative -contains 'Maps/Lev_Tut2.unr') 'Three-map release scans broom dependency closure'
 Assert-HpvrTest (@($closure.Inputs | Where-Object {$_.Relative -eq 'system/HPBase.u'}).Count -eq 1) 'Three-map closure deduplicates shared packages'
+Assert-HpvrTest ($closure.Inputs.Relative -notcontains 'Textures/HP_FX.utx') 'Three-map closure does not require Charms textures'
+Assert-HpvrReject {Get-HpvrDependencySet $owned 'synthetic-graph.exe' $true $true $true} 'Charms closure requires padlock sparkle textures'
+[IO.File]::WriteAllBytes((Join-Path $owned 'Textures/HP_FX.utx'),[byte[]](1,2,3))
+$script:graphCalls.Clear()
+$closure=Get-HpvrDependencySet $owned 'synthetic-graph.exe' $true $true $true
+Assert-HpvrTest ($script:graphCalls.Count -eq 4 -and @($closure.Inputs | Where-Object {$_.Relative -ceq 'Textures/HP_FX.utx'}).Count -eq 1) 'Four-map closure includes by-name Charms textures'
+Assert-HpvrTest ($closure.Inputs.Relative -notcontains 'system/pickup.int') 'Earlier maps do not require the return-map letter file'
+Assert-HpvrReject {Get-HpvrDependencySet $owned 'synthetic-graph.exe' $true $true $true $true} 'Return closure rejects a missing owl letter file'
+[IO.File]::WriteAllBytes((Join-Path $owned 'system/pickup.int'),[byte[]](1,2,3))
+$script:graphCalls.Clear()
+$closure=Get-HpvrDependencySet $owned 'synthetic-graph.exe' $true $true $true $true
+Assert-HpvrTest ($script:graphCalls.Count -eq 5 -and $closure.Inputs.Relative -contains 'Maps/Lev_Tut3b.unr') 'Five-map release includes return-map dependency closure'
+Assert-HpvrTest (@($closure.Inputs | Where-Object {$_.Relative -ceq 'system/pickup.int'}).Count -eq 1) 'Five-map closure includes exactly one owned owl letter file'
+Assert-HpvrReject { Get-HpvrMapInputs $owned $true $true $false $true } 'Return map cannot bypass Charms dependencies'
 
 # Scene preparation stays opt-in by release capability, never by the presence
 # of an arbitrary EXE beside an older installer. All native work below is mocked.
@@ -275,7 +293,7 @@ function Invoke-HpvrChecked([string]$Executable,[string[]]$Arguments,[string]$La
     if($script:sceneMode -eq 'extra'){[IO.File]::WriteAllBytes((Join-Path $Arguments[2] 'unexpected.hpvc'),[byte[]](1))}
     'SCENE_PREPARE=PASS'
 }
-function New-HpvrSceneFixture([bool]$Challenge=$true, [bool]$Broom=$false, [bool]$Charms=$false){
+function New-HpvrSceneFixture([bool]$Challenge=$true, [bool]$Broom=$false, [bool]$Charms=$false, [bool]$Return=$false){
     $run=Join-Path $fixture ('private-'+[Guid]::NewGuid().ToString('N'))
     $stage=Join-Path $run 'HP'
     New-Item -ItemType Directory -Path (Join-Path $stage 'Maps') | Out-Null
@@ -283,11 +301,20 @@ function New-HpvrSceneFixture([bool]$Challenge=$true, [bool]$Broom=$false, [bool
     if($Challenge){[IO.File]::WriteAllBytes((Join-Path $stage 'Maps/Lev_Tut1b.unr'),[byte[]](4,5,6))}
     if($Broom){[IO.File]::WriteAllBytes((Join-Path $stage 'Maps/Lev_Tut2.unr'),[byte[]](7,8,9))}
     if($Charms){[IO.File]::WriteAllBytes((Join-Path $stage 'Maps/Lev_Tut3.unr'),[byte[]](10,11,12))}
+    if($Return){[IO.File]::WriteAllBytes((Join-Path $stage 'Maps/Lev_Tut3b.unr'),[byte[]](13,14,15))}
     return [pscustomobject]@{Run=$run;Stage=$stage}
 }
 $testScene=New-HpvrSceneFixture $true $true $true
 $prepared=@(Invoke-HpvrScenePreparation $sceneToolPath $testScene.Stage $owned $kit $testScene.Run $true $true $true)
 Assert-HpvrTest ($prepared.Count -eq 4 -and $prepared[3].path -eq 'Cache/Scenes/map-3.hpvc' -and $script:sceneCalls.Count -eq 8) 'All four maps are prepared and verified'
+$script:sceneCalls.Clear()
+$testScene=New-HpvrSceneFixture $true $true $true $true
+$prepared=@(Invoke-HpvrScenePreparation $sceneToolPath $testScene.Stage $owned $kit $testScene.Run $true $true $true $true)
+Assert-HpvrTest ($prepared.Count -eq 5 -and $prepared[4].path -eq 'Cache/Scenes/map-4.hpvc' -and $script:sceneCalls.Count -eq 10) 'All five release maps are prepared and verified'
+foreach ($map in 0..4) {
+    Assert-HpvrTest ($script:sceneCalls[2*$map].Arguments[4] -eq [string]$map -and $script:sceneCalls[2*$map+1].Arguments[4] -eq [string]$map -and $script:sceneCalls[2*$map+1].Arguments[-1] -eq '--verify') ("Five-map release independently verifies map $map")
+    Assert-HpvrTest ($prepared[$map].sha256 -eq (Get-FileHash -LiteralPath (Join-Path $testScene.Stage $prepared[$map].path) -Algorithm SHA256).Hash) ("Five-map cache $map matches transfer entry")
+}
 $script:sceneCalls.Clear()
 $testScene=New-HpvrSceneFixture
 $prepared=@(Invoke-HpvrScenePreparation $sceneToolPath $testScene.Stage $owned $kit $testScene.Run)
@@ -381,10 +408,10 @@ $mapTables=@($packageAst.FindAll({param($node)
 Assert-HpvrTest ($mapTables.Count -eq 1) 'Packager has one explicit release map declaration'
 $mapValue=@($mapTables[0].KeyValuePairs | Where-Object {$_.Item1.Extent.Text -eq 'mapIds'})[0].Item2.Extent.Text
 $mapEvaluator=[scriptblock]::Create('[pscustomobject]@{ mapIds = ' + $mapValue + ' }')
-foreach($code in @(37,54,56,57,71)) {
+foreach($code in @(37,54,56,57,71,84,85)) {
     $hpvrMetadata=[pscustomobject]@{versionCode=$code}
     $roundtrip=(& $mapEvaluator | ConvertTo-Json -Depth 4) | ConvertFrom-Json
-    $expectedCount=if($code -eq 37){1}elseif($code -ge 71){4}elseif($code -ge 57){3}else{2}
+    $expectedCount=if($code -eq 37){1}elseif($code -ge 85){5}elseif($code -ge 71){4}elseif($code -ge 57){3}else{2}
     Assert-HpvrTest ($roundtrip.mapIds -is [Array] -and $roundtrip.mapIds.Count -eq $expectedCount -and $roundtrip.mapIds[0] -eq 0) ("Packager C$code map declaration survives JSON as an array")
     if($code -eq 54){Assert-HpvrTest ($roundtrip.mapIds[1] -eq 1) 'Packager alpha includes challenge map one'}
     if($code -eq 57){Assert-HpvrTest ($roundtrip.mapIds[1] -eq 1 -and $roundtrip.mapIds[2] -eq 2) 'Packager new alpha includes challenge and broom maps'}
@@ -449,6 +476,11 @@ $script:audioCalls.Clear()
 $audioFixture = New-HpvrAudioFixture
 $plan = Get-HpvrFrontendAudioPlan $owned 'synthetic-audio.exe' $audioFixture.Encoded $audioFixture.Run $true $true $true
 Assert-HpvrTest ($plan.Count -eq 24 -and $script:audioCalls.Count -eq 4 -and $script:audioCalls[3].Arguments[-1] -eq '3') 'Charms audio is included and deduplicated'
+$script:audioCalls.Clear()
+$audioFixture = New-HpvrAudioFixture
+$plan = Get-HpvrFrontendAudioPlan $owned 'synthetic-audio.exe' $audioFixture.Encoded $audioFixture.Run $true $true $true $true
+Assert-HpvrTest ($plan.Count -eq 25 -and $script:audioCalls.Count -eq 5 -and $script:audioCalls[4].Arguments[-1] -eq '4') 'Return-map audio is enumerated and merged with preceding levels'
+Assert-HpvrReject { Get-HpvrFrontendAudioPlan $owned 'synthetic-audio.exe' $audioFixture.Encoded $audioFixture.Run $true $true $false $true } 'Return audio cannot omit Charms'
 
 $permissionCommands = @(Get-HpvrDataPermissionCommands @('system/HPBase.u','Cache/Audio/test.s16','Cache/Scenes/map-3.hpvc'))
 $permissionText = $permissionCommands -join "`n"

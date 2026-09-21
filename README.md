@@ -19,8 +19,9 @@ Build, packaging and data-preparation scripts live in `tools/workspace/`.
 ## Included levels
 
 This early alpha includes the opening Hogwarts tutorials, the first Flipendo
-lesson, **Flipendo Challenge**, **Broomstick Training**, and the restored
-**Alohomora / Charms level**. A user-owned US PC copy is required.
+lesson, **Flipendo Challenge**, **Broomstick Training**, the restored
+**Alohomora / Charms level**, and **Hogwarts Return**, including Peeves and
+the Malfoy duel. Version **0.1.4** requires a user-owned US PC copy.
 Original maps, textures, models, music and dialogue are not included in the
 download.
 
@@ -36,8 +37,8 @@ download.
 - **Optional offline voice casting:** aim at a compatible target and pronounce
   Flipendo, Alohomora or Wingardium Leviosa while holding the trigger.
   Voice hints are optional; recognition varies by speaker.
-- **Four implemented maps:** the opening tutorials, Flipendo Challenge,
-  Broomstick Training, and the Alohomora / Charms level.
+- **Five implemented maps:** the opening tutorials, Flipendo Challenge,
+  Broomstick Training, Alohomora / Charms, and Hogwarts Return.
 - **VR movement:** smooth locomotion, toggle sprint, snap or smooth turning, jumping,
   automatic ledge climbing and L3 + R3 height recentering.
 - **Live VR menu**, accessible during gameplay and cutscenes, with saved settings.
@@ -54,7 +55,7 @@ download.
 
 1. Extract the complete release ZIP on a Windows PC.
 2. Connect your Quest 3 with developer mode enabled and USB debugging authorised.
-3. Run `INSTALL-HPVR.cmd` and select your original US PC game folder.
+3. Run `INSTALL.bat` and select your original US PC game folder.
 4. After installation completes, open Harry Potter VR from **Unknown Sources**
    on the headset.
 
@@ -83,14 +84,14 @@ bypass a signing-key mismatch: that can erase saves and imported data.
 | Adjust value | Left stick left / right |
 
 **CLASSIC:** hold the trigger to aim, then release. An eligible target displays
-the Flipendo symbol and selects that spell automatically.
+the appropriate spell symbol. You can change targets before releasing.
 
-**VISIBLE GESTURE / GESTURE:** hold to aim, acquire a target, draw the curl, then
+**VISIBLE GESTURE / GESTURE:** hold to aim, acquire a target, draw its spell symbol, then
 release. VISIBLE GESTURE shows your stroke; GESTURE hides it. The classroom
 lesson keeps its guided exercise.
 
 **VOICE CASTING:** enable it in the VR menu, grant microphone permission, then
-hold the trigger on a Flipendo target and say the spell. Keep holding to cast
+hold the trigger on a compatible target and say the spell. Keep holding to cast
 again after the projectile and Harry's incantation finish. Release to change
 targets. It works with voice hints hidden and is available in the challenge.
 
@@ -108,14 +109,14 @@ adjust **TURN SPEED** from 30 to 180 degrees/second in the VR menu. Settings
 persist between sessions. Refresh-rate choices
 depend on headset support; ORIGINAL restores the original lesson difficulty.
 
-This is an early alpha, not the complete game. It ends after Broomstick
-Training; later levels, Quidditch and the full original options menu are not
+This is an early port, not the complete game. It ends after Hogwarts Return
+and the Malfoy duel; later levels, Quidditch and the full original options menu are not
 implemented. Original PC saves cannot be imported.
 
-Fountain water uses the original texture; its original procedural ripple
-simulation is not implemented yet.
+Mirrors and fountain water use planar reflections. Water has animated surface
+ripples; its rendering is an approximation of the original effect.
 
-**Voice casting is experimental and has only been tested by the author.**
+**Voice casting is experimental.**
 Some pronunciations may be missed; similar-sounding phrases can trigger a spell
 while aiming. Recognition runs locally, without uploading or saving your voice.
 No internet connection or personal voice training is needed.

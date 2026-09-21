@@ -7,6 +7,32 @@
 #include <fstream>
 int main(int argc,char** argv) {
  if(argc<2)return 2;
+ if(argc==3 && std::string(argv[2])=="--navigation") {
+  const auto navigation=hpvr::wand::inspect_hp1_navigation(argv[1]);
+  if(navigation.status!=hpvr::wand::Hp1ProfileStatus::ok){std::cerr<<navigation.error;return 4;}
+  for(std::size_t i=0;i<navigation.paths.size();++i){const auto& p=navigation.paths[i];
+   std::cout<<i<<": "<<p.start<<" -> "<<p.end<<" distance="<<p.distance<<" radius="<<p.radius<<" height="<<p.height<<" flags="<<p.flags<<" pruned="<<p.pruned<<'\n';}
+  return 0;
+ }
+ if(argc==3 && std::string(argv[2])=="--level-tail") {
+  const auto level=hpvr::wand::inspect_hp1_level_handles(argv[1]);
+  if(level.status!=hpvr::wand::Hp1ProfileStatus::ok){std::cerr<<level.error;return 4;}
+  const auto payload=hpvr::wand::load_hp1_export_payload(argv[1],level.level_reference);
+  if(payload.status!=hpvr::wand::Hp1ProfileStatus::ok)return 4;
+  std::cout<<"offset="<<level.model_end_offset<<" size="<<payload.bytes.size()<<'\n';
+  for(auto i=level.model_end_offset;i<std::min(payload.bytes.size(),level.model_end_offset+512);++i){
+   if((i-level.model_end_offset)%16==0)std::cout<<'\n'<<std::dec<<i<<": ";
+   std::cout<<std::hex<<std::setw(2)<<std::setfill('0')<<unsigned(payload.bytes[i])<<' ';
+  }
+  return 0;
+ }
+ if(argc==4 && std::string(argv[2])=="--animation") {
+  const auto animation=hpvr::wand::load_hp1_animation(argv[1],std::stoi(argv[3]));
+  if(animation.status!=hpvr::wand::Hp1ProfileStatus::ok){std::cerr<<animation.error;return 4;}
+  for(std::size_t i=0;i<animation.sequences.size();++i)
+   std::cout<<"sequence="<<animation.sequences[i].name<<" duration="<<(i<animation.moves.size()?animation.moves[i].track_time:0)<<'\n';
+  return 0;
+ }
  if(argc==5 && std::string(argv[2])=="--payload") {
   auto p=hpvr::wand::load_hp1_export_payload(argv[1],std::stoi(argv[3]));
   if(p.status!=hpvr::wand::Hp1ProfileStatus::ok)return 4;

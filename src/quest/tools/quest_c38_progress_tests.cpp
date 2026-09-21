@@ -137,7 +137,7 @@ int main(int argc,char** argv){
         }
         save.quest_stage=65;Check(!WriteProgress(journal,1,&save),"challenge stage overflow rejected");
         save.map_id=0;save.quest_stage=24;Check(!WriteProgress(journal,1,&save),"tutorial bounds preserved");
-        save.map_id=4;save.quest_stage=0;Check(!WriteProgress(journal,1,&save),"unknown map rejected");
+        save.map_id=5;save.quest_stage=0;Check(!WriteProgress(journal,1,&save),"unknown map rejected");
         save.map_id=1;save.banked_beans=1000001;Check(!WriteProgress(journal,1,&save),"bean counter bound");
         save.banked_beans=2;save.challenge_stars=1025;Check(!WriteProgress(journal,1,&save),"star counter bound");
         save.challenge_stars=3;save.activated_events={1,1};Check(!WriteProgress(journal,1,&save),"duplicate event rejected");
@@ -184,7 +184,7 @@ int main(int argc,char** argv){
         Bank(malformed,Body(8)+"1 0 0 0 \"\" \"\"\n");
         Check(ReadProgress(malformed,0,&read)&&read.map_id==1,"known-good synthetic v8 fixture");
         expect_bad(Body(10)+"0 0 0 0 \"\" \"\"\n","future format rejected");
-        expect_bad(Body(8)+"4 0 0 0 \"\" \"\"\n","corrupt map rejected despite valid checksum");
+        expect_bad(Body(8)+"5 0 0 0 \"\" \"\"\n","corrupt map rejected despite valid checksum");
         expect_bad(Body(8)+"1 0 0 1025 \"\" \"\"\n","oversized event allocation rejected");
         expect_bad(Body(8)+"1 0 0 -1 \"\" \"\"\n","negative event count rejected");
         expect_bad(Body(8)+"1 0 0 2 11 11 \"\" \"\"\n","duplicate serialized events rejected");

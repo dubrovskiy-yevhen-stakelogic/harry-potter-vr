@@ -50,5 +50,18 @@ int main(){try{
     PrepareChallengeBeanEmission(bean,source,collision);
     Check(bean.emission_points==17&&bean.position[0]<1,"reward's destination remains on reachable side");
     for(unsigned step=0;step<=100;++step){bean.emission_time=float(step)/100;Check(BeanWorldPosition(bean)[0]<1,"rendered reward path never crosses wall");}
+    const std::vector<CollisionTriangle> floors{
+        Triangle({-10,0,-10},{10,0,10},{10,0,-10}),Triangle({-10,0,-10},{-10,0,10},{10,0,10}),
+        Triangle({-10,5,-10},{10,5,10},{10,5,-10}),Triangle({-10,5,-10},{-10,5,10},{10,5,10})};
+    for(const auto* name:{"hprops.woodchest","hprops.hunchbackwitch","hprops.knight","hprops.gregorysmarmy"}){
+        ChallengeProp elevated; elevated.name=name;elevated.minimum={-.4F,5,-.4F};elevated.maximum={.4F,7,.4F};
+        BeanDraw reward;reward.actor_reference=65;reward.emission={0,6.8F,0};reward.position={0,.18F,0};
+        const std::array<float,3> player{0,5.84F,2};
+        PrepareChallengeBeanEmission(reward,elevated,floors,&player);
+        Check(reward.position[1]>5&&reward.position[1]<5.3F,"reward lands on source storey, not cached lower floor");
+        if(RewardStatue(name)||chest::IsChest(name))
+            Check(std::hypot(reward.position[0],reward.position[2])>.6F,"statue and chest rewards leave their source");
+        for(const auto& point:reward.emission_path)Check(point[1]>=5,"reward path cannot cross the upper floor");
+    }
     std::cout<<"CHALLENGE_PROPS_TESTS=PASS\n";return 0;
 }catch(const std::exception& error){std::cerr<<error.what()<<'\n';return 1;}}

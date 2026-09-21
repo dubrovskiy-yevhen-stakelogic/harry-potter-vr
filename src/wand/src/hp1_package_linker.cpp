@@ -643,7 +643,11 @@ Hp1CharacterManifest build_hp1_character_manifest(
                 ++result.non_character_actor_count;
                 continue;
             }
-            if (hidden || (draw_type.has_value() && *draw_type != 2U)) {
+            // Hedwig's class default is bHidden; the level's cutscenes reveal
+            // her. Keep such actors, flagged, when the instance does not hide.
+            const bool hidden_by_default = hidden && !actor.hidden_serialized &&
+                ascii_equal_fold(actor.qualified_class_name, "HarryPotter.hedwig");
+            if ((hidden && !hidden_by_default) || (draw_type.has_value() && *draw_type != 2U)) {
                 ++result.hidden_actor_count;
                 continue;
             }
@@ -673,6 +677,7 @@ Hp1CharacterManifest build_hp1_character_manifest(
                 {},
             });
             for(const auto& [slot,skin]:skins) result.actors.back().skins.push_back(skin);
+            result.actors.back().hidden_by_default = hidden_by_default;
         }
         result.status = Hp1ProfileStatus::ok;
     } catch (const std::bad_alloc&) {

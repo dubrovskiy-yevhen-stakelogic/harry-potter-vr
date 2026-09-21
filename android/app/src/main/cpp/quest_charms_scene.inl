@@ -55,6 +55,21 @@ struct CharmsRuntime {
     bool reflected_player_valid=false;
     float reflected_walk_time=0;
 };
+void UpdateReflectedPlayerAnimation(CharmsRuntime& state,std::vector<CharacterDraw>& actors,
+                                    const std::array<float,3>& body,float seconds,bool controlled){
+    if(controlled){state.reflected_player_valid=false;state.reflected_walk_time=0;return;}
+    const float step=std::clamp(seconds,0.F,.05F);
+    const auto displacement=SubtractVector(body,state.reflected_player_position);
+    const float distance=std::hypot(displacement[0],displacement[2]);
+    state.reflected_walk_time=std::max(0.F,state.reflected_walk_time-step);
+    if(state.reflected_player_valid&&distance>step*.2F&&distance<.5F)state.reflected_walk_time=.15F;
+    state.reflected_player_position=body;state.reflected_player_valid=true;
+    for(auto& actor:actors)if(actor.player){
+        const std::string clip=state.reflected_walk_time>0&&actor.clips.contains("run")?"run":"breathe";
+        if(actor.active_clip!=clip){actor.active_clip=clip;actor.animation_time=0;}
+        actor.animation_loop=true;
+    }
+}
 void UpdateCharmsPickupAttachments(const CharmsRuntime& charms,const std::vector<DoorDraw>& doors,std::vector<BeanDraw>& pickups){
     for(auto& pickup:pickups){
         pickup.attachment_offset={};

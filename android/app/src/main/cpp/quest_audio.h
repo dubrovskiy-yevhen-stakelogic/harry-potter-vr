@@ -31,6 +31,8 @@ public:
                    const std::filesystem::path& cache_directory);
     bool Start();
     bool ConfigureTutorialFrog(const wand::Hp1PcmSound& source);
+    bool ConfigureScrollPickup(const wand::Hp1PcmSound& source);
+    void PlayScrollPickup();
     bool ConfigureBeanPickup(std::size_t index);
     bool ConfigureMusic(const std::vector<wand::Hp1MpegSound>& sources,
                         const std::filesystem::path& cache);
@@ -48,6 +50,10 @@ public:
     [[nodiscard]] bool PlayDialogue(std::size_t index);
     bool PlayWorldEffect(std::size_t index,float gain);
     void PlayBeanPickup();
+    bool ConfigureCardPickup(std::size_t index);
+    void PlayCardPickup();
+    bool ConfigureCardAppearance(std::size_t index);
+    void PlayCardAppearance();
     [[nodiscard]] float DialogueDurationSeconds(std::size_t index) const;
     [[nodiscard]] bool DialogueFinished(std::size_t index) const;
     [[nodiscard]] std::size_t DialogueClipCount() const noexcept;
@@ -95,7 +101,12 @@ private:
     std::atomic<unsigned> effect_index_{0};
     std::atomic<float> effect_gain_{0};
     PickupAudioCue bean_cue_;
+    PickupAudioCue card_cue_;
+    PickupAudioCue card_appearance_cue_;
+    std::size_t card_appearance_index_=std::numeric_limits<std::size_t>::max();
+    std::size_t card_sound_index_=std::numeric_limits<std::size_t>::max();
     std::size_t bean_sound_index_ = std::numeric_limits<std::size_t>::max();
+    std::size_t scroll_sound_index_ = std::numeric_limits<std::size_t>::max();
     std::atomic<std::uint32_t> dialogue_index_{
         std::numeric_limits<std::uint32_t>::max()};
     std::atomic<bool> wand_drawing_{false};

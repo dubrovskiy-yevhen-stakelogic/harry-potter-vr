@@ -52,6 +52,8 @@ public:
     void UpdateExitTracking(const ViewPose& local_head,const ViewPose& reference,bool valid);
     void ToggleVrMenu();
     void SetPerformance(const PerformanceSnapshot& performance);
+    // Rebuilds the main-menu error text; call only while the GPU is idle.
+    void RefreshErrorNotice();
     void RecordFrontDraw(VkCommandBuffer command_buffer,const Matrix4& view_projection) const;
     void DestroyGpu();
     void RecordMirrorCapture(VkCommandBuffer command,const Matrix4& projection);
@@ -138,6 +140,7 @@ private:
     void AdvanceChallenge(float seconds);
     void StartChallengeScene(std::int32_t reference);
     void RequestChallengeTravel();
+    void RequestReturnTravel();
     void RebuildChallengeCollision();
     void RestoreCurrentProgress();
     void AdvanceIntroCutscene(float delta_seconds);

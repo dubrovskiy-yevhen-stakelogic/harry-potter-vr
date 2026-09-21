@@ -21,7 +21,8 @@ void TestMapPermissions() {
         Check(!MapAllowsSpellInput(kBroomstickTrainingMapId, path),
               "broom lesson blocks basic, gesture and voice casting");
         Check(MapAllowsSpellInput(kCharmsTrainingMapId,path),"charms permits walking spell paths");
-        for (const unsigned map : {4U, 999U, std::numeric_limits<unsigned>::max()}) {
+        Check(MapAllowsSpellInput(kHogwartsReturnMapId,path),"return map permits walking spell paths");
+        for (const unsigned map : {5U, 999U, std::numeric_limits<unsigned>::max()}) {
             Check(!MapAllowsSpellInput(map, path), "unknown map cannot inherit wand input");
         }
     }

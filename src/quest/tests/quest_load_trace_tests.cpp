@@ -58,6 +58,18 @@ int main(){
         std::ifstream events(temporary/"scene-events-3.log");
         std::string all((std::istreambuf_iterator<char>(events)),{});events.close();
         Check(all.find("MANTLE_INTERRUPTED")!=std::string::npos&&all.find("ref=1526")!=std::string::npos,"event journal survives scene reload");
+        {
+            SceneLoadTrace trace(saves,4);trace.Stage("ASSET_CACHE_REJECTED_REBUILD");
+            SceneLoadTrace::Note(saves,4,"SCENE CACHE REJECTED: checksum");
+            SceneLoadTrace::Note(saves,4,std::string(400,'x'));
+        }
+        SceneLoadTrace::Append(saves,4,"TRANSFER_CPU_FAILED");
+        Check(SceneLoadTrace::LastStage(saves,4)=="ASSET_CACHE_REJECTED_REBUILD","failure markers keep the failed milestone");
+        const auto detail=SceneLoadTrace::Detail(saves,4);
+        Check(detail.starts_with("SCENE CACHE REJECTED: checksum; x")&&detail.size()==SceneLoadTrace::kMaximumDetail,"first reasons kept within limit");
+        {SceneLoadTrace retry(saves,4);SceneLoadTrace::Append(saves,4,"GPU_UPLOAD_BEGIN");}
+        Check(SceneLoadTrace::LastStage(saves,4)=="GPU_UPLOAD_BEGIN"&&SceneLoadTrace::Detail(saves,4).empty(),"new attempt clears old diagnosis");
+        Check(SceneLoadTrace::LastStage(saves,1).empty()==false&&SceneLoadTrace::Detail(saves,5).empty(),"diagnoses isolated by map");
         std::filesystem::remove_all(temporary);
         std::cout<<"LOAD_TRACE_TESTS=PASS\n";return 0;
     }catch(const std::exception& e){

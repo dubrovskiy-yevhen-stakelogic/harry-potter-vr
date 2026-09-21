@@ -231,6 +231,16 @@ struct XrVulkanSmoke::State {
 
 namespace {
 
+// One line for the main-menu notice: what failed, where, and why.
+std::string DescribeLoadFailure(const std::filesystem::path& saves,unsigned map,std::string_view summary){
+    std::string text(summary);
+    text+=" - MAP "+std::to_string(map);
+    if(const auto* descriptor=FindQuestMap(map))text+=" "+std::string(descriptor->menu_title);
+    if(const auto stage=SceneLoadTrace::LastStage(saves,map);!stage.empty())text+=" - LAST STEP "+stage;
+    if(const auto detail=SceneLoadTrace::Detail(saves,map);!detail.empty())text+=" - "+detail;
+    return text;
+}
+
 void ResetSceneInput(auto& state,bool reset_placement){
     state.voice.SetListening({});state.voice_target=0;++state.voice_generation;
     state.last_predicted_time=0;
@@ -263,8 +273,12 @@ bool QueueSceneLoad(auto& state,unsigned map_id,bool transfer){
         state.scene_load_future=std::async(std::launch::async,
             [pending,profile,root=state.data_root,saves=state.save_root,map_id](){
                 HPVR_LOGI("[hpvr.quest.scene.async] status=STARTED map=%u mode=CPU_ONLY",map_id);
-                return pending->LoadFromOwnedData(root,saves,map_id)&&
-                    (!profile||profile->LoadProfiles(root,map_id==kCharmsTrainingMapId));
+                if(!pending->LoadFromOwnedData(root,saves,map_id))return false;
+                if(profile&&!profile->LoadProfiles(root,map_id==kCharmsTrainingMapId)){
+                    SceneLoadTrace::Note(saves,map_id,"SPELL GESTURE PROFILES FAILED");
+                    return false;
+                }
+                return true;
             });
         state.loading_map_id=map_id;state.map_transfer=transfer;
         state.scene_load_failed=false;
@@ -768,9 +782,11 @@ bool XrVulkanSmoke::PumpHogwartsLoad() {
             state.loading_scene->RestoreTransferredProgress(state.transferred_progress,state.transferred_slot);
     }catch(const std::exception& error){
         HPVR_LOGE("[hpvr.quest.scene.async] status=LOAD_EXCEPTION map=%u reason=%s",state.loading_map_id,error.what());
+        SceneLoadTrace::Note(state.save_root,state.loading_map_id,error.what());
         loaded=false;
     }catch(...){
         HPVR_LOGE("[hpvr.quest.scene.async] status=LOAD_EXCEPTION map=%u",state.loading_map_id);
+        SceneLoadTrace::Note(state.save_root,state.loading_map_id,"UNKNOWN EXCEPTION");
         loaded=false;
     }
     if (!loaded) {
@@ -779,7 +795,8 @@ bool XrVulkanSmoke::PumpHogwartsLoad() {
         state.loading_scene.reset();state.loading_gesture.reset();
         HPVR_LOGE("[hpvr.quest.scene.async] status=LOAD_FAILED map=%u retained=%u",state.loading_map_id,state.map_transfer?1U:0U);
         if(state.map_transfer){
-            state.scene.AbortMapTransition("Could not load this level. Check your installed game data.");
+            state.scene.AbortMapTransition(DescribeLoadFailure(state.save_root,state.loading_map_id,
+                "COULD NOT LOAD THIS LEVEL").c_str());
             ResetSceneInput(state,false);state.map_transfer=false;
             return true;
         }
@@ -797,7 +814,11 @@ bool XrVulkanSmoke::PumpHogwartsLoad() {
     bool uploaded=false;
     try{uploaded=upload();}catch(const std::exception& error){
         HPVR_LOGE("[hpvr.quest.scene.async] status=GPU_EXCEPTION reason=%s",error.what());
-    }catch(...){HPVR_LOGE("[hpvr.quest.scene.async] status=GPU_EXCEPTION");}
+        SceneLoadTrace::Note(state.save_root,state.loading_map_id,std::string("GPU: ")+error.what());
+    }catch(...){
+        HPVR_LOGE("[hpvr.quest.scene.async] status=GPU_EXCEPTION");
+        SceneLoadTrace::Note(state.save_root,state.loading_map_id,"GPU: UNKNOWN EXCEPTION");
+    }
     if(!uploaded){
         SceneLoadTrace::Append(state.save_root,state.loading_map_id,"GPU_UPLOAD_FAILED");
         state.scene_load_failed = true;
@@ -808,7 +829,8 @@ bool XrVulkanSmoke::PumpHogwartsLoad() {
         if(state.map_transfer){try{recovered=upload();}catch(...){recovered=false;}}
         HPVR_LOGE("[hpvr.quest.scene.async] status=GPU_UPLOAD_FAILED map=%u rollback=%u",state.loading_map_id,recovered?1U:0U);
         if(recovered){
-            state.scene.AbortMapTransition("Could not prepare this level. Your previous level is still available.");
+            state.scene.AbortMapTransition(DescribeLoadFailure(state.save_root,state.loading_map_id,
+                "COULD NOT PREPARE THIS LEVEL ON THE GPU").c_str());
             ResetSceneInput(state,false);state.map_transfer=false;
         }
         return recovered;
@@ -2253,6 +2275,7 @@ bool XrVulkanSmoke::RenderFrame() {
     }
     if (submit_projection) {
         ++state.submitted_frames;
+        state.scene.RefreshErrorNotice();
         const double now=WallMs();if(state.perf_start==0)state.perf_start=now;
         ++state.perf_frames;
         if(now-state.perf_start>=1000){

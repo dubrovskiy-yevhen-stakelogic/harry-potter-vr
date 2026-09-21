@@ -3,15 +3,18 @@ param(
     [string]$DataRoot='C:\Program Files\HP',
     [string]$Ffmpeg='C:\Program Files\Virtual Desktop Streamer\ffmpeg.exe',
     [string]$ProbePath,
-    [switch]$IncludeChallenge
+    [switch]$IncludeChallenge,
+    [ValidateRange(0,4)][int]$MapId
 )
 $ErrorActionPreference='Stop'
 $repo=[IO.Path]::GetFullPath((Join-Path $PSScriptRoot '../..'))
 $withChallenge=[bool]$IncludeChallenge
+$explicitMap=$PSBoundParameters.ContainsKey('MapId')
+if($explicitMap -and $withChallenge){throw 'Use either MapId or IncludeChallenge, not both.'}
 . (Join-Path $repo 'tools\release\INSTALL-HPVR.ps1') -LibraryOnly
 $DataRoot=Get-HpvrFullPath $DataRoot
 Assert-HpvrNoLinks $DataRoot
-$out=Join-Path $repo $(if($withChallenge){'local\challenge-frontend'}else{'local\c26-frontend'})
+$out=Join-Path $repo $(if($explicitMap){"local\map-$MapId-frontend"}elseif($withChallenge){'local\challenge-frontend'}else{'local\c26-frontend'})
 $cache=Join-Path $repo 'local\quest-owned-audio'
 foreach($path in @($out,$cache)){
     Assert-HpvrNoLinks $path
@@ -21,7 +24,7 @@ foreach($path in @($out,$cache)){
 if([string]::IsNullOrWhiteSpace($ProbePath)){$ProbePath=Join-Path $repo 'build\quest-host-tests\src\quest\Release\hpvr_quest_frontend_probe.exe'}
 foreach($path in @($ProbePath,$Ffmpeg)){if(-not(Test-Path -LiteralPath $path -PathType Leaf)){throw "Missing preparation tool: $path"}}
 $arguments=@($DataRoot,$out)
-if($withChallenge){$arguments+='--challenge'}
+if($explicitMap){$arguments+=@('--map',[string]$MapId)}elseif($withChallenge){$arguments+='--challenge'}
 & $ProbePath @arguments
 if($LASTEXITCODE -ne 0){throw 'Frontend owned-data extraction failed'}
 $prepared=0
@@ -46,4 +49,4 @@ foreach($row in Get-Content -LiteralPath (Join-Path $out 'audio-plan.tsv')){
     ++$prepared
     Write-Output "$($fields[0]) seconds=$([math]::Round($size/(48000*2*[int]$fields[1]),2))"
 }
-Write-Output "FRONTEND_PREPARE=PASS challenge=$withChallenge audio_clips=$prepared cache=$cache device_actions=0"
+Write-Output "FRONTEND_PREPARE=PASS map=$(if($explicitMap){$MapId}elseif($withChallenge){1}else{0}) audio_clips=$prepared cache=$cache device_actions=0"

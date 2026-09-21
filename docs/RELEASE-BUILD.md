@@ -1,15 +1,14 @@
 # Quest release build
 
-The current source targets **0.1.3-alpha**, Android version code **73**,
+The current source targets **0.1.4**, Android version code **85**,
 with the opening level, [Flipendo Challenge](FLIPENDO-CHALLENGE.md), Broomstick
-Training and Alohomora / Charms.
+Training, Alohomora / Charms and Hogwarts Return.
 The release contains the port, third-party libraries and the licensed offline voice model,
 not HP game assets, decoded game audio, user recordings, saves or signing keys.
 Players import their own compatible US PC data for the maps declared by the release.
 
 Each newly restored level increments the last numeric version component:
-0.1.2, then 0.1.3, 0.1.4, and so on. The alpha label remains while the port is
-in early testing. Android version codes increase independently for new APKs.
+0.1.2, then 0.1.3, 0.1.4, and so on. Android version codes increase independently for new APKs.
 
 ## Tools
 
@@ -24,7 +23,7 @@ For an update, reuse the existing release signing identity. From the repository
 root, build into a new artifact directory:
 
 ```powershell
-.\tools\workspace\BUILD-QUEST-RELEASE.ps1 -OutputDirectory artifacts\quest-release-0.1.3-alpha
+.\tools\workspace\BUILD-QUEST-RELEASE.ps1 -OutputDirectory artifacts\quest-release-0.1.4
 ```
 
 Only a project's first release with no identity should use
@@ -46,8 +45,8 @@ the player ZIP. This example uses the main `build` tree:
 ```powershell
 cmake --build build --config Release --target hpvr_hp1_package_graph hpvr_hp1_sound_probe hpvr_quest_frontend_probe hpvr_quest_intro_probe hpvr_quest_prepare_assets
 .\tools\workspace\PACKAGE-QUEST-PLAYER.ps1 -HostBuildDirectory build `
-  -ApkPath artifacts\quest-release-0.1.3-alpha\HPVR-Quest-0.1.3-alpha.apk `
-  -OutputDirectory artifacts\HPVR-Quest-Demo-0.1.3-alpha
+  -ApkPath artifacts\quest-release-0.1.4\HPVR-Quest-0.1.4.apk `
+  -OutputDirectory artifacts\HPVR-Quest-Demo-0.1.4
 ```
 
 The packager reads the matching `RELEASE-METADATA.json`, checks the APK and
@@ -59,9 +58,9 @@ Its default host-tool directory is `build/quest-host-tests`; the explicit
 packaging do not install or launch the game.
 Player instructions are in [PLAYER-INSTALL.md](../tools/release/PLAYER-INSTALL.md).
 
-The four-map manifest declares `mapIds: [0, 1, 2, 3]`. The installer uses that
+The five-map manifest declares `mapIds: [0, 1, 2, 3, 4]`. The installer uses that
 selection for package closures, dialogue/music enumeration and scene
-preparation. `map-0.hpvc` through `map-3.hpvc` are generated and independently
+preparation. `map-0.hpvc` through `map-4.hpvc` are generated and independently
 verified on the player's PC; they are never packaged into the ZIP. Historical
 manifests without map metadata retain map 0 only, with `-IncludeChallenge`
 available for compatible older development APKs.
@@ -73,9 +72,9 @@ Before packaging, run the synthetic installer tests:
 ```
 
 After packaging, validate the actual bundled helpers against an owned copy with
-the bundled `INSTALL-HPVR.ps1 -GamePath '<owned US PC game folder>' -PrepareOnly`.
+the bundled `tools/INSTALL-HPVR.ps1 -GamePath '<owned US PC game folder>' -PrepareOnly`.
 This prepares all declared maps without installing or accessing a headset.
-After device import, revision 7 grants directory read/traverse and file read
+After device import, the installer grants directory read/traverse and file read
 permissions to other UIDs. APK version code 72 and newer verifies actual file
 reads through a permission-protected background receiver, without starting the
 VR activity. Older APKs use mode-bit verification; emulated storage can mask

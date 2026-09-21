@@ -33,7 +33,7 @@ bool LoadLockParticles(const std::filesystem::path& root,
         const auto properties=broom::lesson_detail::Class(package,table,"Lock");
         const auto* texture=broom::lesson_detail::Property(properties,"Textures");
         if(!texture||texture->object_path!=std::vector<std::string>{"hp_fx","Particles","Les_Sparkle_01"})return false;
-        const auto texture_package=root/"textures/hp_fx.utx";
+        const auto texture_package=root/"Textures/HP_FX.utx";
         const auto textures=wand::inspect_hp1_package_link_table(texture_package);
         if(textures.status!=wand::Hp1ProfileStatus::ok)return false;
         const auto found=std::ranges::find_if(textures.exports,[](const auto& item){return !item.object_path.empty()&&item.object_path.back()=="Les_Sparkle_01";});

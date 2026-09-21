@@ -32,7 +32,7 @@ void QuestScene::SubmitCharmsLesson(float score){
     HPVR_LOGI("[hpvr.quest.charms.lesson] round=%u points=%u score=%.3f finish=%d",c.lesson.round,c.lesson.points,score,c.finish_pending);
 }
 GestureSpell QuestScene::ActiveGestureSpell() const{
-    const auto& s=*state_;if(s.map_id!=kCharmsTrainingMapId)return GestureSpell::Flipendo;
+    const auto& s=*state_;if(s.map_id!=kCharmsTrainingMapId&&s.map_id!=kHogwartsReturnMapId)return GestureSpell::Flipendo;
     if(s.charms.active_lesson>=0)return s.charms.active_lesson==0?GestureSpell::Alohomora:GestureSpell::Wingardium;
     const auto ref=s.wand_lock_valid?s.wand_lock_actor:s.aim_actor;
     if(s.charms.blocks.contains(ref))return GestureSpell::Wingardium;
@@ -65,18 +65,9 @@ void QuestScene::AdvanceCharms(float seconds){
             HPVR_LOGI("[hpvr.quest.charms.lesson] status=LEARNED ref=%d",ref);
         }
     }
-    if(IsCutscenePlaying())return;
     const auto body=s.player_capsule_valid?s.player_capsule:s.last_player;
-    const auto displacement=SubtractVector(body,c.reflected_player_position);
-    const float distance=std::hypot(displacement[0],displacement[2]);
-    c.reflected_walk_time=std::max(0.0F,c.reflected_walk_time-step);
-    if(c.reflected_player_valid&&distance>step*.2F&&distance<.5F)c.reflected_walk_time=.15F;
-    c.reflected_player_position=body;c.reflected_player_valid=true;
-    for(auto& actor:s.character_draws)if(actor.player){
-        const std::string clip=c.reflected_walk_time>0&&actor.clips.contains("run")?"run":"breathe";
-        if(actor.active_clip!=clip){actor.active_clip=clip;actor.animation_time=0;}
-        actor.animation_loop=true;
-    }
+    UpdateReflectedPlayerAnimation(c,s.character_draws,body,step,IsCutscenePlaying());
+    if(IsCutscenePlaying())return;
     s.bump_cooldown=std::max(0.0F,s.bump_cooldown-step);
     if(s.bump_actor&&!s.audio.DialogueBusy()){
         for(auto& actor:s.character_draws)if(actor.actor_reference==s.bump_actor){
@@ -159,6 +150,6 @@ void QuestScene::AdvanceCharms(float seconds){
                 static_cast<std::uint32_t>(progress.generation));
             progress.completed_maps|=1U<<kCharmsTrainingMapId;
         }
-        SaveCheckpoint(true);s.frontend.ShowDemoNotice(true);s.front_anchor_valid=false;
+        SaveCheckpoint(true);RequestReturnTravel();
     }
 }

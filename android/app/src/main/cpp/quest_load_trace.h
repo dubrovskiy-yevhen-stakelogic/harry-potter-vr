@@ -1,9 +1,11 @@
 #pragma once
+#include <algorithm>
 #include <chrono>
 #include <filesystem>
 #include <fstream>
 #include <map>
 #include <mutex>
+#include <string>
 #include <string_view>
 
 namespace hpvr::quest {
@@ -14,6 +16,10 @@ class SceneLoadTrace {
     // epoch until adoption so both phases use the same elapsed-time scale.
     static inline std::mutex epochs_mutex_;
     static inline std::map<std::filesystem::path,Clock::time_point> epochs_;
+    // Last milestone and first reasons of each map's latest attempt. Release
+    // builds cannot share private journals, so the menu shows this summary.
+    struct Diagnosis {std::string stage,detail;};
+    static inline std::map<std::filesystem::path,Diagnosis> diagnoses_;
     std::ofstream stream_;
     std::filesystem::path path_;
     Clock::time_point start_=Clock::now();
@@ -21,6 +27,11 @@ class SceneLoadTrace {
     static bool Terminal(std::string_view status){
         return status=="ADOPTED"||status=="GPU_UPLOAD_FAILED"||
                status=="TRANSFER_CPU_FAILED"||status=="FAILED_OR_EXCEPTION";
+    }
+    // Failure markers would hide the milestone that actually failed.
+    static void RememberStage(const std::filesystem::path& path,std::string_view status){
+        if(status!="ADOPTED"&&Terminal(status))return;
+        diagnoses_[path].stage=status;
     }
 public:
     static void Event(const std::filesystem::path& saves,unsigned map,const std::string& message){
@@ -45,6 +56,7 @@ public:
                 epochs_.erase(oldest);
             }
             epochs_[path_]=start_;
+            diagnoses_[path_]={};
             stream_.open(path_,std::ios::trunc);
         }
         Stage("STARTED");
@@ -56,6 +68,7 @@ public:
         std::lock_guard lock(epochs_mutex_);
         const auto epoch=epochs_.find(path_);
         if(epoch==epochs_.end()||epoch->second!=start_)return;
+        RememberStage(path_,name);
         stream_<<std::chrono::duration<double>(Clock::now()-start_).count()<<"s "<<name<<std::endl;
         if(Terminal(name))epochs_.erase(epoch);
     }
@@ -65,6 +78,7 @@ public:
         std::lock_guard lock(epochs_mutex_);
         std::ofstream out(path,std::ios::app);
         const auto epoch=epochs_.find(path);
+        RememberStage(path,status);
         if(epoch!=epochs_.end()){
             out<<std::chrono::duration<double>(Clock::now()-epoch->second).count()<<"s "<<status<<std::endl;
             if(Terminal(status))epochs_.erase(epoch);
@@ -74,5 +88,26 @@ public:
             out<<status<<" elapsed=unavailable"<<std::endl;
         }
     }
+    // Adds a short reason to the latest attempt. The first reasons are kept:
+    // later failures are usually consequences of the first one.
+    static void Note(const std::filesystem::path& saves,unsigned map,std::string_view detail){
+        if(saves.empty()||detail.empty())return;
+        std::lock_guard lock(epochs_mutex_);
+        auto& text=diagnoses_[Path(saves,map)].detail;
+        if(text.size()>=kMaximumDetail)return;
+        if(!text.empty())text+="; ";
+        text.append(detail.substr(0,kMaximumDetail-std::min(text.size(),kMaximumDetail)));
+    }
+    static std::string LastStage(const std::filesystem::path& saves,unsigned map){
+        std::lock_guard lock(epochs_mutex_);
+        const auto found=diagnoses_.find(Path(saves,map));
+        return found==diagnoses_.end()?std::string{}:found->second.stage;
+    }
+    static std::string Detail(const std::filesystem::path& saves,unsigned map){
+        std::lock_guard lock(epochs_mutex_);
+        const auto found=diagnoses_.find(Path(saves,map));
+        return found==diagnoses_.end()?std::string{}:found->second.detail;
+    }
+    static constexpr std::size_t kMaximumDetail=240;
 };
 }

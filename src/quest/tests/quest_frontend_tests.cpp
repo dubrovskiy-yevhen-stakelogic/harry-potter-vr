@@ -5,11 +5,28 @@
 #include <sstream>
 #include <chrono>
 #include <limits>
+#include <algorithm>
 #include <cmath>
 using namespace hpvr::quest;
 static void Check(bool good,const char* message){if(!good)throw std::runtime_error(message);}
 int main(){
  try{
+    {
+        FrontAssets assets;assets.story.resize(14);assets.gameplay_audio.resize(134);
+        for(const auto& map:kQuestMaps){
+            assets.map_id=map.id;
+            std::vector<int> configured(5); // Introductory dialogue.
+            for(const auto& page:assets.story){(void)page;configured.push_back(0);}
+            for(std::size_t i=0;i<assets.gameplay_audio.size();++i)if(i!=1)configured.push_back(0);
+            configured.push_back(0); // Frog PCM, present on every map.
+            if(map.id==kHogwartsReturnMapId)configured.push_back(0); // Scroll PCM.
+            Check(ExpectedSceneAudioClipCount(assets)==configured.size(),"scene validation counts all configured PCM and MPEG clips");
+            if(map.id==kHogwartsReturnMapId){
+                Check(configured.size()==154,"return map includes separate scroll PCM");
+                Check(configured.size()!=19+assets.gameplay_audio.size(),"reproduces build 80 audio-count rejection");
+            }else Check(configured.size()==153,"earlier map audio layout remains unchanged");
+        }
+    }
     const auto dir=std::filesystem::temp_directory_path()/("hpvr-progress-test-"+
         std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
     std::filesystem::create_directory(dir);
@@ -21,6 +38,24 @@ int main(){
             Check(quads.size()==3,"star pickup has frame, original icon and count");
         }
         Check(front.StarPickupQuads(12).size()==4,"star pickup supports multi-digit counts");
+    }
+    {
+        QuestFrontEnd front;front.screen=FrontScreen::Game;front.selection=2;
+        front.ShowError("Could not load - MAP 3 CHARMS TRAINING - LAST STEP FRONTEND_READY_AUDIO_BEGIN");
+        Check(front.screen==FrontScreen::Main&&front.selection==0&&front.message==front.error_notice&&
+              !front.error_notice.empty(),"errors return to a visible main-menu notice");
+        const auto lines=ErrorNoticeLines(front.error_notice+" "+std::string(200,'x')+" caf\xc3\xa9");
+        Check(lines.size()>=4&&lines.size()<=kErrorNoticeLines,"notice is wrapped within the panel");
+        for(const auto& line:lines){
+            Check(!line.empty()&&line.size()<=kErrorNoticeColumns,"notice lines fit the menu width");
+            Check(std::ranges::all_of(line,[](unsigned char ch){return ch>=32&&ch<127&&!(ch>='a'&&ch<='z');}),"notice uses menu glyphs");
+        }
+        Check(lines[1].starts_with("COULD NOT LOAD - MAP 3"),"notice text is upper-cased after the header");
+        Check(lines.back().ends_with("?"),"non-ASCII text becomes a placeholder");
+        const auto overflow=ErrorNoticeLines(std::string(2000,'y'));
+        Check(overflow.size()==kErrorNoticeLines&&overflow.back().ends_with("..."),"overflow is marked");
+        front.BeginGame();
+        Check(front.error_notice.empty(),"entering a game clears the notice");
     }
     {
         HousePointHud counter;
@@ -44,6 +79,15 @@ int main(){
         charms.map_id=3;charms.collected_beans={0x30000000+100001};
         Check(!WriteProgress(dir,2,&charms),"out-of-range spawner rejected");
         std::filesystem::remove(dir/"slot3.1.hpvr");
+    }
+    {
+        ProgressSave returning;returning.map_id=kHogwartsReturnMapId;returning.phase=2;
+        returning.spent_beans=25;
+        returning.collected_beans={45,0x20000000+500*16,0x30000000+1102};
+        Check(WriteProgress(dir,2,&returning)&&ReadProgress(dir,2,&r)&&r.map_id==kHogwartsReturnMapId&&
+            r.collected_beans==returning.collected_beans&&r.spent_beans==25,"return book retains purchases, map, chest and triggered card reward IDs");
+        returning.map_id=5;Check(!WriteProgress(dir,2,&returning),"unimplemented map cannot create a save");
+        std::filesystem::remove(dir/"slot3.0.hpvr");std::filesystem::remove(dir/"slot3.1.hpvr");
     }
     Check(!ReadProgress(dir,0,&r),"empty save");
     s.page=4;s.player={2,1.4F,-8};
@@ -137,9 +181,9 @@ int main(){
     Check(f.screen==FrontScreen::LevelStart&&f.slot==2&&f.selection==1,"third-level overwrite confirmation defaults to keep save");
     click();Check(f.screen==FrontScreen::LevelSlots,"third-level cancel returns without starting or writing");
     f.selection=3;click();Check(f.screen==FrontScreen::Levels&&f.selection==2,"slot back returns to third level row");
-    f.selection=static_cast<unsigned>(kQuestMaps.size());click();
+    f.selection=kPlayableQuestMapCount;click();
     Check(f.screen==FrontScreen::Main&&f.selection==4,"level-select back is after every supported map");
-    for(unsigned row=0;row<=kQuestMaps.size();++row){
+    for(unsigned row=0;row<=kPlayableQuestMapCount;++row){
         f.screen=FrontScreen::Levels;f.selection=row;
         for(const auto& quad:f.Quads())Check(quad.x>=0&&quad.y>=0&&quad.x+quad.w<=640&&quad.y+quad.h<=480,
                                             "supported-level menu fits existing panel");

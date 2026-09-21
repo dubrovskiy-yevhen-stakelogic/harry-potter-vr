@@ -130,7 +130,12 @@ int main(int argc,char** argv){
             Check(p.lesson_points[kBroomLesson+1]==0,"optional replay route is not added to story maximum");
             Check(PerfectPriorProgress(map)->house_points==p.house_points,"level-selection house values are stable");
         }
-        Check(!PerfectPriorProgress(4)&&!PerfectPriorProgress(std::numeric_limits<unsigned>::max()),"unsupported map fails without shift overflow");
+        const auto returning=PerfectPriorProgress(4);
+        Check(returning&&returning->completed_maps==15&&returning->earned_cards==15&&returning->banked_beans==153&&
+            returning->house_points[kGryffindor]==210&&returning->lesson_best[kAlohomoraLesson]==100&&
+            returning->lesson_best[kWingardiumLesson]==100&&returning->lesson_points[kAlohomoraLesson]==50&&
+            returning->lesson_points[kWingardiumLesson]==50,"return map starts after a perfect Charms clear");
+        Check(!PerfectPriorProgress(5)&&!PerfectPriorProgress(std::numeric_limits<unsigned>::max()),"unsupported map fails without shift overflow");
         std::array<unsigned,8> awards{};std::array<unsigned,4> houses{};
         for(unsigned pass=1;pass<=4;++pass){
             Check(RaiseLessonPoints(awards,houses,kFlipendoLesson,LessonPoints(pass),pass)==pass*5U,"new passed round awards its own points");

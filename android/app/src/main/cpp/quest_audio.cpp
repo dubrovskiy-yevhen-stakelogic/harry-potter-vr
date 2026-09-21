@@ -222,7 +222,10 @@ bool QuestAudio::Configure(const wand::Hp1PcmSound& ambient,
                            const std::filesystem::path& cache_directory) {
     if (stream_ != nullptr) return false;
     bean_sound_index_=std::numeric_limits<std::size_t>::max();
+    scroll_sound_index_=std::numeric_limits<std::size_t>::max();
     bean_cue_.Reset();
+    card_cue_.Reset();card_sound_index_=std::numeric_limits<std::size_t>::max();
+    card_appearance_cue_.Reset();card_appearance_index_=std::numeric_limits<std::size_t>::max();
     const auto decode = [&cache_directory](const wand::Hp1MpegSound& source) {
         // Private, owned-data PCM cache: the encoded-source checksum prevents
         // accidentally playing a clip from another language/package revision.
@@ -315,6 +318,24 @@ bool QuestAudio::ConfigureBeanPickup(std::size_t index){
     bean_sound_index_=index;bean_cue_.Reset();
     return true;
 }
+bool QuestAudio::ConfigureScrollPickup(const wand::Hp1PcmSound& source){
+    if(stream_)return false;
+    auto samples=ResampleMono48k(source);if(samples.empty())return false;
+    scroll_sound_index_=dialogue_.size();dialogue_.push_back(std::move(samples));return true;
+}
+void QuestAudio::PlayScrollPickup(){
+    if(scroll_sound_index_<dialogue_.size())(void)PlayWorldEffect(scroll_sound_index_,.85F);
+}
+bool QuestAudio::ConfigureCardPickup(std::size_t index){
+    if(stream_||index>=dialogue_.size()||dialogue_[index].empty())return false;
+    card_sound_index_=index;card_cue_.Reset();return true;
+}
+void QuestAudio::PlayCardPickup(){card_cue_.Request();}
+bool QuestAudio::ConfigureCardAppearance(std::size_t index){
+    if(stream_||index>=dialogue_.size())return false;
+    card_appearance_index_=index;card_appearance_cue_.Reset();return true;
+}
+void QuestAudio::PlayCardAppearance(){card_appearance_cue_.Request();}
 bool QuestAudio::ConfigureMusic(const std::vector<wand::Hp1MpegSound>& sources,
                                const std::filesystem::path& cache) {
     if(stream_)return false;
@@ -382,11 +403,12 @@ bool QuestAudio::Start() {
 void QuestAudio::Stop() {
     wand_drawing_.store(false, std::memory_order_release);
     dialogue_cursor_.store(kIdleCursor, std::memory_order_release);
-    if (stream_ == nullptr) {bean_cue_.Reset();return;}
+    if (stream_ == nullptr) {bean_cue_.Reset();card_cue_.Reset();card_appearance_cue_.Reset();return;}
     AAudioStream_requestStop(stream_);
     AAudioStream_close(stream_);
     stream_ = nullptr;
     bean_cue_.Reset();
+    card_cue_.Reset();card_appearance_cue_.Reset();
 }
 
 void QuestAudio::SetWandDrawing(const bool drawing) {
@@ -460,6 +482,8 @@ aaudio_data_callback_result_t QuestAudio::DataCallback(
 aaudio_data_callback_result_t QuestAudio::Render(
     std::int16_t* const output, const std::int32_t frame_count) {
     bean_cue_.BeginBlock();
+    card_cue_.BeginBlock();
+    card_appearance_cue_.BeginBlock();
     for (std::int32_t frame = 0; frame < frame_count; ++frame) {
         const bool paused=narrative_paused_.load(std::memory_order_acquire);
         float mixed = ambient_enabled_.load(std::memory_order_acquire) && !paused
@@ -498,6 +522,10 @@ aaudio_data_callback_result_t QuestAudio::Render(
             mix_one_shot(dialogue_[effect_index],effect_cursor_,effect_gain_.load(std::memory_order_relaxed));
         if(!paused&&ambient_enabled_.load(std::memory_order_relaxed)&&bean_sound_index_<dialogue_.size())
             mixed+=static_cast<float>(bean_cue_.NextSample(dialogue_[bean_sound_index_]))*.85F;
+        if(!paused&&ambient_enabled_.load(std::memory_order_relaxed)&&card_sound_index_<dialogue_.size())
+            mixed+=static_cast<float>(card_cue_.NextSample(dialogue_[card_sound_index_]))*.9F;
+        if(card_appearance_index_<dialogue_.size()&&!paused&&ambient_enabled_.load(std::memory_order_relaxed))
+            mixed+=static_cast<float>(card_appearance_cue_.NextSample(dialogue_[card_appearance_index_]))*.85F;
         const auto dialogue_position =
             dialogue_cursor_.load(std::memory_order_acquire);
         if (dialogue_position != kIdleCursor && !paused) {

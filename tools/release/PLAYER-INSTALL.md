@@ -2,7 +2,7 @@
 
 This is an unofficial standalone Quest 3 port. The installer selects all maps
 declared by its matching release manifest automatically. Supported levels include
-the opening level, Flipendo Challenge, Broomstick Training and Alohomora / Charms.
+the opening level, Flipendo Challenge, Broomstick Training, Alohomora / Charms and Hogwarts Return.
 The release contains the APK, an offline voice-recognition model and Windows
 import tools, **not game assets, player recordings or saves**.
 
@@ -27,15 +27,15 @@ integrity, not the identity of an untrusted download.
 
 ## Install
 
-Double-click `INSTALL-HPVR.cmd` and enter the game
+Double-click `INSTALL.bat` and enter the game
 folder containing `Maps`, `Textures`, `Sounds`, `Music` and `system`.
 Missing FFmpeg and ADB are downloaded and cached automatically. The banner
-must say `HPVR installer revision 7`. The selected maps should be `0, 1, 2, 3`
-for four-map builds (older releases retain their declared selection).
+must say `HPVR installer revision 8`. The selected maps should be `0, 1, 2, 3, 4`
+for version 0.1.4 (older releases retain their declared selection).
 To use existing tools explicitly:
 
 ```powershell
-.\INSTALL-HPVR.ps1 -GamePath 'C:\Program Files\HP' -AdbPath 'C:\Android\platform-tools\adb.exe' -FfmpegPath 'C:\ffmpeg\bin\ffmpeg.exe'
+.\tools\INSTALL-HPVR.ps1 -GamePath 'C:\Program Files\HP' -AdbPath 'C:\Android\platform-tools\adb.exe' -FfmpegPath 'C:\ffmpeg\bin\ffmpeg.exe'
 ```
 
 Import success requires matching file hashes and a successful access check.
@@ -52,7 +52,7 @@ native macOS preparation is not provided by this package.
 If PowerShell blocks the script, use the CMD wrapper with the same arguments:
 
 ```bat
-INSTALL-HPVR.cmd -GamePath "C:\Program Files\HP" -AdbPath "C:\Android\platform-tools\adb.exe" -FfmpegPath "C:\ffmpeg\bin\ffmpeg.exe"
+INSTALL.bat -GamePath "C:\Program Files\HP" -AdbPath "C:\Android\platform-tools\adb.exe" -FfmpegPath "C:\ffmpeg\bin\ffmpeg.exe"
 ```
 
 The wrapper's execution-policy override affects only its child process. For
@@ -93,12 +93,13 @@ preparation work out of headset loading; it does not remove GPU initialization
 or guarantee an instant first launch. Progress and per-level reports are shown
 during installation. No additional game downloads are used.
 
-Four-map builds declare `mapIds: [0, 1, 2, 3]` in `release-manifest.json`.
+Version 0.1.4 declares `mapIds: [0, 1, 2, 3, 4]` in `release-manifest.json`.
 A normal double-click install imports packages and audio for every declared
 level, then prepares and verifies each scene cache. No extra map option is needed.
 Use in-game level selection to start a restored map from the beginning.
-The original input folder must include `Maps/Lev_Tut3.unr` for the fourth map;
-a folder previously imported for a three-map demo is not a complete PC copy.
+The original input folder must include `Maps/Lev_Tut3.unr` and `Maps/Lev_Tut3b.unr`
+for the fourth and fifth maps. A folder imported for an older demo may not
+contain all the packages required by this release.
 
 Older release manifests without `mapIds` retain the original one-map default;
 merely having a second map beside the first does not enable it. `-IncludeChallenge`
@@ -121,9 +122,9 @@ key. **Do not uninstall it to bypass the error: that can erase saves, settings
 and imported data. Contact the author for migration.** The installer does not
 uninstall apps or bypass downgrade protection.
 
-The current development APK uses Android version code 72. Updating an earlier public release
+Version 0.1.4 uses Android version code 85. Updating an earlier public release
 requires the same release certificate; a higher version number alone cannot
-resolve a different signing key. Use the complete matching alpha installer kit
+resolve a different signing key. Use the complete matching installer kit
 to add the new level's packages and prepared cache, not just its APK.
 
 ## Offline preparation and storage
@@ -131,7 +132,7 @@ to add the new level's packages and prepared cache, not just its APK.
 To prepare and validate data without installing or using ADB:
 
 ```powershell
-.\INSTALL-HPVR.ps1 -GamePath 'C:\Program Files\HP' -FfmpegPath 'C:\ffmpeg\bin\ffmpeg.exe' -PrepareOnly
+.\tools\INSTALL-HPVR.ps1 -GamePath 'C:\Program Files\HP' -FfmpegPath 'C:\ffmpeg\bin\ffmpeg.exe' -PrepareOnly
 ```
 
 `PREPARE=PASS` means local conversion succeeded, not installation. A later normal
@@ -156,8 +157,9 @@ music, mono speech/effects. Import uses external storage and works with the
 non-debuggable release; private saves are separate.
 
 `HP/Cache/Scenes/map-0.hpvc` is the prepared first map, `map-1.hpvc` is the
-prepared Flipendo Challenge and `map-2.hpvc` is Broomstick Training.
-All three are generated and verified by default for 0.1.2 alpha. Only these
+prepared Flipendo Challenge, `map-2.hpvc` is Broomstick Training,
+`map-3.hpvc` is Alohomora / Charms, and `map-4.hpvc` is Hogwarts Return.
+All five are generated and verified by default for 0.1.4. Only these
 selected cache files are transferred; their SHA-256 hashes are checked on the
 headset along with the other imported files. They remain private game-derived
 data and are never included in the public release ZIP. If a cache is missing or
@@ -169,7 +171,7 @@ packages instead; rerun the installer from a matching kit to restore preparation
 Voice casting is optional. When enabled, it uses the headset microphone with
 Android's microphone permission and recognizes spells locally; it does not need
 an online speech service. The player build does not save voice recordings.
-It is an early experimental feature tested only by the author so far; some
+It is an experimental feature; some
 pronunciations may be missed. Voice and gesture casting are disabled during
 Broomstick Training. The in-game Controls submenu explains each casting mode.
 Private diagnostic recordings, test audio and diagnostic APKs are not part of

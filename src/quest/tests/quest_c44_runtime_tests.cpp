@@ -169,9 +169,24 @@ void TestAirborneMantle() {
     CompleteWithoutStick(collision, current, climb, .25F);
 
     ClimbMotion blocked;
+    const std::array<float,3> almost_above{0,kPlayerCapsuleHalfHeightMeters+1.15F,-.31F};
+    Check(BeginClimb(collision,almost_above,{0,0,.035F},&blocked,.04F),
+          "airborne feet close to ledge still acquire a mantle");
     Check(!BeginClimb(Ledge(1.4F, true), current, {0, 0, .035F}, &blocked),
           "mantle acquisition rejects a ceiling over its landing");
     Check(!BeginClimb(collision, current, {}, &blocked), "a zero direction cannot acquire a new ledge");
+    Check(!BeginClimb(collision,{0,kPlayerCapsuleHalfHeightMeters,-.8F},{0,0,.035F},&blocked),
+          "a distant platform cannot pull the player across a gap");
+    std::vector<GpuVertex> slab;
+    Quad(slab,{-2,1.4F,0},{2,1.4F,0},{2,1.4F,3},{-2,1.4F,3});
+    Quad(slab,{-2,2.7F,0},{2,2.7F,0},{2,2.7F,3},{-2,2.7F,3});
+    Quad(slab,{-2,1.4F,0},{2,1.4F,0},{2,2.7F,0},{-2,2.7F,0});
+    const auto thick=BuildCollisionTriangles(slab,static_cast<std::uint32_t>(slab.size()));
+    const std::array<float,3> below_top{0,.5F+kPlayerCapsuleHalfHeightMeters,-.31F};
+    Check(BeginClimb(thick,below_top,{0,0,.035F},&blocked)&&
+          std::abs(blocked.target[1]-kPlayerCapsuleHalfHeightMeters-2.7F)<.001F,
+          "blocked underside does not hide the clear top of a thick platform");
+    CompleteWithoutStick(thick,below_top,blocked,1.F/90);
 }
 
 void TestInterruptedMantleCheckpoint() {
@@ -229,8 +244,8 @@ void TestInterruptedMantleSceneWiring() {
     const auto legacy=scene.find("state.placement=state.frontend.progress;state.placement.player=state.climb.start;",failed);
     Check(resolver!=std::string::npos&&failed!=std::string::npos&&legacy!=std::string::npos,"mantle fallback located");
     const auto branch=scene.substr(failed,legacy-failed);
-    Check(branch.find("if(StepClimb(")<branch.find("if(IsWalkingChallenge(state.map_id))")&&
-          branch.find("if(IsWalkingChallenge(state.map_id)){BeginChallengeDeath(\"MANTLE_INTERRUPTED\");*output={};return true;}")!=std::string::npos,
+    Check(branch.find("if(StepClimb(")<branch.find("if(IsWalkingSpellMap(state.map_id))")&&
+          branch.find("if(IsWalkingSpellMap(state.map_id)){BeginChallengeDeath(\"MANTLE_INTERRUPTED\");*output={};return true;}")!=std::string::npos,
           "failed challenge mantle enters world recovery and returns before player-only placement");
     const auto runtime=read(directory/"quest_challenge_runtime.inl");
     const auto death=runtime.find("void QuestScene::BeginChallengeDeath(");

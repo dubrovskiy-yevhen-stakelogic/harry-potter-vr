@@ -27,6 +27,7 @@ function Write-Fixture([string]$RelativePath, [string]$Contents = '// Synthetic 
 
 # These are deliberately synthetic text fixtures, not copied game data or code.
 $required = @(
+    'tools/release/INSTALL.bat', 'tools/release/CHANGELOG.md',
     '.gitattributes', '.gitignore', 'CMakeLists.txt', 'README.md',
     'INSTALL.bat', 'docs/BUILDING.md', 'tools/workspace/INSTALL-PLAYER.ps1',
     'tools/workspace/BUILD-QUEST-DEBUG.ps1', 'tools/workspace/PACKAGE-QUEST-DEBUG.ps1',

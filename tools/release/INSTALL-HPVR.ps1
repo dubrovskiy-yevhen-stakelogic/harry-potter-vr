@@ -15,8 +15,8 @@ param(
     [switch]$LibraryOnly
 )
 
-# This script belongs at the release root, beside release-manifest.json.
-# Its output is private, locally derived game data and is NEVER release content.
+# Packaged under tools; older bundles may keep it beside release-manifest.json.
+# Its output is locally derived game data and must not be redistributed.
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
 
@@ -275,15 +275,15 @@ function Get-HpvrReleaseMapIds($Release, [switch]$IncludeChallenge) {
     $maps = @(0)
     if ($Release.PSObject.Properties['mapIds']) {
         $declared = $Release.mapIds
-        if ($declared -isnot [Array] -or $declared.Count -lt 1 -or $declared.Count -gt 4) {
-            throw 'Release mapIds must be a consecutive prefix of [0,1,2,3].'
+        if ($declared -isnot [Array] -or $declared.Count -lt 1 -or $declared.Count -gt 5) {
+            throw 'Release mapIds must be a consecutive prefix of [0,1,2,3,4].'
         }
         foreach ($map in $declared) {
             if ($map -isnot [int] -and $map -isnot [long]) { throw 'Release mapIds must contain integer map IDs.' }
         }
         for ($index = 0; $index -lt $declared.Count; ++$index) {
             if ($declared[$index] -ne $index) {
-                throw 'Unsupported or duplicate release map IDs; expected a consecutive prefix of [0,1,2,3].'
+                throw 'Unsupported or duplicate release map IDs; expected a consecutive prefix of [0,1,2,3,4].'
             }
         }
         if ($declared.Count -ge 2 -and (-not $Release.PSObject.Properties['versionCode'] -or $Release.versionCode -lt 38)) {
@@ -292,8 +292,11 @@ function Get-HpvrReleaseMapIds($Release, [switch]$IncludeChallenge) {
         if ($declared.Count -ge 3 -and $Release.versionCode -lt 57) {
             throw 'This release APK version does not support the declared Broomstick Training.'
         }
-        if ($declared.Count -eq 4 -and $Release.versionCode -lt 71) {
+        if ($declared.Count -ge 4 -and $Release.versionCode -lt 71) {
             throw 'This release APK version does not support the four-map installer contract.'
+        }
+        if ($declared.Count -eq 5 -and $Release.versionCode -lt 85) {
+            throw 'This release APK version does not support the five-map installer contract.'
         }
         $maps = @($declared)
     }
@@ -433,7 +436,7 @@ function Assert-HpvrPcm([string]$Path, [int]$Channels) {
     throw "Decoded audio is entirely silent: $Path"
 }
 
-function Get-HpvrMapInputs([string]$Root, [bool]$WithChallenge = $false, [bool]$WithBroom = $false, [bool]$WithCharms = $false) {
+function Get-HpvrMapInputs([string]$Root, [bool]$WithChallenge = $false, [bool]$WithBroom = $false, [bool]$WithCharms = $false, [bool]$WithReturn = $false) {
     $names = @('Maps/Lev_Tut1.unr')
     if ($WithChallenge) { $names += 'Maps/Lev_Tut1b.unr' }
     if ($WithBroom) {
@@ -444,13 +447,17 @@ function Get-HpvrMapInputs([string]$Root, [bool]$WithChallenge = $false, [bool]$
         if (-not $WithBroom) { throw 'Charms requires the preceding broom map.' }
         $names += 'Maps/Lev_Tut3.unr'
     }
+    if ($WithReturn) {
+        if (-not $WithCharms) { throw 'Hogwarts Return requires the preceding Charms map.' }
+        $names += 'Maps/Lev_Tut3b.unr'
+    }
     foreach ($name in $names) { Get-HpvrOwnedInput $Root (Join-Path $Root $name) }
 }
 
-function Get-HpvrDependencySet([string]$Root, [string]$GraphProbe, [bool]$WithChallenge = $false, [bool]$WithBroom = $false, [bool]$WithCharms = $false) {
+function Get-HpvrDependencySet([string]$Root, [string]$GraphProbe, [bool]$WithChallenge = $false, [bool]$WithBroom = $false, [bool]$WithCharms = $false, [bool]$WithReturn = $false) {
     $inputs = @{}
     $report = [Collections.Generic.List[string]]::new()
-    foreach ($mapInput in @(Get-HpvrMapInputs $Root $WithChallenge $WithBroom $WithCharms)) {
+    foreach ($mapInput in @(Get-HpvrMapInputs $Root $WithChallenge $WithBroom $WithCharms $WithReturn)) {
         $lines = @(Invoke-HpvrChecked $GraphProbe @($Root, $mapInput.Source) 'Owned package dependency scan')
         $count = 0
         foreach ($line in $lines) {
@@ -475,16 +482,27 @@ function Get-HpvrDependencySet([string]$Root, [string]$GraphProbe, [bool]$WithCh
         $inputFile = Get-HpvrOwnedInput $Root (Join-Path $Root $relative)
         $inputs[$inputFile.Relative] = $inputFile
     }
+    if ($WithCharms) {
+        # Padlock sparkles load this by name; no map import table references it.
+        $inputFile = Get-HpvrOwnedInput $Root (Join-Path $Root 'Textures/HP_FX.utx')
+        $inputs[$inputFile.Relative] = $inputFile
+    }
+    if ($WithReturn) {
+        # Owl letters are loaded by filename, outside the map's package graph.
+        $inputFile = Get-HpvrOwnedInput $Root (Join-Path $Root 'system/pickup.int')
+        $inputs[$inputFile.Relative] = $inputFile
+    }
     return [pscustomobject]@{ Inputs = @($inputs.Values | Sort-Object Relative); Report = @($report) }
 }
 
 function Get-HpvrFrontendAudioPlan([string]$Root, [string]$FrontendProbe, [string]$EncodedRoot,
-                                  [string]$ReportRoot, [bool]$WithChallenge = $false, [bool]$WithBroom = $false, [bool]$WithCharms = $false) {
+                                  [string]$ReportRoot, [bool]$WithChallenge = $false, [bool]$WithBroom = $false, [bool]$WithCharms = $false, [bool]$WithReturn = $false) {
     if ($WithBroom -and -not $WithChallenge) { throw 'Broomstick audio requires the preceding challenge map.' }
     if ($WithCharms -and -not $WithBroom) { throw 'Charms audio requires the preceding broom map.' }
     $plan = @{}
     # Older release probes accept --challenge; the three-map probe supports --map.
-    $passes = if ($WithCharms) { @(0, 1, 2, 3) } elseif ($WithBroom) { @(0, 1, 2) } else { @(-1) }
+    if ($WithReturn -and -not $WithCharms) { throw 'Hogwarts Return audio requires the preceding Charms map.' }
+    $passes = if ($WithReturn) { @(0, 1, 2, 3, 4) } elseif ($WithCharms) { @(0, 1, 2, 3) } elseif ($WithBroom) { @(0, 1, 2) } else { @(-1) }
     foreach ($map in $passes) {
         $passRoot = if ($map -lt 0) { $EncodedRoot } else { Join-Path $ReportRoot "encoded-map-$map" }
         Assert-HpvrNoLinks $passRoot
@@ -581,7 +599,7 @@ function Get-HpvrScenePreparationTool([string]$Root, $Release, [switch]$Skip) {
 
 function Invoke-HpvrScenePreparation([string]$Tool, [string]$StagedGame, [string]$OwnedRoot,
                                     [string]$ReleaseRoot, [string]$ReportRoot, [bool]$WithChallenge = $false,
-                                    [bool]$WithBroom = $false, [bool]$WithCharms = $false) {
+                                    [bool]$WithBroom = $false, [bool]$WithCharms = $false, [bool]$WithReturn = $false) {
     if ([string]::IsNullOrWhiteSpace($Tool)) { return }
     $stage = Get-HpvrFullPath $StagedGame
     $reports = Get-HpvrFullPath $ReportRoot
@@ -594,7 +612,7 @@ function Invoke-HpvrScenePreparation([string]$Tool, [string]$StagedGame, [string
         throw 'Scene preparation must use the isolated private HP staging directory.'
     }
     foreach ($path in @($Tool, $stage, $reports)) { Assert-HpvrNoLinks $path }
-    $null = @(Get-HpvrMapInputs $stage $WithChallenge $WithBroom $WithCharms)
+    $null = @(Get-HpvrMapInputs $stage $WithChallenge $WithBroom $WithCharms $WithReturn)
     $output = Join-Path $reports 'PreparedScenes'
     $stagedCache = Join-Path $stage 'Cache\Scenes'
     if (Test-HpvrWithin $output $stage) { throw 'Native scene preparation output must be outside its game-input tree.' }
@@ -604,6 +622,7 @@ function Invoke-HpvrScenePreparation([string]$Tool, [string]$StagedGame, [string
     if ($WithChallenge) { $maps += 1 }
     if ($WithBroom) { $maps += 2 }
     if ($WithCharms) { $maps += 3 }
+    if ($WithReturn) { $maps += 4 }
     $expected = @($maps | ForEach-Object { "map-$_.hpvc" })
     foreach ($folder in @($output, $stagedCache)) {
         foreach ($item in @(Get-ChildItem -LiteralPath $folder -Force)) {
@@ -657,7 +676,7 @@ function Invoke-HpvrScenePreparation([string]$Tool, [string]$StagedGame, [string
 
 if ($LibraryOnly) { return }
 
-Write-Host 'HPVR installer revision 7: automatic tools + four-map support + verified data permissions.'
+Write-Host 'HPVR installer revision 8: automatic tools + five-map support + verified data permissions.'
 
 if ($PromptForGamePath -and [string]::IsNullOrWhiteSpace($GamePath)) {
     $GamePath = Read-Host 'Folder of your installed US PC game'
@@ -665,7 +684,9 @@ if ($PromptForGamePath -and [string]::IsNullOrWhiteSpace($GamePath)) {
 if ([string]::IsNullOrWhiteSpace($GamePath)) {
     throw 'Pass -GamePath with the folder of your own installed US PC game, for example -GamePath "C:\Program Files\HP".'
 }
-$bundleRoot = Get-HpvrFullPath $(if ([string]::IsNullOrWhiteSpace($ReleaseRoot)) { $PSScriptRoot } else { $ReleaseRoot })
+$bundleRoot = Get-HpvrFullPath $(if (-not [string]::IsNullOrWhiteSpace($ReleaseRoot)) { $ReleaseRoot }
+    elseif (Test-Path -LiteralPath (Join-Path $PSScriptRoot '../release-manifest.json')) { Join-Path $PSScriptRoot '..' }
+    else { $PSScriptRoot })
 Assert-HpvrNoLinks $bundleRoot
 $ownedRoot = Get-HpvrFullPath $GamePath
 Assert-HpvrNoLinks $ownedRoot
@@ -676,7 +697,8 @@ $selectedMapIds = @(Get-HpvrReleaseMapIds $release -IncludeChallenge:$IncludeCha
 $withChallenge = $selectedMapIds -contains 1
 $withBroom = $selectedMapIds -contains 2
 $withCharms = $selectedMapIds -contains 3
-$null = @(Get-HpvrMapInputs $ownedRoot $withChallenge $withBroom $withCharms)
+$withReturn = $selectedMapIds -contains 4
+$null = @(Get-HpvrMapInputs $ownedRoot $withChallenge $withBroom $withCharms $withReturn)
 Write-Host ("Selected release maps: " + ($selectedMapIds -join ', ') + '. All declared release maps are installed automatically.')
 $toolsRoot = Join-Path $bundleRoot 'tools'
 $frontendProbe = Join-Path $toolsRoot 'hpvr_quest_frontend_probe.exe'
@@ -728,7 +750,7 @@ Write-Host "Private working data: $privateRun"
 Write-Host 'Original installation is read-only. No proprietary data will be added to the release directory.'
 
 # One selection drives package closure, audio, and prepared scenes together.
-$dependencies = Get-HpvrDependencySet $ownedRoot $graphProbe $withChallenge $withBroom $withCharms
+$dependencies = Get-HpvrDependencySet $ownedRoot $graphProbe $withChallenge $withBroom $withCharms $withReturn
 $dependencies.Report | Set-Content -LiteralPath (Join-Path $privateRun 'dependency-report.txt') -Encoding UTF8
 $ownedInputs = $dependencies.Inputs
 
@@ -747,7 +769,7 @@ foreach ($entry in $ownedInputs) {
 Write-Host "Staged $($ownedInputs.Count) required game-data files; no EXE, DLL, user config, or save was copied."
 
 # The probe enumerates the same original audio sources as each runtime level.
-$plan = Get-HpvrFrontendAudioPlan $stagedGame $frontendProbe $encodedRoot $privateRun $withChallenge $withBroom $withCharms
+$plan = Get-HpvrFrontendAudioPlan $stagedGame $frontendProbe $encodedRoot $privateRun $withChallenge $withBroom $withCharms $withReturn
 
 Add-HpvrSupplementalAudioPlan $stagedGame $soundProbe $encodedRoot $plan
 
@@ -767,7 +789,7 @@ Write-Progress -Activity 'Preparing original music and speech' -Completed
 # Conversion can take several minutes. Recheck the helper immediately before
 # execution, rather than relying only on the manifest check at installer start.
 if ($scenePreparationTool) { $scenePreparationTool = Get-HpvrScenePreparationTool $bundleRoot $release }
-$preparedScenes = @(Invoke-HpvrScenePreparation $scenePreparationTool $stagedGame $ownedRoot $bundleRoot $privateRun $withChallenge $withBroom $withCharms)
+$preparedScenes = @(Invoke-HpvrScenePreparation $scenePreparationTool $stagedGame $ownedRoot $bundleRoot $privateRun $withChallenge $withBroom $withCharms $withReturn)
 foreach ($entry in $preparedScenes) { $privateManifest.Add($entry) }
 
 Write-Host 'Checking the complete staged first-level scene and audio. This is offline validation, not a game launch.'

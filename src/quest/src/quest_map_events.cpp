@@ -85,6 +85,9 @@ bool MapEventGraph::Load(const wand::Hp1ActorVisualCensus& census) {
         if (name == "engine.trigger" || name == "hpbase.warntrigger") node.kind = MapEventNodeKind::trigger;
         else if (name == "hpbase.spelltrigger") node.kind = MapEventNodeKind::spell_trigger;
         else if (name == "engine.dispatcher") node.kind = MapEventNodeKind::dispatcher;
+        // Triggered by name only (bCollideActors=0); relays its Event, which
+        // starts the Malfoy duel on the return map.
+        else if (name == "hpbase.bossencountertrigger") node.kind = MapEventNodeKind::dispatcher;
         else if (name == "engine.counter") node.kind = MapEventNodeKind::counter;
         else if (name == "engine.roundrobin") node.kind = MapEventNodeKind::round_robin;
         else if (IsMover(name)) node.kind = MapEventNodeKind::mover;
@@ -96,7 +99,7 @@ bool MapEventGraph::Load(const wand::Hp1ActorVisualCensus& census) {
         else if (name == "hpbase.starstrigger") node.kind = MapEventNodeKind::stars_trigger;
         else if (name == "tut1.flipbarrel" || name == "tut1.tut1gnome" ||
                  name.starts_with("hprops.flipendovase") || name == "hprops.bronzecauldron" ||
-                 name == "hprops.bronzechest" || name == "hprops.ironchest" ||
+                 name == "hprops.bronzechest" || name == "hprops.ironchest" || name == "hprops.woodchest" ||
                  name == "engine.triggerlight" || name == "hpbase.spawnthingy" || name == "hprops.padlock" || !actor.event.empty()) node.kind = MapEventNodeKind::actor;
         else continue;
         if (actor.actor_reference <= 0 || graph.nodes_.size() >= kMaximumNodes ||
@@ -149,6 +152,10 @@ bool MapEventGraph::Load(const wand::Hp1ActorVisualCensus& census) {
                 }
             }
         }
+        // Scoped to the class: plain Engine.Dispatchers with an Event but no
+        // OutEvents stay inert on the released maps.
+        if (name == "hpbase.bossencountertrigger" && node.outputs.empty() && !node.event.empty())
+            node.outputs.emplace_back(node.event, 0.0F);
         const auto hash_actor=[&](std::uint64_t& hash){
             Hash(hash,std::to_string(actor.actor_reference));Hash(hash,actor.object_name);
             Hash(hash,actor.qualified_class_name);Hash(hash,node.tag);Hash(hash,node.event);

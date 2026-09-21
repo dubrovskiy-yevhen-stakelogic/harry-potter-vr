@@ -63,7 +63,7 @@ bool PrepareGeometryFromOwnedData(const std::filesystem::path& root,unsigned map
             source.position_m.z-(sky?0:start.position_m[2])},yaw);
         g.vertices.push_back({{p[0],p[1],p[2]},
             {source.texture_uv[0],source.texture_uv[1]},{source.lightmap_uv[0],source.lightmap_uv[1]},
-            source.texture_layer,(source.polygon_flags&~(map_id==3?0x04000000U:0U))|((map_id==3&&source.texture_layer<scene.texture_layer_names.size()&&
+            source.texture_layer,(source.polygon_flags&~((map_id==3||map_id==4)?0x04000000U:0U))|(((map_id==3||map_id==4)&&source.texture_layer<scene.texture_layer_names.size()&&
                 AsciiFold(scene.texture_layer_names[source.texture_layer]).find("mirrorblur")!=std::string::npos)?0x04000000U:0U)|((source.texture_layer<scene.texture_layer_names.size()&&
                 IsReflectiveWoodFloor(scene.texture_layer_names[source.texture_layer],source.normal.y))?0x10000000U:0U),
             source.has_lightmap,PackAuthoredLighting(p,world.lights)});

@@ -148,7 +148,8 @@ function Add-PlayerInput([string]$Source, [string]$Destination, [string]$Kind) {
     $hpvrCopies.Add([pscustomobject]@{ source = $sourcePath; path = $Destination; kind = $Kind; sha256 = $inputHash })
 }
 Add-PlayerInput $hpvrApk 'HPVR-Quest-Demo.apk' 'apk'
-foreach ($name in @('INSTALL-HPVR.ps1', 'INSTALL-HPVR.cmd', 'PLAYER-INSTALL.md')) {
+Add-PlayerInput 'tools/release/INSTALL-HPVR.ps1' 'tools/INSTALL-HPVR.ps1' 'text'
+foreach ($name in @('INSTALL.bat', 'PLAYER-INSTALL.md', 'CHANGELOG.md')) {
     Add-PlayerInput ('tools/release/' + $name) $name 'text'
 }
 Add-PlayerInput 'README.md' 'README.md' 'player-readme'
@@ -204,7 +205,7 @@ foreach ($copy in $hpvrCopies) {
         if ($developmentHeading -lt 0) { throw 'README player/developer section boundary is missing.' }
         $playerReadme = $playerReadme.Substring(0, $developmentHeading).TrimEnd()
         $playerReadme = [regex]::Replace($playerReadme, '(?s)## Want to play\?.*?(?=## Included levels)',
-            "## Getting started`n`nRun ``INSTALL-HPVR.cmd`` and select your original PC game folder.`n`n")
+            "## Getting started`n`nRun ``INSTALL.bat`` and select your original PC game folder.`n`n")
         $playerReadme = $playerReadme.Replace('(tools/release/PLAYER-INSTALL.md)', '(PLAYER-INSTALL.md)')
         $playerReadme += "`n`nDiscord: [HPVR](https://discord.com/channels/747967102895390741/1547254536203407390).`n"
         [IO.File]::WriteAllText($destination, $playerReadme, [Text.UTF8Encoding]::new($false))
@@ -228,7 +229,7 @@ $hpvrManifest = [ordered]@{
     gameAssetsIncluded = $false
     # Explicit release scope: installers do not guess from files beside them.
     # Keep rebuilding historical one-map APKs possible with explicit paths.
-    mapIds = @(if ($hpvrMetadata.versionCode -ge 71) { 0; 1; 2; 3 } elseif ($hpvrMetadata.versionCode -ge 57) { 0; 1; 2 } elseif ($hpvrMetadata.versionCode -ge 38) { 0; 1 } else { 0 })
+    mapIds = @(if ($hpvrMetadata.versionCode -ge 85) { 0; 1; 2; 3; 4 } elseif ($hpvrMetadata.versionCode -ge 71) { 0; 1; 2; 3 } elseif ($hpvrMetadata.versionCode -ge 57) { 0; 1; 2 } elseif ($hpvrMetadata.versionCode -ge 38) { 0; 1 } else { 0 })
     files = @($hpvrFiles.ToArray())
 }
 if ($hpvrPreparedSceneVersion -gt 0) { $hpvrManifest.preparedSceneVersion = $hpvrPreparedSceneVersion }
@@ -236,7 +237,7 @@ $hpvrManifestPath = Join-Path $hpvrOutput 'release-manifest.json'
 $hpvrManifest | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $hpvrManifestPath -Encoding UTF8
 
 # Reuse the shipping installer's independent manifest checks before archiving.
-. (Join-Path $hpvrOutput 'INSTALL-HPVR.ps1') -LibraryOnly
+. (Join-Path $hpvrOutput 'tools/INSTALL-HPVR.ps1') -LibraryOnly
 $null = Read-HpvrReleaseManifest $hpvrOutput
 $hpvrAllowed = @{}
 foreach ($entry in $hpvrFiles) { $hpvrAllowed[$entry.path] = $entry.sha256 }
@@ -291,4 +292,4 @@ Write-Output "ZIP=$hpvrZip"
 Write-Output "ZIP_SHA256=$hpvrZipHash"
 Write-Output "APK_SHA256=$hpvrApkHash"
 Write-Output 'OWNED_DATA_PREPARATION=NOT_PERFORMED APK_INSTALL=NOT_PERFORMED APP_LAUNCH=NOT_PERFORMED'
-Write-Output 'Before shipping: run the bundled INSTALL-HPVR.ps1 -PrepareOnly against an owned US PC installation, with -WorkRoot outside this player folder.'
+Write-Output 'Before shipping: run the bundled tools/INSTALL-HPVR.ps1 -PrepareOnly against an owned US PC installation, with -WorkRoot outside this player folder.'

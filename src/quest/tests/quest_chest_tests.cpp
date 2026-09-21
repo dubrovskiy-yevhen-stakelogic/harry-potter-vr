@@ -48,7 +48,8 @@ int main(int argc,char** argv){try{
             check(changed,"open chest lid differs from closed pose");
         }
         std::vector<BeanDraw> beans;
-        check(LoadOwnedBeans(root,map,start,yaw,vertices,pixels,layers,beans,&collision),"owned chest rewards load");
+        // This fixture loads props only. Full-map preparation verifies pickup grounding against the BSP floor.
+        check(LoadOwnedBeans(root,map,start,yaw,vertices,pixels,layers,beans),"owned chest rewards load");
         unsigned reward_count=0,card_count=0;
         for(const auto& bean:beans){
             if(std::ranges::none_of(props,[&](const auto& value){return value.reference==bean.source_actor&&chest::IsChest(value.name);}))continue;

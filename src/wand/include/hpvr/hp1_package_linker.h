@@ -154,6 +154,8 @@ struct Hp1CharacterActor {
     std::int32_t mesh_reference{};
     std::string mesh_object_path;
     std::vector<Hp1CharacterSkinOverride> skins;
+    // Hidden only by its class default (Hedwig): present, but shown by script.
+    bool hidden_by_default{};
 };
 
 struct Hp1CharacterManifest {

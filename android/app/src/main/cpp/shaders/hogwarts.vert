@@ -21,6 +21,7 @@ layout(location = 3) out vec3 out_light;
 layout(location = 4) out vec2 out_lightmap_uv;
 layout(location = 5) flat out uint out_has_lightmap;
 layout(location = 6) out vec3 out_world_position;
+layout(location = 7) flat out float out_actor_opacity;
 
 void main() {
     gl_Position = eye.view_projection * vec4(in_position, 1.0);
@@ -31,6 +32,7 @@ void main() {
     out_uv = in_uv;
     out_texture_layer = in_texture_layer;
     out_polygon_flags = in_polygon_flags;
+    out_actor_opacity = eye.dark_position_radius[1].w < 0.0 ? clamp(-eye.dark_position_radius[1].w, 0.0, 1.0) : -1.0;
     out_lightmap_uv = in_lightmap_uv;
     out_has_lightmap = in_has_lightmap;
     out_world_position = in_position; // Reflective BSP is already world-space.

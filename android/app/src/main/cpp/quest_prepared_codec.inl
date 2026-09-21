@@ -189,8 +189,10 @@ bool Dimensions(const PreparedGeometry& g){
 }
 } // namespace prepared_codec
 
-bool ValidatePreparedGeometry(const PreparedGeometry& g){
+bool ValidatePreparedGeometry(const PreparedGeometry& g,std::string* reason=nullptr){
     using namespace prepared_codec;
+    if(reason)reason->clear();
+    const auto reject=[&](const char* detail){if(reason)*reason=detail;return false;};
     if(!Dimensions(g)||g.vertices.empty()||g.vertices.size()>kMaxVertices||g.vertices.size()%3||
         !g.map_vertices||g.map_vertices%3||!g.fixture_vertices||g.fixture_vertices%3||
         std::uint64_t(g.map_vertices)+g.fixture_vertices>g.vertices.size()||!g.fixture_actors||g.fixture_actors>32768||
@@ -200,12 +202,12 @@ bool ValidatePreparedGeometry(const PreparedGeometry& g){
         g.doors.size()>8192||g.characters.empty()||g.characters.size()>128||g.beans.size()>8192||
         g.knights.size()>256||g.challenge_props.size()>32768||g.flames.size()>65536||g.glows.size()>65536||
         g.targets.size()!=g.characters.size()||g.collision.empty()||!Collision(g.collision)||!Collision(g.prop_aim)||
-        g.animation_frames!=kCharacterAnimationFrameCount||!g.character_frame_vertices)return false;
+        g.animation_frames!=kCharacterAnimationFrameCount||!g.character_frame_vertices)return reject("scene dimensions or counts");
     const std::uint64_t major_bytes=g.vertices.size()*sizeof(GpuVertex)+g.textures.size()+g.lightmaps.size()+
         (g.collision.size()+g.prop_aim.size())*sizeof(CollisionTriangle);
-    if(major_bytes>kMaxBytes)return false;
+    if(major_bytes>kMaxBytes)return reject("scene byte budget");
     for(const auto& v:g.vertices){
-        if(!FiniteVector(v.position)||v.texture_layer>=g.texture_layers||v.has_lightmap>1)return false;
+        if(!FiniteVector(v.position)||v.texture_layer>=g.texture_layers||v.has_lightmap>1)return reject("vertex attributes");
         for(float uv:v.texture_uv)if(!Finite(uv))return false;
         for(float uv:v.lightmap_uv)if(!Finite(uv))return false;
     }
@@ -223,7 +225,7 @@ bool ValidatePreparedGeometry(const PreparedGeometry& g){
             !Finite(d.open_seconds)||d.open_seconds<0||!Finite(d.close_seconds)||d.close_seconds<0||
             !Finite(d.hold)||!Finite(d.stay_open)||!Finite(d.grid_increment)||d.grid_increment<=0||
             !Finite(d.open_yaw)||!Finite(d.phase)||d.phase<0||d.phase>1||!Finite(d.duration)||d.duration<0||
-            !Text(d.tag)||!Text(d.initial_state))return false;
+            !Text(d.tag)||!Text(d.initial_state))return reject("mover layout or state");
         const auto valid_key=[](const movers::Key& k){return std::ranges::all_of(k.offset_unreal,Finite)&&
             std::ranges::all_of(k.rotation_units,Finite);};
         if(!std::ranges::all_of(d.motion.keys,valid_key)||!valid_key(d.motion.source)||!valid_key(d.motion.pose))return false;
@@ -238,23 +240,23 @@ bool ValidatePreparedGeometry(const PreparedGeometry& g){
             !Finite(a.base_yaw)||!Finite(a.yaw)||!Finite(a.desired_yaw)||!FiniteVector(a.collision_center)||
             !FiniteVector(a.base_origin)||!FiniteVector(a.cutscene_offset)||!Bounds(a.visual_minimum,a.visual_maximum)||
             !Finite(a.collision_radius)||a.collision_radius<=0||!Finite(a.collision_min_y)||!Finite(a.collision_max_y)||
-            a.collision_max_y<a.collision_min_y)return false;
+            a.collision_max_y<a.collision_min_y)return reject("character layout or bounds");
         for(const auto& [name,c]:a.clips){const auto count=std::uint64_t(a.vertex_count)*c.frame_count;
             if(!Text(name,true)||!Finite(c.duration)||c.duration<=0||!c.frame_count||c.frame_count>4096||
-                !Range(c.first_vertex,count,g.vertices.size())||!clips.emplace(c.first_vertex,count).second)return false;}
+                !Range(c.first_vertex,count,g.vertices.size())||!clips.emplace(c.first_vertex,count).second)return reject("character clip range");}
     }
-    if(g.character_frame_vertices!=g.characters.front().vertex_count)return false;
-    for(const auto& [first,count]:clips){if(first!=expected)return false;expected+=count;}
+    if(g.character_frame_vertices!=g.characters.front().vertex_count)return reject("first character vertex count");
+    for(const auto& [first,count]:clips){if(first!=expected)return reject("character clip continuity");expected+=count;}
     ids.clear();
     for(const auto& b:g.beans){
         const auto count=std::uint64_t(b.count)*b.frames;
         if(b.actor_reference<=0||!ids.insert(b.actor_reference).second||b.source_actor<0||b.kind>4||
             b.first!=expected||!b.frames||b.frames>4096||!Range(b.first,count,g.vertices.size())||
             !FiniteVector(b.position)||!FiniteVector(b.emission)||!Finite(b.duration)||b.duration<=0||
-            !Finite(b.yaw)||!Finite(b.emission_time)||b.emission_time<0||b.emission_time>1)return false;
+            !Finite(b.yaw)||!Finite(b.emission_time)||b.emission_time<0||b.emission_time>1)return reject("pickup layout or state");
         expected+=count;
     }
-    if(expected!=g.vertices.size())return false;
+    if(expected!=g.vertices.size())return reject("unreferenced vertex tail");
     for(const auto& k:g.knights){const auto count=std::uint64_t(k.count)*k.frames;
         if(!FiniteVector(k.origin)||!Finite(k.yaw)||!Finite(k.scale)||k.scale<=0||!Finite(k.time)||k.time<0||
             k.layer>=g.texture_layers||!k.frames||k.frames>4096||k.first<g.map_vertices||
@@ -264,7 +266,11 @@ bool ValidatePreparedGeometry(const PreparedGeometry& g){
         if(p.reference<=0||!ids.insert(p.reference).second||!Text(p.name,true)||
             p.first<g.map_vertices||!Range(p.first,p.count,fixture_end)||!Bounds(p.minimum,p.maximum)||
             !Finite(p.animation_duration)||p.animation_duration<=0||!Finite(p.settled_duration)||p.settled_duration<=0||
-            p.animation_frames>4096||p.settled_frames>4096)return false;
+            p.animation_frames>4096||p.settled_frames>4096){
+            if(reason)*reason="prop layout or bounds: "+std::to_string(p.reference)+" "+p.name+
+                " first="+std::to_string(p.first)+" count="+std::to_string(p.count);
+            return false;
+        }
         if(p.animation_frames&&!Range(p.animation_first,std::uint64_t(p.count)*p.animation_frames,fixture_end))return false;
         if(p.settled_frames&&!Range(p.settled_first,std::uint64_t(p.count)*p.settled_frames,fixture_end))return false;
         if(p.broken_count&&!Range(p.broken_first,p.broken_count,fixture_end))return false;

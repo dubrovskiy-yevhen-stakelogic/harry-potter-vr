@@ -706,20 +706,89 @@ struct PropertyTag {
                tag.kind == PropertyKind::text_string) {
         Cursor value(tag.value);
         const auto count = value.read_compact_index();
-        if (count <= 0 || static_cast<std::size_t>(count) > value.remaining()) {
+        const auto units = static_cast<std::size_t>(
+            count < 0 ? -static_cast<std::int64_t>(count) : count);
+        const auto unit_bytes = count < 0 ? 2U : 1U;
+        if (units > kMaximumSerializedStringUnits ||
+            units > value.remaining() / unit_bytes) {
             fail(Hp1ProfileStatus::invalid_profile,
-                 "String property has an invalid byte count");
+                 "String property " + std::string(tag.name) + " has invalid byte count " +
+                 std::to_string(count) + " (remaining " + std::to_string(value.remaining()) + ")");
         }
-        const auto bytes = value.take(static_cast<std::size_t>(count));
-        if (value.remaining() != 0 || bytes.empty() || bytes.back() != 0) {
+        if (count < 0) {
+            for (std::size_t index = 0; index < units; ++index) {
+                std::uint32_t code = value.read_u16();
+                if (index + 1 == units) {
+                    if (code != 0) {
+                        fail(Hp1ProfileStatus::invalid_profile,
+                             "UTF-16 string property is not terminated");
+                    }
+                    break;
+                }
+                if (code >= 0xD800 && code <= 0xDBFF) {
+                    if (index + 2 >= units) {
+                        fail(Hp1ProfileStatus::invalid_profile,
+                             "UTF-16 string property has an incomplete surrogate pair");
+                    }
+                    const auto low = value.read_u16();
+                    ++index;
+                    if (low < 0xDC00 || low > 0xDFFF) {
+                        fail(Hp1ProfileStatus::invalid_profile,
+                             "UTF-16 string property has an invalid surrogate pair");
+                    }
+                    code = 0x10000 + ((code - 0xD800) << 10U) + (low - 0xDC00);
+                } else if (code >= 0xDC00 && code <= 0xDFFF) {
+                    fail(Hp1ProfileStatus::invalid_profile,
+                         "UTF-16 string property has an unpaired low surrogate");
+                }
+                auto& text = property.text_value;
+                if (code < 0x80) {
+                    text.push_back(static_cast<char>(code));
+                } else if (code < 0x800) {
+                    text.push_back(static_cast<char>(0xC0 | (code >> 6U)));
+                    text.push_back(static_cast<char>(0x80 | (code & 0x3F)));
+                } else if (code < 0x10000) {
+                    text.push_back(static_cast<char>(0xE0 | (code >> 12U)));
+                    text.push_back(static_cast<char>(0x80 | ((code >> 6U) & 0x3F)));
+                    text.push_back(static_cast<char>(0x80 | (code & 0x3F)));
+                } else {
+                    text.push_back(static_cast<char>(0xF0 | (code >> 18U)));
+                    text.push_back(static_cast<char>(0x80 | ((code >> 12U) & 0x3F)));
+                    text.push_back(static_cast<char>(0x80 | ((code >> 6U) & 0x3F)));
+                    text.push_back(static_cast<char>(0x80 | (code & 0x3F)));
+                }
+            }
+        } else if (count > 0) {
+            const auto bytes = value.take(units);
+            if (bytes.back() != 0) {
+                fail(Hp1ProfileStatus::invalid_profile,
+                     "String property has invalid termination");
+            }
+            property.text_value.assign(
+                reinterpret_cast<const char*>(bytes.data()), bytes.size() - 1U);
+        }
+        if (value.remaining() != 0) {
             fail(Hp1ProfileStatus::invalid_profile,
-                 "String property has invalid termination");
+                 "String property has trailing bytes");
         }
-        property.text_value.assign(
-            reinterpret_cast<const char*>(bytes.data()), bytes.size() - 1U);
         property.text_value_serialized = true;
+    } else if (tag.kind == PropertyKind::structure && tag.structure_name.has_value() &&
+               ascii_equal_fold(*tag.structure_name, "stationData")) {
+        Cursor value(tag.value);
+        Hp1StationRoute route;
+        route.destination=package.name(value.read_compact_index());
+        route.next_group=value.read_i32();
+        route.path_type=package.name(value.read_compact_index());
+        route.first_path=package.name(value.read_compact_index());
+        for(auto& angle:route.rotation_units)angle=value.read_i32();
+        route.pause_seconds=value.read_f32();
+        route.behavior=value.read_u8();
+        if(value.remaining()!=0 || route.next_group<0 || route.next_group>=4 ||
+           !std::isfinite(route.pause_seconds) || route.pause_seconds<0 || route.behavior>4)
+            fail(Hp1ProfileStatus::invalid_profile,"Invalid stationData route");
+        property.station_route=std::move(route);
     } else if (tag.kind == PropertyKind::structure &&
-               tag.structure_name.has_value() &&
+                 tag.structure_name.has_value() &&
                (ascii_equal_fold(*tag.structure_name, "CutCast") ||
                 ascii_equal_fold(*tag.structure_name, "CutLoc"))) {
         Cursor value(tag.value);
@@ -1862,6 +1931,30 @@ Hp1PackageLinkTable inspect_hp1_package_link_table(
     return result;
 }
 
+Hp1Navigation inspect_hp1_navigation(const std::filesystem::path& map_package) {
+    Hp1Navigation result;
+    try {
+        const auto level=inspect_hp1_level_handles(map_package);
+        if(level.status!=Hp1ProfileStatus::ok)fail(level.status,level.error);
+        const Package package(map_package);
+        Cursor cursor(package.export_bytes(static_cast<std::size_t>(level.level_reference-1)));
+        (void)cursor.take(level.model_end_offset);
+        const auto count=checked_count(cursor.read_compact_index(),65536,"Level ReachSpecs");
+        result.paths.reserve(count);
+        for(std::size_t i=0;i<count;++i){
+            Hp1ReachSpec spec;spec.distance=cursor.read_i32();spec.start=cursor.read_compact_index();spec.end=cursor.read_compact_index();
+            spec.radius=cursor.read_i32();spec.height=cursor.read_i32();spec.flags=cursor.read_i32();
+            const auto pruned=cursor.read_u8();spec.pruned=pruned!=0;
+            package.require_valid_reference(spec.start);package.require_valid_reference(spec.end);
+            if(spec.start<0||spec.end<0||spec.distance<0||spec.distance>10000000||spec.radius<0||spec.radius>100000||
+               spec.height<0||spec.height>100000||pruned>1)fail(Hp1ProfileStatus::invalid_profile,"invalid Level ReachSpec");
+            result.paths.push_back(spec);
+        }
+        result.status=Hp1ProfileStatus::ok;
+    }catch(const std::exception& e){result={};result.error=e.what();}
+    return result;
+}
+
 Hp1LevelHandles inspect_hp1_level_handles(
     const std::filesystem::path& map_package) {
     Hp1LevelHandles result;
@@ -1942,6 +2035,7 @@ Hp1LevelHandles inspect_hp1_level_handles(
         result.level_reference =
             static_cast<std::int32_t>(*level_index) + 1;
         result.world_model_reference = model_reference;
+        result.model_end_offset = cursor.position();
     } catch (const ProfileException& error) {
         result = {};
         result.status = error.status();
@@ -2060,10 +2154,13 @@ Hp1ActorVisualCensus inspect_hp1_actor_visuals(
         }
         result.actors.reserve(
             level.actor_references.size() - level.null_actor_count);
+        std::set<std::int32_t> visited;
         for (std::size_t slot = 0; slot < level.actor_references.size();
              ++slot) {
             const auto reference = level.actor_references[slot];
-            if (reference <= 0) {
+            // Level slots may alias the same export. It remains one actor;
+            // retain its first slot for diagnostics and stable ordering.
+            if (reference <= 0 || !visited.insert(reference).second) {
                 continue;
             }
             const auto export_index = static_cast<std::size_t>(reference - 1);
@@ -2597,7 +2694,9 @@ static Hp1P8Texture load_hp1_p8_texture_impl(
                     static_cast<std::size_t>(height_signed);
                 if (retain && byte_count != pixel_count) {
                     fail(Hp1ProfileStatus::invalid_profile,
-                         "P8 mip byte count does not match its dimensions");
+                         "P8 texture " + result.object_name + " mip " + std::to_string(mip_index) +
+                         " has " + std::to_string(byte_count) + " bytes for " +
+                         std::to_string(width_signed) + "x" + std::to_string(height_signed));
                 }
                 if (retain) {
                     parsed.push_back({
@@ -2615,12 +2714,12 @@ static Hp1P8Texture load_hp1_p8_texture_impl(
             return parsed;
         };
 
+        const auto parsed_mips =
+            parse_mips(cursor, true, "Texture Mips");
         if (has_compressed_mips) {
             static_cast<void>(
                 parse_mips(cursor, false, "Texture compressed Mips"));
         }
-        const auto parsed_mips =
-            parse_mips(cursor, true, "Texture Mips");
         if (parsed_mips.empty()) {
             fail(Hp1ProfileStatus::invalid_profile,
                  "P8 Texture has no mip levels");
@@ -2931,6 +3030,10 @@ Hp1MpegSound load_hp1_mpeg_sound(
                  "selected export is not Sound or Music");
         }
         const auto bytes = package.export_bytes(index);
+        // PCM samples can contain accidental MPEG sync words. A bounded WAVE
+        // payload must go through the WAVE reader, not raw MPEG header scanning.
+        if(find_riff_wave(bytes).has_value())
+            fail(Hp1ProfileStatus::invalid_profile,"Sound contains RIFF/WAVE, not a raw MPEG stream");
         std::optional<std::size_t> stream_offset;
         std::uint32_t sample_rate = 0;
         std::uint16_t channels = 0;

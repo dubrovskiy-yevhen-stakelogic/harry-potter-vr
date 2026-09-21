@@ -7,14 +7,14 @@ namespace hpvr::quest {
 enum class SpellInputPath { Basic, Gesture, Voice };
 
 constexpr bool MapAllowsSpellInput(unsigned map_id, SpellInputPath path) {
-    if (IsWalkingChallenge(map_id)) return true;
+    if (IsWalkingSpellMap(map_id)) return true;
     return map_id == kIntroductionMapId && path != SpellInputPath::Voice;
 }
 
 constexpr bool BasicSpellGameplayAllowed(unsigned map_id, unsigned quest_stage,
                                          bool challenge_complete) {
     if (!MapAllowsSpellInput(map_id, SpellInputPath::Basic)) return false;
-    if (IsWalkingChallenge(map_id)) return !challenge_complete;
+    if (IsWalkingSpellMap(map_id)) return !challenge_complete;
     return quest_stage < 20 || quest_stage == 23;
 }
 

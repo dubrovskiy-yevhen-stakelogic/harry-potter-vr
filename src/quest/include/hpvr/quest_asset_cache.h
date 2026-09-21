@@ -34,7 +34,7 @@
 
 namespace hpvr::quest::cache {
 inline constexpr std::uint32_t kSchema=1,kCookRevision=45;
-inline constexpr std::uint32_t CookRevision(std::uint32_t map){return map==3?70:map==2?65:kCookRevision;}
+inline constexpr std::uint32_t CookRevision(std::uint32_t map){return map==4?78:map==3?70:map==2?65:kCookRevision;}
 inline constexpr std::uint64_t kMaximumPayload=1024ULL*1024ULL*1024ULL;
 inline constexpr std::uint32_t kMaximumString=1024U*1024U;
 inline constexpr std::size_t kHeaderSize=48;

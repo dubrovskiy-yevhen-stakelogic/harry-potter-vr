@@ -25,7 +25,7 @@ void BindMirrorMovers(std::vector<MirrorSurface>& mirrors,const std::vector<Door
     for(auto& mirror:mirrors){
         if(std::abs(mirror.normal[1])>.02F)continue;
         float nearest=9;
-        for(const auto& door:doors)if(door.tag=="mirror1"||door.tag=="mirror3"){
+        for(const auto& door:doors)if(door.tag=="mirror1"||door.tag=="mirror3"||door.tag=="secretmirrortwo"||door.tag=="secretmirrorthree"){
             const auto delta=SubtractVector(door.pivot,mirror.center);const float distance=DotVector(delta,delta);
             if(distance<nearest){nearest=distance;mirror.mover_reference=door.actor_reference;}
         }

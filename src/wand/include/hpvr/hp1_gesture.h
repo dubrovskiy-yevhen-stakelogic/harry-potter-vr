@@ -6,6 +6,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <filesystem>
+#include <optional>
 #include <span>
 #include <string>
 #include <string_view>
@@ -111,6 +112,16 @@ struct Hp1ExportPayload {
 [[nodiscard]] Hp1ExportPayload load_hp1_export_payload(
     const std::filesystem::path& package, std::int32_t reference);
 
+struct Hp1ReachSpec {
+    std::int32_t distance{},start{},end{},radius{},height{},flags{};
+    bool pruned=false;
+};
+struct Hp1Navigation {
+    Hp1ProfileStatus status{Hp1ProfileStatus::invalid_profile};
+    std::string error;
+    std::vector<Hp1ReachSpec> paths;
+};
+[[nodiscard]] Hp1Navigation inspect_hp1_navigation(const std::filesystem::path& map_package);
 struct Hp1LevelHandles {
     Hp1ProfileStatus status{Hp1ProfileStatus::invalid_profile};
     std::string error;
@@ -119,6 +130,7 @@ struct Hp1LevelHandles {
     std::int32_t world_model_reference{};
     std::vector<std::int32_t> actor_references;
     std::size_t null_actor_count{};
+    std::size_t model_end_offset{};
 };
 
 struct Hp1BspVector {
@@ -329,6 +341,14 @@ struct Hp1PlayerStartCensus {
     std::vector<Hp1PlayerStart> player_starts;
 };
 
+struct Hp1StationRoute {
+    std::string destination,path_type,first_path;
+    std::int32_t next_group{};
+    std::array<std::int32_t,3> rotation_units{};
+    float pause_seconds{};
+    std::uint8_t behavior{};
+};
+
 struct Hp1ClassDefaultProperty {
     std::string name;
     std::uint8_t kind{};
@@ -342,6 +362,7 @@ struct Hp1ClassDefaultProperty {
     std::int32_t object_reference{};
     std::vector<std::string> object_path;
     bool object_reference_serialized{};
+    std::optional<Hp1StationRoute> station_route;
 };
 
 struct Hp1ActorVisual {

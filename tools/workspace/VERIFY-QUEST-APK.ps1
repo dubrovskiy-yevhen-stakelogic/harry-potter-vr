@@ -287,7 +287,7 @@ try {
         -not $readOnlyData.Contains('s_spell_hit1')) {
         throw 'APK ARM64 host is missing a required C35 story/rendering marker'
     }
-    $progressWriter = if($ExpectedVersionCode -ge 58){'HPVR_PROGRESS 9'}elseif($challengeBuild){'HPVR_PROGRESS 8'}else{'HPVR_PROGRESS 7'}
+    $progressWriter = if($ExpectedVersionCode -ge 79){'HPVR_PROGRESS 10'}elseif($ExpectedVersionCode -ge 58){'HPVR_PROGRESS 9'}elseif($challengeBuild){'HPVR_PROGRESS 8'}else{'HPVR_PROGRESS 7'}
     if ($ExpectedVersionCode -ge 58) {
         foreach ($marker in @('Maps/Lev_Tut3.unr', 'CHARMS TRAINING', 'FOLIO MAGI')) {
             if (-not $readOnlyData.Contains($marker)) { throw "APK missing Charms/menu support: $marker" }
@@ -401,10 +401,10 @@ Write-Host "[hpvr.quest.apk.verify] path=$ApkPath"
 Write-Host "[hpvr.quest.apk.verify] sha256=$($hash.Hash)"
 Write-Host "[hpvr.quest.apk.verify] local_voice_recording_diagnostic=$([bool]$VoiceDiagnostics)"
 Write-Host "[hpvr.quest.apk.verify] version=$ExpectedVersionName versionCode=$ExpectedVersionCode release=$([bool]$Release) challenge=$challengeBuild abi=arm64-v8a game_data_payload=NONE signature=VALID alignment=VALID"
-Write-Host "[hpvr.quest.apk.verify] regression_features=C37 camera=LIVE_HARRY_OR_THEATRICAL_6DOF loading=WARNER_THEATER vr_settings=$settingsWriter audio=USER_OWNED_RUNTIME_DATA runtime_acceptance=PENDING"
+Write-Host "[hpvr.quest.apk.verify] camera=LIVE_HARRY_OR_THEATRICAL_6DOF loading=WARNER_THEATER vr_settings=$settingsWriter audio=USER_OWNED_RUNTIME_DATA"
 if($challengeBuild){
     $recovery = if ($ExpectedVersionCode -ge 44) { 'TIMED_FAINT_CHECKPOINT' } else { 'AUTHORED_BSP' }
-    $verifiedMaps = if ($ExpectedVersionCode -ge 58) { 'INTRO_FLIPENDO_BROOM_CHARMS' } elseif ($ExpectedVersionCode -ge 56) { 'INTRO_FLIPENDO_BROOM' } else { 'INTRO_AND_FLIPENDO_CHALLENGE' }
+    $verifiedMaps = if ($ExpectedVersionCode -ge 85) { 'INTRO_FLIPENDO_BROOM_CHARMS_RETURN' } elseif ($ExpectedVersionCode -ge 58) { 'INTRO_FLIPENDO_BROOM_CHARMS' } elseif ($ExpectedVersionCode -ge 56) { 'INTRO_FLIPENDO_BROOM' } else { 'INTRO_AND_FLIPENDO_CHALLENGE' }
     Write-Host "[hpvr.quest.apk.verify] challenge_markers=C38 save_writer=$progressWriter maps=$verifiedMaps events=MOVERS_STARS_CUTSCENES pit_recovery=$recovery"
 }
-if($voiceBuild){Write-Host '[hpvr.quest.apk.verify] voice=C47 neural_model_and_notice_files=24 model_sha256=VERIFIED network=NONE microphone=OPT_IN runtime_acceptance=PENDING'}
+if($voiceBuild){Write-Host '[hpvr.quest.apk.verify] voice=NEURAL neural_model_and_notice_files=24 model_sha256=VERIFIED network=NONE microphone=OPT_IN'}

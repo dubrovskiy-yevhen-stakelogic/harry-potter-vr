@@ -4,9 +4,11 @@
 #include "hpvr/quest_demo.h"
 #include "hpvr/quest_maps.h"
 #include "hpvr/quest_house_point_hud.h"
+#include "hpvr/quest_dialogue.h"
 #include <array>
 #include <filesystem>
 #include <string>
+#include <string_view>
 #include <vector>
 #include <cstdint>
 namespace hpvr::quest {
@@ -22,6 +24,7 @@ struct StoryPage {
     wand::Hp1MpegSound voice;
 };
 struct FrontAssets {
+    std::string owl_letter;
     struct BumpSpeech { std::int32_t actor_reference{}; std::vector<std::string> lines; };
     struct MusicCue {
         std::int32_t actor_reference{};
@@ -30,8 +33,10 @@ struct FrontAssets {
         unsigned volume_percent=100;
     };
     unsigned map_id=0,level_music_index=3;
+    std::vector<std::int32_t> non_bean_pickups;
     std::vector<MusicCue> music_cues;
     std::vector<BumpSpeech> bump_speech;
+    std::map<std::string,std::string> dialogue_aliases;
     std::vector<FrontTexture> textures;
     std::array<std::uint32_t,6> menu{}, paper{};
     std::array<std::uint32_t,2> logo{};
@@ -41,6 +46,8 @@ struct FrontAssets {
     std::array<std::uint32_t,3> tabs{};
     std::array<std::uint32_t,4> bean_pile{};
     std::uint32_t health_full{},health_empty{},bean_counter{},point_badge{},star_icon{};
+    std::uint32_t boss_empty{},peeves_health{},malfoy_health{};
+    bool has_boss_art=false;
     float health_top=0,health_bottom=1; // Alpha bounds of owned lightning art.
     std::uint32_t missing_small{},arrow_left{},arrow_right{};
     std::uint32_t font{}, white{}, smoke{},card_face{};
@@ -48,11 +55,18 @@ struct FrontAssets {
     std::vector<wand::Hp1MpegSound> music;
     std::vector<wand::Hp1MpegSound> gameplay_audio; // Ron, basic cast, twins lesson and pickup.
     wand::Hp1PcmSound frog_pickup;
+    wand::Hp1PcmSound scroll_pickup;
     wand::Hp1MpegSound card_pickup;
     std::string level_objective;
     std::string error;
 };
 bool LoadFrontAssets(const std::filesystem::path& root, FrontAssets* out,unsigned map_id=0);
+inline std::size_t ExpectedSceneAudioClipCount(const FrontAssets& assets) {
+    // Five introductory lines precede the story and gameplay clips. The basic
+    // cast has its own channel; the appended frog PCM occupies its count slot.
+    return 5 + assets.story.size() + assets.gameplay_audio.size() +
+        (assets.map_id == kHogwartsReturnMapId ? 1U : 0U); // Scroll PCM follows the frog.
+}
 std::string AudioCacheName(const wand::Hp1MpegSound& source, bool stereo=false);
 struct ProgressSave {
     unsigned health=100,lesson_passes=0;
@@ -72,6 +86,7 @@ struct ProgressSave {
     std::array<float,2> doors{};
     unsigned map_id=kIntroductionMapId; // Stable QuestMapDescriptor ID; actor references are map-local.
     unsigned banked_beans=0; // Beans collected on completed maps.
+    unsigned spent_beans=0;
     std::uint32_t earned_cards=0,completed_maps=0;
     std::array<unsigned,4> house_points{}; // Ravenclaw, Hufflepuff, Slytherin, Gryffindor.
     std::array<unsigned,8> lesson_best{},lesson_points{};
@@ -90,7 +105,7 @@ struct RewardApproach {
 };
 bool ReadProgress(const std::filesystem::path& directory,unsigned slot,ProgressSave* out);
 bool WriteProgress(const std::filesystem::path& directory,unsigned slot,ProgressSave* inout);
-enum class FrontScreen { Main, Slots, Slot, Replace, Story, Game, Pause, Stub, Cards, Report, Objective, Vr, Debug, Welcome, DemoEnd, Levels, LevelSlots, LevelStart, Controls };
+enum class FrontScreen { Main, Slots, Slot, Replace, Story, Game, Pause, Stub, Cards, Report, Objective, Vr, Debug, Welcome, DemoEnd, Levels, LevelSlots, LevelStart, Controls, Letter };
 enum class FrontAction { None, NewGame, Continue, StoryDone, SaveMenu, SkipScene, Resume, BeginLevel, OpenCommunity, StartSelectedLevel };
 inline constexpr unsigned kVrTurningRow=9;
 inline constexpr unsigned kVrTurnSpeedRow=10;
@@ -133,6 +148,10 @@ public:
     std::vector<FrontQuad> VrVoiceStatusQuads(unsigned status) const;
     std::vector<FrontQuad> VoiceAimQuads(unsigned status, bool alohomora=false) const;
     std::string message;
+    // Shown as live text on the main menu until the player enters a game, so
+    // a failed level can be reported without device logs.
+    std::string error_notice;
+    void ShowError(std::string text);
     void RefreshSlots();
     FrontAction Input(float move_y,bool confirm,bool back,float move_x=0);
     FrontAction TickStory(float seconds,float voice_duration);
@@ -157,6 +176,8 @@ public:
     std::vector<FrontQuad> BeanCounterQuads(unsigned count) const;
     std::vector<FrontQuad> HousePointQuads(int digit=-1,unsigned place=0,unsigned digits=1) const;
     std::vector<FrontQuad> ChallengeStarQuads(unsigned count,bool report=false) const;
+    std::vector<FrontQuad> PeevesHealthQuads(unsigned hits_left,bool active) const;
+    std::vector<FrontQuad> MalfoyHealthQuads(unsigned hits_left,bool active) const;
     std::vector<FrontQuad> BroomLabelQuads() const;
     // Fields: 0 hoop hits, 1 remaining seconds, 2 stage. Independently cached.
     std::vector<FrontQuad> BroomNumberQuads(unsigned value,unsigned field) const;
@@ -168,4 +189,9 @@ private:
     bool confirm_down_=false,back_down_=false,stick_down_=false;
     bool horizontal_down_=false;
 };
+inline constexpr std::size_t kErrorNoticeColumns=54;
+inline constexpr std::size_t kErrorNoticeLines=12;
+// Header plus the upper-case notice wrapped for the main-menu font; long
+// tokens are split and overflow ends with "...".
+std::vector<std::string> ErrorNoticeLines(std::string_view text);
 } // namespace hpvr::quest
