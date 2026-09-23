@@ -274,7 +274,7 @@ bool QueueSceneLoad(auto& state,unsigned map_id,bool transfer){
             [pending,profile,root=state.data_root,saves=state.save_root,map_id](){
                 HPVR_LOGI("[hpvr.quest.scene.async] status=STARTED map=%u mode=CPU_ONLY",map_id);
                 if(!pending->LoadFromOwnedData(root,saves,map_id))return false;
-                if(profile&&!profile->LoadProfiles(root,map_id==kCharmsTrainingMapId)){
+                if(profile&&!profile->LoadMapProfiles(root,map_id)){
                     SceneLoadTrace::Note(saves,map_id,"SPELL GESTURE PROFILES FAILED");
                     return false;
                 }

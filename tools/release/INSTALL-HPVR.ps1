@@ -82,11 +82,11 @@ function Get-HpvrTool([string]$Explicit, [string]$Name, [string[]]$Candidates, [
 }
 
 function Get-HpvrFfmpegSpec {
-    # Windows essentials build linked by ffmpeg.org. Pin both archive and EXE;
-    # never execute an unverified download or fetch a moving 'latest' release.
+    # Gyan's versioned GitHub mirror retains older releases removed from gyan.dev.
+    # Pin both archive and EXE; never fetch a moving 'latest' release.
     return [pscustomobject]@{
         Version = '9.0.1'
-        Url = 'https://www.gyan.dev/ffmpeg/builds/packages/ffmpeg-9.0.1-essentials_build.zip'
+        Url = 'https://github.com/GyanD/codexffmpeg/releases/download/9.0.1/ffmpeg-9.0.1-essentials_build.zip'
         ArchiveSha256 = 'FEC81AE03971D9DD4BE3EBE02E263BD2EC1D789483F931BDBA5F5715E65DA2E9'
         ExeSha256 = '72A489ECCD008C2EC2C0A5856C5C75BC3D8BBFA90166C4566865C246445E6AA3'
         Prefix = 'ffmpeg-9.0.1-essentials_build/'
@@ -129,7 +129,7 @@ function Get-HpvrFfmpeg([string]$Explicit, [string[]]$Candidates, [string]$Cache
     $nonce = [Guid]::NewGuid().ToString('N')
     $zipPath = Join-Path $cache ('download-' + $nonce + '.zip')
     $pendingExe = Join-Path $cache ('ffmpeg-' + $nonce + '.pending')
-    Write-Host "FFmpeg was not found. Downloading FFmpeg $($spec.Version) from gyan.dev (about 106 MB)."
+    Write-Host "FFmpeg was not found. Downloading FFmpeg $($spec.Version) from Gyan's GitHub mirror (about 106 MB)."
     Write-Host 'It will be cached for future installs. No administrator rights or PATH changes are needed.'
     try {
         Save-HpvrFfmpegDownload $spec.Url $zipPath
@@ -676,7 +676,7 @@ function Invoke-HpvrScenePreparation([string]$Tool, [string]$StagedGame, [string
 
 if ($LibraryOnly) { return }
 
-Write-Host 'HPVR installer revision 8: automatic tools + five-map support + verified data permissions.'
+Write-Host 'HPVR installer revision 9: archived FFmpeg download + five-map support + verified data permissions.'
 
 if ($PromptForGamePath -and [string]::IsNullOrWhiteSpace($GamePath)) {
     $GamePath = Read-Host 'Folder of your installed US PC game'

@@ -1,4 +1,5 @@
 #include "hpvr/quest_gesture.h"
+#include "hpvr/quest_maps.h"
 
 #include "hpvr/hp1_gesture_c.h"
 #include "hpvr/wand_trajectory_c.h"
@@ -540,6 +541,11 @@ QuestGesture::QuestGesture() : state_(std::make_unique<State>()) {
     state_->raw_samples.reserve(1024);
 }
 QuestGesture::~QuestGesture() = default;
+
+bool QuestGesture::LoadMapProfiles(const std::filesystem::path& data_root, unsigned map_id) {
+    if (!IsSupportedQuestMap(map_id)) return false;
+    return LoadProfiles(data_root, map_id == kCharmsTrainingMapId || map_id == kHogwartsReturnMapId);
+}
 
 bool QuestGesture::LoadFlipendoProfile(const std::filesystem::path& data_root) {
     return LoadProfiles(data_root, false);

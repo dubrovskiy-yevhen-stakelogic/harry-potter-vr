@@ -1,4 +1,4 @@
-# Harry Potter VR — Quest demo installation
+# Harry Potter VR РІР‚вЂќ Quest demo installation
 
 This is an unofficial standalone Quest 3 port. The installer selects all maps
 declared by its matching release manifest automatically. Supported levels include
@@ -30,7 +30,7 @@ integrity, not the identity of an untrusted download.
 Double-click `INSTALL.bat` and enter the game
 folder containing `Maps`, `Textures`, `Sounds`, `Music` and `system`.
 Missing FFmpeg and ADB are downloaded and cached automatically. The banner
-must say `HPVR installer revision 8`. The selected maps should be `0, 1, 2, 3, 4`
+must say `HPVR installer revision 9`. The selected maps should be `0, 1, 2, 3, 4`
 for version 0.1.4 (older releases retain their declared selection).
 To use existing tools explicitly:
 
@@ -64,7 +64,8 @@ explicit paths are reported instead of silently downloading another copy.
 Use `-NoToolDownload` to disable downloads; a verified cached copy still works.
 
 The automatic download is the pinned Windows x64 FFmpeg 9.0.1 essentials build
-from [gyan.dev](https://www.gyan.dev/ffmpeg/builds/), a distributor linked by
+from [Gyan's versioned GitHub mirror](https://github.com/GyanD/codexffmpeg/releases/tag/9.0.1).
+The [Gyan builds site](https://www.gyan.dev/ffmpeg/builds/) is a distributor linked by
 [ffmpeg.org](https://ffmpeg.org/download.html). Archive and executable SHA-256
 hashes are verified before use. It is cached under
 `%LOCALAPPDATA%\HPVR\Tools\ffmpeg-9.0.1`, together with its GPLv3 license and

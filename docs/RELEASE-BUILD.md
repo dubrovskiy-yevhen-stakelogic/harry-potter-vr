@@ -1,6 +1,6 @@
 # Quest release build
 
-The current source targets **0.1.4**, Android version code **85**,
+The current source targets **0.1.4.1**, Android version code **86**,
 with the opening level, [Flipendo Challenge](FLIPENDO-CHALLENGE.md), Broomstick
 Training, Alohomora / Charms and Hogwarts Return.
 The release contains the port, third-party libraries and the licensed offline voice model,
@@ -9,6 +9,26 @@ Players import their own compatible US PC data for the maps declared by the rele
 
 Each newly restored level increments the last numeric version component:
 0.1.2, then 0.1.3, 0.1.4, and so on. Android version codes increase independently for new APKs.
+
+## 0.1.4.1 gesture hotfix
+
+Hogwarts Return selected Alohomora for locked targets, but the asynchronous
+scene loader only loaded the Alohomora and Wingardium profiles for Charms
+Training. Selecting Alohomora in Return therefore failed and reset gesture
+capture. `QuestGesture::LoadMapProfiles` now loads the learned charm profiles
+for both maps, including a fresh recognizer created when resuming a saved game.
+Gesture scoring and target interaction rules are unchanged.
+
+The owned-data regression failed with the old map condition and passes with
+the fix. It exercises fresh map loads, accepted Alohomora/Wingardium strokes,
+mid-stroke cancellation, and returning after an earlier map. All 78 portable
+CTest suites passed, including 1704 Return scene checks. Installer checks
+passed (237), as did source export (395), ADB bootstrap (24), and FFmpeg
+bootstrap (21). Logs are retained privately under `local/alohomora-hotfix-*`.
+
+The ARM64 Release APK is version 0.1.4.1, code 86, signed with the same
+certificate as 0.1.4. Signature, alignment and payload verification passed.
+Quest installation, launch and headset gesture acceptance have not been tested.
 
 ## Tools
 
@@ -23,7 +43,7 @@ For an update, reuse the existing release signing identity. From the repository
 root, build into a new artifact directory:
 
 ```powershell
-.\tools\workspace\BUILD-QUEST-RELEASE.ps1 -OutputDirectory artifacts\quest-release-0.1.4
+.\tools\workspace\BUILD-QUEST-RELEASE.ps1 -OutputDirectory artifacts\quest-release-0.1.4.1
 ```
 
 Only a project's first release with no identity should use
@@ -45,8 +65,8 @@ the player ZIP. This example uses the main `build` tree:
 ```powershell
 cmake --build build --config Release --target hpvr_hp1_package_graph hpvr_hp1_sound_probe hpvr_quest_frontend_probe hpvr_quest_intro_probe hpvr_quest_prepare_assets
 .\tools\workspace\PACKAGE-QUEST-PLAYER.ps1 -HostBuildDirectory build `
-  -ApkPath artifacts\quest-release-0.1.4\HPVR-Quest-0.1.4.apk `
-  -OutputDirectory artifacts\HPVR-Quest-Demo-0.1.4
+  -ApkPath artifacts\quest-release-0.1.4.1\HPVR-Quest-0.1.4.1.apk `
+  -OutputDirectory artifacts\HPVR-Quest-0.1.4.1
 ```
 
 The packager reads the matching `RELEASE-METADATA.json`, checks the APK and

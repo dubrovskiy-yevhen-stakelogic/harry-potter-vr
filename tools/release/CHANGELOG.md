@@ -1,3 +1,10 @@
+# 0.1.4.1
+
+- Installer revision 9 fixes the FFmpeg download returning HTTP 404 by using Gyan's versioned GitHub mirror. The pinned FFmpeg archive and executable hashes are unchanged.
+
+- Fixed Alohomora gesture casting in Hogwarts Return, including after loading a save directly into the level.
+- Restored loading of the learned charm gesture profiles when entering Hogwarts Return.
+
 # 0.1.4
 
 - Restored Hogwarts Return: owl deliveries, student conversations, secrets, and the Fred and George card trade.

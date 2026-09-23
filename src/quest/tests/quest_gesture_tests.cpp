@@ -1,4 +1,5 @@
 #include "hpvr/quest_gesture.h"
+#include "hpvr/quest_maps.h"
 #include "hpvr/hp1_gesture_c.h"
 
 #include <cstdlib>
@@ -476,33 +477,49 @@ int main() {
                 Expect(multi.threshold() == charm_profile.pass_marks[3] && multi.time_limit_seconds() == 12,
                        "new spell retains authored lesson timing and fourth mark");
             }
-            multi.SetGameplayMode(true);
-            for (unsigned spell_index = 0; spell_index < 2; ++spell_index) {
-                Expect(multi.SelectSpell(GestureSpell::Flipendo), "reset target identity before acquisition");
-                multi.Reset();
-                hpvr::quest::GestureSample stroke{};
-                stroke.tracked=true;stroke.predicted_display_time_ns=1'000'000'000;
-                Expect(multi.Observe(stroke), "aiming before rune acquisition observes a neutral gesture input");
-                const auto spell=spell_index==0?GestureSpell::Alohomora:GestureSpell::Wingardium;
-                Expect(multi.SelectSpell(spell), "new rune selects its profile on the acquisition frame");
-                const auto shape=Transform(owned_shapes[spell_index],.71F,.55F);
-                const auto attempts=multi.attempt_count();
-                for(std::size_t i=0;i<shape.size();++i){
-                    stroke.cast_held=i+1!=shape.size();stroke.predicted_display_time_ns+=10'000'000;
-                    stroke.tip={(shape[i][0]-shape[0][0])*.42F,-(shape[i][1]-shape[0][1])*.42F,0};
-                    Expect(multi.Observe(stroke), "first newly acquired typed stroke captures without an extra neutral frame");
+            for (const unsigned map : {hpvr::quest::kCharmsTrainingMapId, hpvr::quest::kHogwartsReturnMapId}) {
+                // A fresh recognizer models direct save loading as well as asynchronous map travel.
+                hpvr::quest::QuestGesture map_gesture;
+                Expect(map_gesture.LoadMapProfiles(root, map), "scene loader loads gesture profiles for each charms-capable map");
+                map_gesture.SetGameplayMode(true);
+                for (unsigned spell_index = 0; spell_index < 2; ++spell_index) {
+                    Expect(map_gesture.SelectSpell(GestureSpell::Flipendo), "reset target identity before acquisition");
+                    map_gesture.Reset();
+                    hpvr::quest::GestureSample stroke{};
+                    stroke.tracked=true;stroke.predicted_display_time_ns=1'000'000'000;
+                    Expect(map_gesture.Observe(stroke), "aiming before rune acquisition observes a neutral gesture input");
+                    const auto spell=spell_index==0?GestureSpell::Alohomora:GestureSpell::Wingardium;
+                    Expect(map_gesture.SelectSpell(spell), "new rune selects its profile on the acquisition frame");
+                    const auto shape=Transform(owned_shapes[spell_index],.71F,.55F);
+                    const auto attempts=map_gesture.attempt_count();
+                    for(std::size_t i=0;i<shape.size();++i){
+                        stroke.cast_held=i+1!=shape.size();stroke.predicted_display_time_ns+=10'000'000;
+                        stroke.tip={(shape[i][0]-shape[0][0])*.42F,-(shape[i][1]-shape[0][1])*.42F,0};
+                        Expect(map_gesture.Observe(stroke), "first newly acquired typed stroke captures without an extra neutral frame");
+                    }
+                    hpvr::quest::FlipendoEvent charm_event;
+                    Expect(map_gesture.attempt_count()==attempts+1&&map_gesture.ConsumeEvent(&charm_event)&&charm_event.spell==spell,
+                           "hold aim draw release succeeds on the first attempt for either new spell");
+                    stroke.cast_held=true;stroke.predicted_display_time_ns+=10'000'000;
+                    Expect(map_gesture.Observe(stroke), "start another active typed stroke");
+                    Expect(map_gesture.SelectSpell(GestureSpell::Flipendo), "external mid-stroke profile change cancels the stroke");
+                    const auto canceled_attempts=map_gesture.attempt_count();
+                    stroke.predicted_display_time_ns+=10'000'000;
+                    Expect(map_gesture.Observe(stroke)&&map_gesture.attempt_count()==canceled_attempts&&!map_gesture.ConsumeEvent(&charm_event),
+                           "mid-stroke switching cannot cast or start again while the trigger remains held");
                 }
-                hpvr::quest::FlipendoEvent charm_event;
-                Expect(multi.attempt_count()==attempts+1&&multi.ConsumeEvent(&charm_event)&&charm_event.spell==spell,
-                       "hold aim draw release succeeds on the first attempt for either new spell");
-                stroke.cast_held=true;stroke.predicted_display_time_ns+=10'000'000;
-                Expect(multi.Observe(stroke), "start another active typed stroke");
-                Expect(multi.SelectSpell(GestureSpell::Flipendo), "external mid-stroke profile change cancels the stroke");
-                const auto canceled_attempts=multi.attempt_count();
-                stroke.predicted_display_time_ns+=10'000'000;
-                Expect(multi.Observe(stroke)&&multi.attempt_count()==canceled_attempts&&!multi.ConsumeEvent(&charm_event),
-                       "mid-stroke switching cannot cast or start again while the trigger remains held");
             }
+            for (const unsigned early_map : {hpvr::quest::kIntroductionMapId,
+                    hpvr::quest::kFlipendoChallengeMapId, hpvr::quest::kBroomstickTrainingMapId}) {
+                Expect(multi.LoadMapProfiles(root, early_map) && multi.SelectSpell(GestureSpell::Flipendo),
+                       "earlier maps retain their Flipendo profile");
+                Expect(!multi.SelectSpell(GestureSpell::Alohomora) && !multi.SelectSpell(GestureSpell::Wingardium),
+                       "earlier maps clear unrequested charms profiles");
+            }
+            Expect(multi.LoadMapProfiles(root, hpvr::quest::kHogwartsReturnMapId) &&
+                   multi.SelectSpell(GestureSpell::Alohomora), "return-map reload restores Alohomora after a different map");
+            Expect(!multi.LoadMapProfiles(root, 999) && multi.selected_spell() == GestureSpell::Alohomora,
+                   "unknown map load fails without changing the active profile");
             Expect(!multi.SelectSpell(static_cast<GestureSpell>(99)) && multi.IsLoaded(),
                    "invalid selection preserves current loaded profile");
             Expect(!multi.LoadProfiles(root / "missing-package-root", true) && multi.IsLoaded(),

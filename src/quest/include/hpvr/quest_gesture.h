@@ -91,6 +91,8 @@ public:
     QuestGesture(const QuestGesture&) = delete;
     QuestGesture& operator=(const QuestGesture&) = delete;
 
+    // Load every gesture that targeting can select on this map, including on resume.
+    [[nodiscard]] bool LoadMapProfiles(const std::filesystem::path& data_root, unsigned map_id);
     [[nodiscard]] bool LoadFlipendoProfile(const std::filesystem::path& data_root);
     [[nodiscard]] bool LoadProfiles(const std::filesystem::path& data_root, bool include_charms);
     // Switching uses preloaded profiles and cancels unfinished or queued casts.

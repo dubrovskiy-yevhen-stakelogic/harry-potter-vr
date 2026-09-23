@@ -21,7 +21,7 @@ Build, packaging and data-preparation scripts live in `tools/workspace/`.
 This early alpha includes the opening Hogwarts tutorials, the first Flipendo
 lesson, **Flipendo Challenge**, **Broomstick Training**, the restored
 **Alohomora / Charms level**, and **Hogwarts Return**, including Peeves and
-the Malfoy duel. Version **0.1.4** requires a user-owned US PC copy.
+the Malfoy duel. Version **0.1.4.1** requires a user-owned US PC copy.
 Original maps, textures, models, music and dialogue are not included in the
 download.
 
